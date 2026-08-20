@@ -164,6 +164,40 @@ public interface IProbeSenderJitter
     int Apply(int target, int percent);
 }
 
+public interface IDomainPacingJitter
+{
+    TimeSpan Apply(TimeSpan interval, int maximumJitterMilliseconds);
+}
+
+public interface IProbeSenderAffinityStore
+{
+    ProbeSenderAffinity? GetAffinity(string recipientDomain);
+    void SetAffinity(string recipientDomain, string sender);
+    void Remove(string recipientDomain);
+    void RemoveSender(string sender);
+    void MarkIncompatible(string recipientDomain, string sender);
+    IReadOnlySet<string> GetIncompatibleSenders(string recipientDomain);
+    int Count { get; }
+    ProbeSenderAffinitySnapshot GetSnapshot();
+}
+
+public interface IDomainBackoffPolicy
+{
+    DomainBackoffDecision Evaluate(
+        MailProvider provider,
+        SmtpResponseCategory category,
+        int consecutiveTemporaryFailures,
+        DateTimeOffset now);
+}
+
+public interface IDomainValidationScheduler
+{
+    Task<IReadOnlyList<ValidationWorkResult>> ScheduleAsync(
+        IReadOnlyList<ValidationWorkItem> items,
+        CancellationToken cancellationToken = default);
+    DomainSchedulerSnapshot GetSnapshot();
+}
+
 public interface ISmtpSessionBudget
 {
     IDisposable Begin(int maximumSessions);
@@ -189,6 +223,8 @@ public interface ISmtpResponseClassifier
 public interface ISmtpProbeThrottle
 {
     ValueTask<IAsyncDisposable> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default);
+    void RecordOutcome(SmtpThrottleContext context, SmtpProbeResult result) { }
+    SmtpSchedulingSnapshot GetSnapshot() => new(0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 public interface ICatchAllDetector

@@ -14,6 +14,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly ISmtpProbeThrottle _throttle;
     private readonly ISmtpResponseClassifier _responseClassifier;
     private readonly IProbeSenderPool _senderPool;
+    private readonly IProbeSenderAffinityStore _affinityStore;
     private readonly ISmtpSessionBudget _sessionBudget;
 
     public SmtpMailboxProbe(
@@ -22,6 +23,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         ISmtpProbeThrottle throttle,
         ISmtpResponseClassifier responseClassifier,
         IProbeSenderPool senderPool,
+        IProbeSenderAffinityStore affinityStore,
         ISmtpSessionBudget sessionBudget)
     {
         _options = options.Value.Smtp;
@@ -30,6 +32,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _throttle = throttle;
         _responseClassifier = responseClassifier;
         _senderPool = senderPool;
+        _affinityStore = affinityStore;
         _sessionBudget = sessionBudget;
     }
 
@@ -42,60 +45,86 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         MailProvider provider,
         CancellationToken cancellationToken = default)
     {
-        var domain = recipient[(recipient.LastIndexOf('@') + 1)..];
-        await using (await _throttle.AcquireAsync(new SmtpThrottleContext(domain, mxHost, provider), cancellationToken))
+        var domain = recipient[(recipient.LastIndexOf('@') + 1)..].Trim().ToLowerInvariant();
+        var throttleContext = new SmtpThrottleContext(domain, mxHost, provider);
+        var affinity = _affinityStore.GetAffinity(domain);
+        var excludedSenders = new HashSet<string>(
+            _affinityStore.GetIncompatibleSenders(domain), StringComparer.OrdinalIgnoreCase);
+        var sessions = 0;
+        var sessionHistory = new List<SmtpSessionEvidence>();
+        SmtpProbeResult? lastResult = null;
+        string? previousSenderForDomainChange = null;
+        var maximumSenders = Math.Max(1, _senderOptions.MaxSenderAttemptsPerValidation);
+        for (var senderAttempt = 0; senderAttempt < maximumSenders; senderAttempt++)
         {
-            var sessions = 0;
-            var excludedSenders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var sessionHistory = new List<SmtpSessionEvidence>();
-            SmtpProbeResult? lastResult = null;
-            var maximumSenders = Math.Max(1, _senderOptions.MaxSenderAttemptsPerValidation);
-            for (var senderAttempt = 0; senderAttempt < maximumSenders; senderAttempt++)
+            var selected = await _senderPool.GetSenderAsync(new ProbeSenderContext(
+                excludedSenders, domain, affinity?.Sender), cancellationToken);
+            if (selected is null) break;
+            if (affinity is null || !string.Equals(affinity.Sender, selected.Sender, StringComparison.OrdinalIgnoreCase))
             {
-                var selected = await _senderPool.GetSenderAsync(new ProbeSenderContext(excludedSenders), cancellationToken);
-                if (selected is null) break;
-                var transientAttempt = 0;
-                do
-                {
-                    if (!_sessionBudget.TryConsume())
-                    {
-                        _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
-                        return lastResult ?? BudgetExhausted(mxHost, provider);
-                    }
-
-                    transientAttempt++;
-                    sessions++;
-                    lastResult = await ProbeOnceAsync(
-                        mxHost, recipient, provider, sessions, selected.Sender, cancellationToken);
-                    if (lastResult.SessionEvidence is not null)
-                        sessionHistory.Add(lastResult.SessionEvidence);
-                    lastResult = lastResult with
-                    {
-                        Attempts = sessions,
-                        SessionHistory = sessionHistory.ToArray()
-                    };
-                    if (SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
-                        !IsTransient(lastResult.Status) || transientAttempt > Math.Max(0, _options.RetryCount)) break;
-
-                    var backoff = lastResult.Evidence?.Category == SmtpResponseCategory.Greylisted
-                        ? TimeSpan.FromMilliseconds(Math.Clamp(_options.GreylistingRetryDelayMilliseconds, 250, 30_000))
-                        : TimeSpan.FromMilliseconds(250 * Math.Pow(2, transientAttempt - 1));
-                    _logger.LogWarning("Transient SMTP result {Result}; retry {Attempt} after {DelayMs} ms", lastResult.Status, transientAttempt, backoff.TotalMilliseconds);
-                    await Task.Delay(backoff, cancellationToken);
-                } while (true);
-
-                var senderOutcome = SmtpSenderFailureClassifier.Classify(lastResult);
-                await _senderPool.RecordOutcomeAsync(
-                    new ProbeSenderOutcome(selected.Sender, senderOutcome, lastResult),
-                    cancellationToken);
-                if (!SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult)) return lastResult;
-
-                excludedSenders.Add(selected.Sender);
-                _logger.LogWarning("Probe sender was rejected at MAIL FROM; trying one healthy alternate sender");
+                var previous = affinity?.Sender ?? previousSenderForDomainChange;
+                _affinityStore.SetAffinity(domain, selected.Sender);
+                affinity = _affinityStore.GetAffinity(domain);
+                previousSenderForDomainChange = null;
+                if (previous is null)
+                    _logger.LogDebug("Sender affinity created: {Domain} -> {ProbeSender}", domain, selected.Sender);
+                else
+                    _logger.LogInformation(
+                        "Probe sender changed for {Domain}: {PreviousSender} -> {ProbeSender}. Reason: sender-specific MAIL FROM rejection",
+                        domain, previous, selected.Sender);
             }
 
-            return lastResult ?? BudgetExhausted(mxHost, provider);
+            var transientAttempt = 0;
+            do
+            {
+                if (!_sessionBudget.TryConsume())
+                {
+                    _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
+                    return lastResult ?? BudgetExhausted(mxHost, provider);
+                }
+
+                transientAttempt++;
+                sessions++;
+                await using (await _throttle.AcquireAsync(throttleContext, cancellationToken))
+                {
+                    lastResult = await ProbeOnceAsync(
+                        mxHost, recipient, provider, sessions, selected.Sender, cancellationToken);
+                    _throttle.RecordOutcome(throttleContext, lastResult);
+                }
+                if (lastResult.SessionEvidence is not null)
+                    sessionHistory.Add(lastResult.SessionEvidence);
+                lastResult = lastResult with
+                {
+                    Attempts = sessions,
+                    SessionHistory = sessionHistory.ToArray()
+                };
+                if (SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
+                    !IsTransient(lastResult.Status) || transientAttempt > Math.Max(0, _options.RetryCount)) break;
+
+                _logger.LogWarning(
+                    "Transient SMTP result {Result}; domain/provider backoff will apply before retry {Attempt}",
+                    lastResult.Status, transientAttempt);
+            } while (true);
+
+            var senderOutcome = SmtpSenderFailureClassifier.Classify(lastResult);
+            var failureScope = SmtpSenderFailureClassifier.Scope(lastResult);
+            await _senderPool.RecordOutcomeAsync(
+                new ProbeSenderOutcome(selected.Sender, senderOutcome, lastResult, domain, failureScope),
+                cancellationToken);
+            if (!SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
+                !_senderOptions.RotateOnSenderSpecificFailure) return lastResult;
+
+            _affinityStore.Remove(domain);
+            _affinityStore.MarkIncompatible(domain, selected.Sender);
+            previousSenderForDomainChange = selected.Sender;
+            affinity = null;
+            excludedSenders.Add(selected.Sender);
+            _logger.LogWarning(
+                "Probe sender {ProbeSender} was rejected for {Domain} at MAIL FROM; trying one healthy alternate sender",
+                selected.Sender, domain);
         }
+
+        return lastResult ?? BudgetExhausted(mxHost, provider);
     }
 
     private async Task<SmtpProbeResult> ProbeOnceAsync(

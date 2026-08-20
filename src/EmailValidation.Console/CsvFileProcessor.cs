@@ -6,6 +6,8 @@ using CsvHelper.Configuration;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EmailValidation.ConsoleApp;
 
@@ -15,15 +17,37 @@ internal sealed record CsvProcessingResult(
     IReadOnlyDictionary<EmailValidationStatus, int> StatusCounts,
     TimeSpan Duration);
 
-internal sealed class CsvFileProcessor(
-    IEmailValidator validator,
-    IOptions<EmailValidationOptions> options,
-    ILogger<CsvFileProcessor> logger)
+internal sealed class CsvFileProcessor
 {
     internal static readonly string[] ResultColumns =
         ["Status", "Confidence", "Confidence Reason", "Validation Date/Time"];
 
-    private readonly int _concurrency = Math.Max(1, options.Value.Smtp.GlobalConcurrency);
+    private readonly IDomainValidationScheduler _scheduler;
+    private readonly IOptions<EmailValidationOptions> _options;
+    private readonly ILogger<CsvFileProcessor> _logger;
+    private int Concurrency => Math.Max(1, _options.Value.Scheduling.GlobalConcurrency > 0
+        ? _options.Value.Scheduling.GlobalConcurrency
+        : _options.Value.Smtp.GlobalConcurrency);
+
+    [ActivatorUtilitiesConstructor]
+    public CsvFileProcessor(
+        IDomainValidationScheduler scheduler,
+        IOptions<EmailValidationOptions> options,
+        ILogger<CsvFileProcessor> logger)
+    {
+        _scheduler = scheduler;
+        _options = options;
+        _logger = logger;
+    }
+
+    internal CsvFileProcessor(
+        IEmailValidator validator,
+        IOptions<EmailValidationOptions> options,
+        ILogger<CsvFileProcessor> logger)
+        : this(new DomainValidationScheduler(
+            validator, new EmailNormalizer(), options,
+            NullLogger<DomainValidationScheduler>.Instance), options, logger)
+    { }
 
     public async Task<CsvProcessingResult> ProcessAsync(
         string path,
@@ -46,8 +70,8 @@ internal sealed class CsvFileProcessor(
             throw new InvalidDataException($"CSV could not be parsed: {exception.Message}", exception);
         }
 
-        logger.LogInformation("CSV file opened with {Rows} data rows", metadata.RowCount);
-        logger.LogInformation("CSV email column selected: {Column}", metadata.Headers[metadata.EmailColumnIndex]);
+        _logger.LogInformation("CSV file opened with {Rows} data rows", metadata.RowCount);
+        _logger.LogInformation("CSV email column selected: {Column}", metadata.Headers[metadata.EmailColumnIndex]);
         await progress.WriteLineAsync($"Validating {Path.GetFileName(fullPath)}");
         await progress.WriteLineAsync($"Email column: {metadata.Headers[metadata.EmailColumnIndex]}");
 
@@ -58,7 +82,7 @@ internal sealed class CsvFileProcessor(
 
         try
         {
-            logger.LogInformation("Creating temporary CSV output");
+            _logger.LogInformation("Creating temporary CSV output");
             await WriteValidatedFileAsync(
                 fullPath, temporaryPath, metadata, live, verbose, counts, progress, cancellationToken);
 
@@ -73,7 +97,7 @@ internal sealed class CsvFileProcessor(
             PreserveUnixMode(fullPath, temporaryPath);
             File.Move(temporaryPath, fullPath, overwrite: true);
             stopwatch.Stop();
-            logger.LogInformation("CSV replacement completed after {Duration}", stopwatch.Elapsed);
+            _logger.LogInformation("CSV replacement completed after {Duration}", stopwatch.Elapsed);
             return new(fullPath, metadata.RowCount, counts, stopwatch.Elapsed);
         }
         catch (CsvHelperException exception)
@@ -87,7 +111,7 @@ internal sealed class CsvFileProcessor(
                 try { File.Delete(temporaryPath); }
                 catch (IOException cleanupException)
                 {
-                    logger.LogWarning(cleanupException, "Could not remove temporary CSV output");
+                    _logger.LogWarning(cleanupException, "Could not remove temporary CSV output");
                 }
             }
         }
@@ -131,7 +155,9 @@ internal sealed class CsvFileProcessor(
         foreach (var header in outputHeaders) csvWriter.WriteField(header);
         await csvWriter.NextRecordAsync();
 
-        var batchSize = Math.Max(16, _concurrency * 4);
+        var batchSize = Math.Max(16, Math.Min(
+            Math.Max(1, _options.Value.Scheduling.MaxActiveDomains) * Concurrency,
+            8192));
         var batch = new List<CsvRowInput>(batchSize);
         var sequence = 0;
         while (await csvReader.ReadAsync())
@@ -170,25 +196,11 @@ internal sealed class CsvFileProcessor(
         TextWriter progress,
         CancellationToken cancellationToken)
     {
-        var completed = new CsvRowResult[rows.Count];
-        await Parallel.ForEachAsync(
-            Enumerable.Range(0, rows.Count),
-            new ParallelOptions { MaxDegreeOfParallelism = _concurrency, CancellationToken = cancellationToken },
-            async (index, token) =>
-            {
-                try
-                {
-                    var result = await validator.ValidateAsync(
-                        rows[index].Email, new EmailValidationRequest(live, verbose), token);
-                    completed[index] = new(rows[index], result, DateTimeOffset.UtcNow);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                catch (Exception exception) when (exception is IOException or TimeoutException)
-                {
-                    logger.LogWarning(exception, "Row {RowNumber} validation failed; continuing with Unknown", rows[index].Sequence + 2);
-                    completed[index] = new(rows[index], FailedValidation(rows[index].Email), DateTimeOffset.UtcNow);
-                }
-            });
+        var work = rows.Select(row => new ValidationWorkItem(
+            row.Sequence, row.Email, new EmailValidationRequest(live, verbose))).ToArray();
+        var scheduled = await _scheduler.ScheduleAsync(work, cancellationToken);
+        var completed = scheduled.Select((result, index) => new CsvRowResult(
+            rows[index], result.Result, result.CompletedAt)).ToArray();
 
         foreach (var row in completed)
         {
@@ -210,17 +222,8 @@ internal sealed class CsvFileProcessor(
             $"{processed:N0} / {totalRows:N0} ({percent:0.0}%) | " +
             string.Join("  ", Enum.GetValues<EmailValidationStatus>()
                 .Select(status => $"{status}: {counts[status]:N0}")));
-        logger.LogInformation("CSV rows processed: {Processed}/{Total}", processed, totalRows);
+        _logger.LogInformation("CSV rows processed: {Processed}/{Total}", processed, totalRows);
     }
-
-    private static EmailValidationResult FailedValidation(string email) => new()
-    {
-        Email = email,
-        Status = EmailValidationStatus.Unknown,
-        Confidence = 0,
-        ConfidenceReason = "Validation could not be completed for this row.",
-        Checks = new EmailValidationChecks()
-    };
 
     private static string FormatConfidence(double confidence)
     {

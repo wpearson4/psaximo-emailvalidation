@@ -52,6 +52,45 @@ public sealed class ProbeSenderHealthTests
     }
 
     [Fact]
+    public async Task DomainAffinity_TakesPriorityOverRoutineRotationThreshold()
+    {
+        using var checker = Checker(
+            ["probe1@validator.test", "probe2@validator.test"],
+            new CountingDns(),
+            maxValidations: 1);
+        var first = await checker.GetSenderAsync(new ProbeSenderContext(
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), "example.com"));
+
+        var next = await checker.GetSenderAsync(new ProbeSenderContext(
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), "example.com", first!.Sender));
+
+        Assert.Equal(first.Sender, next!.Sender);
+        Assert.Equal(0, checker.GetSnapshot().ScheduledRotations);
+    }
+
+    [Fact]
+    public async Task DomainSpecificSenderFailure_DoesNotRetireSenderGlobally()
+    {
+        using var checker = Checker(
+            ["probe1@validator.test", "probe2@validator.test"],
+            new CountingDns());
+        var first = await checker.GetSenderAsync(ProbeSenderContext.Empty);
+        var failure = MailFromFailure("550 5.1.0 Sender address rejected", 550);
+
+        await checker.RecordOutcomeAsync(new(
+            first!.Sender,
+            SmtpSenderFailureClassifier.Classify(failure),
+            failure,
+            "example.com",
+            ValidationFailureScope.Sender));
+        var unrelatedDomain = await checker.GetSenderAsync(new ProbeSenderContext(
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), "another.com", first.Sender));
+
+        Assert.Equal(first.Sender, unrelatedDomain!.Sender);
+        Assert.Equal(0, checker.GetSnapshot().SenderRetirements);
+    }
+
+    [Fact]
     public async Task TimeThreshold_RotatesOnlyANewSession()
     {
         var time = new TestTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
@@ -230,6 +269,7 @@ public sealed class ProbeSenderHealthTests
             dns,
             new ProbeSenderRotationPolicy(options),
             new FixedJitter(),
+            new ProbeSenderAffinityStore(timeProvider ?? TimeProvider.System, options),
             timeProvider ?? TimeProvider.System,
             options,
             NullLogger<ProbeSenderHealthChecker>.Instance);

@@ -54,7 +54,16 @@ Before live use, configure Elasticsearch as the source of authorized sender iden
     "ProbeSenderRotation": {
       "MaxValidationsPerSender": 50,
       "MaxActiveMinutes": 15,
-      "MaxSenderAttemptsPerValidation": 2
+      "MaxSenderAttemptsPerValidation": 2,
+      "SenderAffinityMinutes": 60,
+      "RotateOnSenderSpecificFailure": true
+    },
+    "Scheduling": {
+      "GlobalConcurrency": 8,
+      "PerDomainConcurrency": 1,
+      "DomainMinIntervalMilliseconds": 1500,
+      "DomainIntervalJitterMilliseconds": 250,
+      "MaxActiveDomains": 1000
     }
   }
 }
@@ -62,7 +71,7 @@ Before live use, configure Elasticsearch as the source of authorized sender iden
 
 Store `Username`/`Password` or `ApiKey` through user secrets or environment variables (for example, `EmailValidation__ProbeSenderSource__ApiKey`), never in committed configuration. Anonymous Elasticsearch is also supported when the deployment allows it.
 
-The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. A bounded, process-wide pool is loaded once and shared by interactive and CSV validation. Selection is sticky until the configurable validation/time threshold is reached. Syntax is checked while loading; sender-domain DNS health is checked lazily before first use. Definitive sender-specific rejection retires the sender, and a temporary sender-specific response cools it down. Recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and all other SMTP work share the strict per-address session budget.
+The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. A bounded, process-wide pool is loaded once and shared by interactive and CSV validation. Healthy senders are held by domain-scoped affinity even when the routine pool rotation threshold is reached. Syntax is checked while loading; sender-domain DNS health is checked lazily before first use. A sender-specific rejection clears only that recipient domain's affinity and records domain/sender incompatibility; globally invalid sender health removes every matching affinity. Recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and all other SMTP work share the strict per-address session budget.
 
 ## CSV input
 
@@ -76,7 +85,7 @@ jane@example.org
 
 If multiple plausible email columns exist, select one with `--column`; an explicit column always takes precedence. The command invokes the same `IEmailValidator` pipeline used by `validate`, preserves row order, and appends or updates `Status`, `Confidence`, `Confidence Reason`, and `Validation Date/Time`.
 
-The source file is replaced only after all rows have been validated and a same-directory temporary CSV has been flushed and verified. Cancellation or a parse/write failure leaves the original unchanged. UTF-8 BOM behavior, quoted commas, quoted quotes, embedded newlines, empty values, and Unicode data are supported. Processing uses bounded, ordered batches so domain caches and provider intelligence are reused without retaining the entire CSV in memory.
+The source file is replaced only after all rows have been validated and a same-directory temporary CSV has been flushed and verified. Cancellation or a parse/write failure leaves the original unchanged. UTF-8 BOM behavior, quoted commas, quoted quotes, embedded newlines, empty values, and Unicode data are supported. Processing uses bounded, ordered batches. Each batch is grouped by the normalized recipient domain and scheduled round-robin, while completed rows are written in original sequence order. Existing domain locks and caches reuse DNS, MX, provider, catch-all, and behavioral intelligence.
 
 ## Classification and confidence
 
@@ -110,7 +119,8 @@ Defaults are in `src/EmailValidation.Console/appsettings.json` and can be overri
 - SMTP enablement, sender cooldown/fallback limit, total session budget, connection/command timeout, retry count, and bounded greylisting retry delay;
 - Elasticsearch endpoint/authentication, index, email field, configurable Query DSL, bounded query/refresh limits, and stale refresh interval;
 - sticky sender rotation validation/time thresholds, bounded jitter, and MAIL FROM health threshold;
-- global/per-domain/per-provider concurrency and domain delay;
+- global/per-domain/per-provider concurrency, bounded active domains, domain/provider pacing, bounded jitter, provider overrides, and exponential temporary-failure cooldown;
+- sender-affinity and domain/sender compatibility lifetimes;
 - catch-all enablement, probe count (clamped to 1–3), minimum accepted probes, and cache lifetime;
 - configurable role names, disposable/free domains, and safe typo mappings;
 - application-owned toxic-domain, known-trap, abuse-risk, suppression, and MX-forward intelligence;

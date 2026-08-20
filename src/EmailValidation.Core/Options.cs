@@ -3,11 +3,36 @@ namespace EmailValidation.Core;
 public sealed class EmailValidationOptions
 {
     public SmtpOptions Smtp { get; set; } = new();
+    public SchedulingOptions Scheduling { get; set; } = new();
     public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
     public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
     public CatchAllOptions CatchAll { get; set; } = new();
     public DnsOptions Dns { get; set; } = new();
     public IntelligenceOptions Intelligence { get; set; } = new();
+}
+
+public sealed class SchedulingOptions
+{
+    /// <summary>Zero preserves the legacy Smtp.GlobalConcurrency setting.</summary>
+    public int GlobalConcurrency { get; set; }
+    /// <summary>Zero preserves the corresponding legacy Smtp setting.</summary>
+    public int PerDomainConcurrency { get; set; }
+    public int PerProviderConcurrency { get; set; }
+    /// <summary>Negative preserves the legacy Smtp.DelayBetweenDomainRequestsMilliseconds setting.</summary>
+    public int DomainMinIntervalMilliseconds { get; set; } = -1;
+    public int DomainIntervalJitterMilliseconds { get; set; } = 250;
+    public int ProviderMinIntervalMilliseconds { get; set; }
+    public int MaxActiveDomains { get; set; } = 1000;
+    public int TemporaryFailureBackoffMilliseconds { get; set; } = 5000;
+    public int MaximumBackoffMilliseconds { get; set; } = 120000;
+    public Dictionary<MailProvider, ProviderSchedulingOptions> ProviderPolicies { get; set; } = [];
+}
+
+public sealed class ProviderSchedulingOptions
+{
+    public int? PerDomainConcurrency { get; set; }
+    public int? PerProviderConcurrency { get; set; }
+    public int? MinIntervalMilliseconds { get; set; }
 }
 
 public sealed class SmtpOptions
@@ -54,6 +79,9 @@ public sealed class ProbeSenderRotationOptions
     public int JitterPercent { get; set; } = 20;
     public int MinimumSuccessRateSampleSize { get; set; } = 10;
     public double MinimumMailFromSuccessRate { get; set; } = 0.8;
+    public int SenderAffinityMinutes { get; set; } = 60;
+    public bool RotateOnSenderSpecificFailure { get; set; } = true;
+    public int SenderCompatibilityMinutes { get; set; } = 60;
 }
 
 public sealed class CatchAllOptions

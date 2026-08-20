@@ -10,6 +10,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
     {
         var source = options.ProbeSenderSource;
         var rotation = options.ProbeSenderRotation;
+        var scheduling = options.Scheduling;
         var failures = new List<string>();
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
             failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
@@ -48,6 +49,18 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add("EmailValidation:ProbeSenderRotation:JitterPercent must be between 0 and 50.");
         if (rotation.MinimumMailFromSuccessRate is < 0 or > 1)
             failures.Add("EmailValidation:ProbeSenderRotation:MinimumMailFromSuccessRate must be between 0 and 1.");
+        if (rotation.SenderAffinityMinutes <= 0 || rotation.SenderCompatibilityMinutes <= 0)
+            failures.Add("Probe sender affinity and compatibility lifetimes must be greater than zero.");
+        if (scheduling.GlobalConcurrency < 0 || scheduling.PerDomainConcurrency < 0 ||
+            scheduling.PerProviderConcurrency < 0 || scheduling.MaxActiveDomains <= 0)
+            failures.Add("Scheduling concurrency cannot be negative and active-domain limits must be positive (zero concurrency uses the legacy setting).");
+        if (scheduling.DomainMinIntervalMilliseconds < -1 ||
+            scheduling.DomainIntervalJitterMilliseconds < 0 ||
+            scheduling.ProviderMinIntervalMilliseconds < 0)
+            failures.Add("Scheduling intervals and jitter must be non-negative (DomainMinIntervalMilliseconds may be -1 for legacy fallback).");
+        if (scheduling.TemporaryFailureBackoffMilliseconds <= 0 ||
+            scheduling.MaximumBackoffMilliseconds < scheduling.TemporaryFailureBackoffMilliseconds)
+            failures.Add("Scheduling backoff must be positive and MaximumBackoffMilliseconds must not be smaller than the initial backoff.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 }

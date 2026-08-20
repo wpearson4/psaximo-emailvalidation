@@ -12,6 +12,7 @@ public sealed class ProbeSenderHealthChecker(
     IDnsMailResolver dnsResolver,
     IProbeSenderRotationPolicy rotationPolicy,
     IProbeSenderJitter jitter,
+    IProbeSenderAffinityStore affinityStore,
     TimeProvider timeProvider,
     IOptions<EmailValidationOptions> options,
     ILogger<ProbeSenderHealthChecker> logger) : IProbeSenderHealthChecker, IProbeSenderPool, IDisposable
@@ -88,6 +89,18 @@ public sealed class ProbeSenderHealthChecker(
                 now - _lastSuccessfulRefresh >= TimeSpan.FromMinutes(_sourceOptions.StaleAfterMinutes))
                 await RefreshUnderLockAsync(force: false, cancellationToken);
 
+            if (!string.IsNullOrWhiteSpace(context.PreferredSender) &&
+                !context.ExcludedSenders.Contains(context.PreferredSender) &&
+                _states.TryGetValue(context.PreferredSender, out var preferred) &&
+                preferred.Health?.IsOperational == true && preferred.HealthExpiresAt > now &&
+                preferred.State is ProbeSenderCandidateState.Active or ProbeSenderCandidateState.Healthy)
+            {
+                preferred.FirstUsedAt ??= now;
+                preferred.LastUsedAt = now;
+                preferred.ValidationCount++;
+                return new(preferred.Address, preferred.State);
+            }
+
             var active = ActiveState();
             if (active is not null && !context.ExcludedSenders.Contains(active.Address))
             {
@@ -152,6 +165,15 @@ public sealed class ProbeSenderHealthChecker(
         try
         {
             if (!_states.TryGetValue(outcome.Sender, out var state)) return;
+            if (outcome.FailureScope == ValidationFailureScope.Sender &&
+                outcome.RecipientDomain is not null && !outcome.SenderGloballyInvalid)
+            {
+                state.SenderFailureCount++;
+                state.ConsecutiveSenderFailures++;
+                // A remote domain rejecting this identity is compatibility evidence,
+                // not proof that the sender is globally invalid.
+                return;
+            }
             switch (outcome.Kind)
             {
                 case ProbeSenderOutcomeKind.MailFromAccepted:
@@ -173,6 +195,7 @@ public sealed class ProbeSenderHealthChecker(
                     Remember(state.Address);
                     _retirements++;
                     logger.LogWarning("Probe sender retired as invalid: {ProbeSender}", state.Address);
+                    affinityStore.RemoveSender(state.Address);
                     RetireActive(state.Address, "previous sender failed MAIL FROM validation");
                     _states.Remove(state.Address);
                     break;
@@ -306,6 +329,7 @@ public sealed class ProbeSenderHealthChecker(
                     {
                         candidate.State = ProbeSenderCandidateState.Invalid;
                         Remember(candidate.Address);
+                        affinityStore.RemoveSender(candidate.Address);
                         _states.Remove(candidate.Address);
                     }
                     continue;
@@ -485,4 +509,21 @@ internal static class SmtpSenderFailureClassifier
 
     internal static bool ShouldTryAlternate(SmtpProbeResult result) =>
         Classify(result) is ProbeSenderOutcomeKind.SenderInvalid or ProbeSenderOutcomeKind.SenderTemporaryFailure;
+
+    internal static ValidationFailureScope Scope(SmtpProbeResult result)
+    {
+        var outcome = Classify(result);
+        if (outcome is ProbeSenderOutcomeKind.SenderInvalid or ProbeSenderOutcomeKind.SenderTemporaryFailure)
+            return ValidationFailureScope.Sender;
+        if (outcome == ProbeSenderOutcomeKind.RecipientOutcome)
+            return ValidationFailureScope.Recipient;
+        if (outcome == ProbeSenderOutcomeKind.ProviderRestriction)
+            return result.Response?.Contains("source ip", StringComparison.OrdinalIgnoreCase) == true ||
+                   result.Response?.Contains("your ip", StringComparison.OrdinalIgnoreCase) == true
+                ? ValidationFailureScope.SourceIp
+                : ValidationFailureScope.Provider;
+        return result.Evidence?.Category is SmtpResponseCategory.ConnectionRejected or SmtpResponseCategory.Timeout
+            ? ValidationFailureScope.Connection
+            : ValidationFailureScope.Unknown;
+    }
 }

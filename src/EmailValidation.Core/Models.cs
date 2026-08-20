@@ -109,7 +109,10 @@ public sealed record ProbeSenderHealth(
 
 public sealed record ProbeSenderCandidate(string Address, DateTimeOffset LoadedAt);
 
-public sealed record ProbeSenderContext(IReadOnlySet<string> ExcludedSenders)
+public sealed record ProbeSenderContext(
+    IReadOnlySet<string> ExcludedSenders,
+    string? RecipientDomain = null,
+    string? PreferredSender = null)
 {
     public static ProbeSenderContext Empty { get; } = new(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 }
@@ -119,7 +122,62 @@ public sealed record ProbeSenderSelection(string Sender, ProbeSenderCandidateSta
 public sealed record ProbeSenderOutcome(
     string Sender,
     ProbeSenderOutcomeKind Kind,
-    SmtpProbeResult Result);
+    SmtpProbeResult Result,
+    string? RecipientDomain = null,
+    ValidationFailureScope FailureScope = ValidationFailureScope.Unknown,
+    bool SenderGloballyInvalid = false);
+
+public enum ValidationFailureScope { Sender, Recipient, Domain, Provider, SourceIp, Connection, Unknown }
+
+public sealed record ProbeSenderAffinity(
+    string RecipientDomain,
+    string Sender,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset ExpiresAt);
+
+public sealed class DomainPacingState
+{
+    public required string Domain { get; init; }
+    public DateTimeOffset? LastAttemptAt { get; set; }
+    public DateTimeOffset? NextAllowedAttemptAt { get; set; }
+    public int ActiveCount { get; set; }
+    public int ConsecutiveTemporaryFailures { get; set; }
+    public DateTimeOffset? CooldownUntil { get; set; }
+}
+
+public sealed record DomainBackoffDecision(DateTimeOffset NextAllowedAttemptAt, TimeSpan Cooldown);
+
+public sealed record ValidationWorkItem(long Sequence, string Email, EmailValidationRequest Request);
+
+public sealed record ValidationWorkResult(
+    long Sequence,
+    EmailValidationResult Result,
+    DateTimeOffset CompletedAt);
+
+public sealed record DomainSchedulerSnapshot(
+    long RowsScheduled,
+    long RowsCompleted,
+    int UniqueDomains,
+    int ActiveDomains,
+    int MaximumQueueDepth);
+
+public sealed record SmtpSchedulingSnapshot(
+    int TrackedDomains,
+    int ActiveDomains,
+    int CoolingDomains,
+    int TrackedProviders,
+    int CoolingProviders,
+    long DomainCooldownEvents,
+    long ProviderCooldownEvents,
+    long PacingWaitMilliseconds);
+
+public sealed record ProbeSenderAffinitySnapshot(
+    int ActiveAffinities,
+    long Created,
+    long Retained,
+    long Changed,
+    long Removed,
+    long CompatibilityRejections);
 
 public sealed record ProbeSenderRuntimeStatistics(
     string Address,

@@ -33,6 +33,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISmtpProbeThrottle, DomainSmtpProbeThrottle>();
         services.AddSingleton<ISmtpResponseClassifier, SmtpResponseClassifier>();
         services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IDomainPacingJitter, DomainPacingJitter>();
+        services.AddSingleton<IDomainBackoffPolicy, DomainBackoffPolicy>();
+        services.AddSingleton<IProbeSenderAffinityStore, ProbeSenderAffinityStore>();
         services.AddSingleton<IProbeSenderJitter, ProbeSenderJitter>();
         services.AddSingleton<IProbeSenderRotationPolicy, ProbeSenderRotationPolicy>();
         services.AddSingleton(provider =>

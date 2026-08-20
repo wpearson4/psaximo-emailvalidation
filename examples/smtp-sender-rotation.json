@@ -20,7 +20,17 @@
       "MaxActiveMinutes": 15,
       "MaxSenderAttemptsPerValidation": 2,
       "SenderCooldownSeconds": 300,
-      "JitterPercent": 20
+      "JitterPercent": 20,
+      "SenderAffinityMinutes": 60,
+      "RotateOnSenderSpecificFailure": true,
+      "SenderCompatibilityMinutes": 60
+    },
+    "Scheduling": {
+      "GlobalConcurrency": 8,
+      "PerDomainConcurrency": 1,
+      "DomainMinIntervalMilliseconds": 1500,
+      "DomainIntervalJitterMilliseconds": 250,
+      "MaxActiveDomains": 1000
     }
   }
 }

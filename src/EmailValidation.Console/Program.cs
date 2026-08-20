@@ -19,6 +19,7 @@ builder.Services.PostConfigure<EmailValidationOptions>(options =>
     options.ProbeSenderSource.QueryJson = SerializeConfigurationNode(
         builder.Configuration.GetSection("EmailValidation:ProbeSenderSource:Query")).ToJsonString());
 builder.Services.AddEmailValidation();
+builder.Services.AddSingleton<IDomainValidationScheduler, DomainValidationScheduler>();
 builder.Services.AddSingleton<CsvFileProcessor>();
 builder.Services.AddSingleton<ConsoleApplication>();
 builder.Logging.ClearProviders();
