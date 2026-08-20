@@ -1,0 +1,228 @@
+namespace EmailValidation.Core;
+
+public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid }
+public enum ConfidenceType { Heuristic, CalibratedProbability }
+public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
+public enum ReasonCode
+{
+    InvalidSyntax, EmptyInput, MissingDomain, MissingLocalPart, DomainNotFound,
+    InvalidDomain, NoMailExchanger, DnsTimeout, DnsFailure, SmtpDisabled,
+    SmtpTimeout, MailboxRejected, MailboxAccepted, CatchAllDetected,
+    CatchAllUnknown, DisposableDomain, RoleAccount, TemporarySmtpFailure,
+    ProviderBlockedVerification, SmtpConnectionFailure, ImplicitMxFallback,
+    GatewayAccepted, ProviderVerificationBlocked, Greylisted, RateLimited,
+    CatchAllLikely, CatchAllUncertain, ProviderDetected, MailboxAcceptanceAmbiguous,
+    HistoricalCatchAllBehavior, HistoricalVerificationBlocked, NullMailExchanger,
+    MicrosoftRecipientRejected, NoMailRouting, UnroutableMailInfrastructure,
+    MailboxFull, ToxicDomain, RoleBasedCatchAll, PossibleSpamTrap, KnownSpamTrap,
+    AbuseRisk, SuppressionMatch, MxForward, FreeEmailProvider, TypoDetected,
+    SuggestedDomainCorrection, TemporaryFailure, Timeout, Alias, AlternateAddress,
+    SenderIdentityRejected, SenderDomainRejected, PolicyBlock, AuthenticationRequired,
+    RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting
+}
+
+public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
+public enum SmtpMailboxStatus { NotAttempted, Accepted, Rejected, TemporaryFailure, ConnectionFailure, Timeout, Blocked, Unknown, MailboxFull }
+public enum CatchAllStatus
+{
+    NotAttempted = 0,
+    NotCatchAll = 1,
+    LikelyCatchAll = 2,
+    Unknown = 3,
+    LikelyNotCatchAll = 4
+}
+public enum MailProvider
+{
+    Unknown = 0,
+    Microsoft365 = 1,
+    GoogleWorkspace = 2,
+    Proofpoint = 3,
+    Mimecast = 4,
+    AmazonSes = 5,
+    Fastmail = 6,
+    Zoho = 7,
+    GenericSmtp = 8
+}
+
+public enum ProviderFamily
+{
+    Unknown = 0,
+    Microsoft365 = 1,
+    GoogleWorkspace = 2,
+    Proofpoint = 3,
+    Mimecast = 4,
+    GenericSmtp = 5
+}
+
+public enum GatewayProvider
+{
+    Unknown = 0,
+    MicrosoftExchangeOnlineProtection = 1,
+    GoogleWorkspace = 2,
+    Proofpoint = 3,
+    Mimecast = 4,
+    GenericSmtp = 5
+}
+
+public enum VerificationReliabilityLevel { Unknown = 0, Low = 1, Medium = 2, High = 3 }
+
+public sealed record MxRecord(int Preference, string Host);
+
+public sealed record DnsLookupResult(
+    DnsStatus Status,
+    bool DomainExists,
+    IReadOnlyList<MxRecord> MxRecords,
+    bool UsedAddressFallback,
+    TimeSpan Duration,
+    string? Error = null,
+    bool ExplicitNullMx = false)
+{
+    public bool MxPresent => MxRecords.Count > 0;
+    public bool ExplicitMxPresent => MxPresent && !UsedAddressFallback;
+}
+
+public sealed record SmtpProbeResult(
+    SmtpMailboxStatus Status,
+    int? ResponseCode,
+    string? Response,
+    TimeSpan ConnectionDuration,
+    int Attempts = 1,
+    SmtpEvidence? Evidence = null,
+    SmtpSessionEvidence? SessionEvidence = null)
+{
+    /// <summary>All sessions used for transient retries or sender fallback, in attempt order.</summary>
+    public IReadOnlyList<SmtpSessionEvidence> SessionHistory { get; init; } = [];
+}
+
+public sealed record ProbeSenderHealth(
+    ProbeSenderHealthStatus Status,
+    string? Sender,
+    string? Domain,
+    string Detail)
+{
+    public bool IsOperational => Status == ProbeSenderHealthStatus.Valid;
+    public static ProbeSenderHealth NotChecked { get; } =
+        new(ProbeSenderHealthStatus.NotChecked, null, null, "Live SMTP validation was not requested.");
+}
+
+public sealed record CatchAllDetectionResult(
+    CatchAllStatus Status,
+    int Probes,
+    int Accepted,
+    int Rejected,
+    int Ambiguous,
+    string? Detail = null,
+    double Confidence = 0)
+{
+    public bool RandomRecipientAccepted => Accepted > 0;
+    public IReadOnlyList<SmtpProbeResult> ProbeResults { get; init; } = [];
+}
+
+public sealed record DomainValidationData(
+    string Domain,
+    DnsLookupResult Dns,
+    bool DisposableDomain,
+    MailProvider Provider,
+    CatchAllStatus CatchAll,
+    DateTimeOffset LastCheckedUtc,
+    CatchAllDetectionResult? CatchAllEvidence = null);
+
+public sealed record ValidationDiagnostics
+{
+    public bool DomainCacheHit { get; init; }
+    public string? SelectedMx { get; init; }
+    public long DnsDurationMs { get; init; }
+    public long SmtpConnectionDurationMs { get; init; }
+    public int SmtpAttempts { get; init; }
+    public IReadOnlyList<string> MxHostsAttempted { get; init; } = [];
+    public MxConsensus MxConsensus { get; init; }
+    public string? ProbeSender { get; init; }
+    public ProbeSenderHealthStatus SenderDomainHealth { get; init; }
+    public int CatchAllProbes { get; init; }
+    public int CatchAllAccepted { get; init; }
+    public int CatchAllRejected { get; init; }
+    public int CatchAllAmbiguous { get; init; }
+    public string? CatchAllDetail { get; init; }
+    public string? Detail { get; init; }
+    public long IntelligenceLookupDurationMs { get; init; }
+    public long MailInfrastructureDurationMs { get; init; }
+}
+
+public sealed record EmailValidationChecks
+{
+    public bool SyntaxValid { get; init; }
+    public bool DomainExists { get; init; }
+    public bool MxPresent { get; init; }
+    public bool UsedImplicitMxFallback { get; init; }
+    public bool DisposableDomain { get; init; }
+    public bool RoleAccount { get; init; }
+    public CatchAllStatus CatchAll { get; init; }
+    public SmtpMailboxStatus Mailbox { get; init; }
+}
+
+public sealed record EmailValidationResult
+{
+    public required string Email { get; init; }
+    public string? NormalizedEmail { get; init; }
+    public EmailValidationStatus Status { get; init; }
+    public double Confidence { get; init; }
+    public ConfidenceType ConfidenceType { get; init; } = ConfidenceType.Heuristic;
+    public double EvidenceConfidence => Confidence;
+    public string? ConfidenceReason { get; init; }
+    public required EmailValidationChecks Checks { get; init; }
+    public MailProvider MailProvider { get; init; }
+    public ProviderDetectionResult? Provider { get; init; }
+    public IReadOnlyList<MxRecord> MxRecords { get; init; } = [];
+    public bool UsedImplicitMxFallback { get; init; }
+    public string? SelectedMx { get; init; }
+    public IReadOnlyList<ReasonCode> ReasonCodes { get; init; } = [];
+    public DomainIntelligence? DomainIntelligence { get; init; }
+    public CatchAllDetectionResult? CatchAllEvidence { get; init; }
+    public SmtpEvidence? SmtpEvidence { get; init; }
+    public SmtpSessionEvidence? SmtpSessionEvidence { get; init; }
+    public MxValidationEvidence? MxValidation { get; init; }
+    public ProbeSenderHealth? ProbeSenderHealth { get; init; }
+    public ProviderValidationResult? ProviderValidation { get; init; }
+    public MailboxValidationDetails? Mailbox { get; init; }
+    public CatchAllValidationDetails? CatchAll { get; init; }
+    public HistoricalSignalSummary? HistoricalEvidence { get; init; }
+    public IReadOnlyList<ConfidenceContribution> ConfidenceEvidence { get; init; } = [];
+    public DetailedStatus DetailedStatus { get; init; } = DetailedStatus.Unknown;
+    public IReadOnlyList<DetailedStatus> DetailedStatuses { get; init; } = [];
+    public EmailAddressIntelligence? AddressIntelligence { get; init; }
+    public ValidationRisk? Risk { get; init; }
+    public SendRecommendation? Recommendation { get; init; }
+    public IReadOnlyList<EvidenceProvenance> Evidence { get; init; } = [];
+    public long DurationMs { get; init; }
+    public ValidationDiagnostics? Diagnostics { get; init; }
+}
+
+public sealed record MailboxValidationDetails(
+    SmtpMailboxStatus Result,
+    double VerificationReliability,
+    VerificationReliabilityLevel VerificationReliabilityLevel);
+
+public sealed record CatchAllValidationDetails(CatchAllStatus Status, double Confidence);
+
+public sealed record NormalizationResult(
+    bool IsValid,
+    string OriginalInput,
+    string? NormalizedEmail,
+    string? LocalPart,
+    string? Domain,
+    ReasonCode? FailureReason);
+
+public sealed record ClassificationResult(
+    EmailValidationStatus Status,
+    double Confidence,
+    IReadOnlyList<ReasonCode> ReasonCodes,
+    IReadOnlyList<ConfidenceContribution>? ConfidenceEvidence = null);
+
+public sealed record EmailValidationRequest(bool EnableSmtp = false, bool Verbose = false);
+
+public sealed record SmtpThrottleContext(
+    string Domain,
+    string MxHost,
+    MailProvider Provider = MailProvider.Unknown,
+    string? OutboundIp = null,
+    string? Tenant = null);

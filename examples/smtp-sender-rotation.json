@@ -1,0 +1,19 @@
+{
+  "EmailValidation": {
+    "Smtp": {
+      "ProbeSenders": [
+        {
+          "Address": "probe1@verify.example-owned-domain.com",
+          "Enabled": true
+        },
+        {
+          "Address": "probe2@verify.example-owned-domain.com",
+          "Enabled": true
+        }
+      ],
+      "MaxSenderAttemptsPerValidation": 2,
+      "MaxSmtpSessionsPerAddress": 8,
+      "SenderCooldownSeconds": 300
+    }
+  }
+}

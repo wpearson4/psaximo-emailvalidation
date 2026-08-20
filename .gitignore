@@ -1,0 +1,9 @@
+bin/
+obj/
+.DS_Store
+*.user
+*.suo
+TestResults/
+validation-results.*
+publish/
+publish.zip

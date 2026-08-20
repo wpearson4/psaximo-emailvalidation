@@ -1,0 +1,232 @@
+namespace EmailValidation.Core;
+
+public enum SmtpCommand { Connect, Greeting, Ehlo, Helo, MailFrom, RcptTo, Rset, Quit }
+
+public enum SmtpResponseCategory
+{
+    NotAttempted,
+    Accepted,
+    RecipientRejected,
+    TemporaryFailure,
+    Greylisted,
+    RateLimited,
+    VerificationBlocked,
+    GatewayAccepted,
+    MailboxUnknown,
+    ConnectionRejected,
+    Timeout,
+    ProtocolFailure,
+    Unknown,
+    MailboxFull
+}
+
+public enum SmtpResponseTextClassification
+{
+    None,
+    Success,
+    RecipientDoesNotExist,
+    MailboxUnavailable,
+    PolicyRejection,
+    RelayDenied,
+    AntiAbuse,
+    Greylisting,
+    RateLimit,
+    TemporaryCondition,
+    VerificationUnavailable,
+    Unknown,
+    MailboxFull
+}
+
+public enum AcceptanceStrength { None, Low, Medium, High }
+public enum ValidationObservationType { Domain, CatchAllProbe, MailboxProbe }
+
+public sealed record ProviderDetectionResult(
+    MailProvider Provider,
+    double Confidence,
+    string? MatchedSignature = null,
+    ProviderFamily Family = ProviderFamily.Unknown,
+    GatewayProvider GatewayProvider = GatewayProvider.Unknown,
+    MailProvider MailboxProvider = MailProvider.Unknown,
+    string? MxHost = null,
+    string? TopologyFingerprint = null);
+
+public sealed record SmtpEvidence(
+    SmtpCommand Command,
+    int? ResponseCode,
+    string? EnhancedStatusCode,
+    SmtpResponseCategory Category,
+    SmtpResponseTextClassification TextClassification,
+    long ElapsedMilliseconds,
+    MailProvider Provider,
+    string MxHost,
+    int Attempt,
+    DateTimeOffset Timestamp,
+    string? SanitizedResponse = null);
+
+/// <summary>
+/// Evidence for one command in an SMTP conversation. A response is never
+/// interpreted independently of the command that produced it.
+/// </summary>
+public sealed record SmtpStageResult(
+    SmtpCommand Stage,
+    int? ResponseCode,
+    string? EnhancedStatusCode,
+    SmtpResponseCategory Category,
+    SmtpResponseTextClassification TextClassification,
+    TimeSpan Duration,
+    string? SanitizedResponse = null);
+
+/// <summary>
+/// Complete command-stage provenance for a single connection to one MX host.
+/// </summary>
+public sealed record SmtpSessionEvidence(
+    SmtpCommand? FailedStage,
+    IReadOnlyList<SmtpStageResult> Stages,
+    string MxHost,
+    TimeSpan Duration,
+    string ProbeSender,
+    string? ServerBanner = null,
+    string? EhloHost = null,
+    bool TlsAdvertised = false,
+    bool TlsUsed = false)
+{
+    public SmtpStageResult? MailFrom => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.MailFrom);
+    public SmtpStageResult? RcptTo => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.RcptTo);
+    public bool MailFromSucceeded => MailFrom?.ResponseCode is >= 200 and < 300;
+    public bool RecipientStageReached => MailFromSucceeded && RcptTo is not null;
+    public bool HasStrongRecipientRejection => RecipientStageReached &&
+        RcptTo!.Category == SmtpResponseCategory.RecipientRejected;
+}
+
+public enum MxConsensus
+{
+    Unknown,
+    ConclusivePositive,
+    ConclusiveNegative,
+    ConsistentAmbiguous,
+    Conflicting
+}
+
+public sealed record MxValidationEvidence(
+    IReadOnlyList<SmtpProbeResult> Attempts,
+    IReadOnlyList<string> HostsAttempted,
+    MxConsensus Consensus);
+
+public sealed record DomainIntelligence
+{
+    public required string Domain { get; init; }
+    public bool DomainExists { get; init; }
+    public required DnsLookupResult Dns { get; init; }
+    public IReadOnlyList<MxRecord> MxRecords => Dns.MxRecords;
+    public required ProviderDetectionResult Provider { get; init; }
+    public bool Disposable { get; init; }
+    public DisposableDomainResult DisposableIntelligence { get; init; } = DisposableDomainResult.Unknown;
+    public bool FreeEmailProvider { get; init; }
+    public ToxicDomainResult ToxicDomain { get; init; } = ToxicDomainResult.Unknown;
+    public MxForwardResult MxForward { get; init; } = MxForwardResult.Unknown;
+    public DomainAgeResult DomainAge { get; init; } = DomainAgeResult.Unknown;
+    public MailInfrastructureResult MailInfrastructure { get; init; } = MailInfrastructureResult.Unknown;
+    public CatchAllDetectionResult CatchAll { get; init; } =
+        new(CatchAllStatus.NotAttempted, 0, 0, 0, 0);
+    public DomainBehaviorProfile? Behavior { get; init; }
+    public DateTimeOffset ObservedAt { get; init; }
+}
+
+public sealed record DomainBehaviorProfile(
+    string Domain,
+    GatewayProvider GatewayProvider,
+    int ObservationCount,
+    double TargetAcceptanceRate,
+    double RandomAcceptanceRate,
+    double RecipientRejectionRate,
+    double TemporaryFailureRate,
+    double RateLimitRate,
+    double GatewayAcceptanceRate,
+    double VerificationReliability,
+    VerificationReliabilityLevel VerificationReliabilityLevel,
+    string? TopologyFingerprint,
+    double GreylistingProbability = 0);
+
+public sealed record MailboxEvidence(
+    string Domain,
+    string MxHost,
+    SmtpProbeResult Probe,
+    ProviderValidationResult ProviderEvaluation);
+
+public sealed record ProviderValidationContext(
+    DomainIntelligence Domain,
+    SmtpProbeResult MailboxProbe,
+    HistoricalSignalSummary History);
+
+public sealed record ProviderValidationResult(
+    MailProvider Provider,
+    double ProviderConfidence,
+    SmtpResponseCategory EffectiveCategory,
+    AcceptanceStrength AcceptanceStrength,
+    IReadOnlyList<ReasonCode> ReasonCodes,
+    string Explanation,
+    GatewayProvider GatewayProvider = GatewayProvider.Unknown,
+    MailProvider MailboxProvider = MailProvider.Unknown,
+    double VerificationReliability = 0,
+    VerificationReliabilityLevel VerificationReliabilityLevel = VerificationReliabilityLevel.Unknown);
+
+public sealed record ValidationObservation(
+    string Domain,
+    ValidationObservationType Type,
+    MailProvider Provider,
+    string? MxHost,
+    CatchAllStatus CatchAllStatus,
+    double CatchAllConfidence,
+    SmtpResponseCategory ResponseCategory,
+    DateTimeOffset ObservedAt,
+    long DurationMilliseconds,
+    int RandomRecipientAcceptedCount = 0,
+    int RandomRecipientProbeCount = 0,
+    int RandomRecipientRejectedCount = 0,
+    GatewayProvider GatewayProvider = GatewayProvider.Unknown,
+    string? TopologyFingerprint = null);
+
+public sealed record HistoricalSignalSummary(
+    int ObservationCount,
+    int LikelyCatchAllCount,
+    int VerificationBlockedCount,
+    int GatewayAcceptedCount,
+    int TemporaryFailureCount,
+    int RateLimitedCount,
+    int RandomRecipientAcceptedCount = 0,
+    int TargetAcceptedCount = 0,
+    int TargetRejectedCount = 0,
+    int RandomRecipientProbeCount = 0,
+    int RandomRecipientRejectedCount = 0,
+    double TargetAcceptanceRate = 0,
+    double RandomAcceptanceRate = 0,
+    double RecipientRejectionRate = 0,
+    double TemporaryFailureRate = 0,
+    double RateLimitRate = 0,
+    double GatewayAcceptanceRate = 0,
+    double VerificationReliability = 0,
+    VerificationReliabilityLevel VerificationReliabilityLevel = VerificationReliabilityLevel.Unknown,
+    int GreylistedCount = 0,
+    double GreylistingProbability = 0)
+{
+    public static HistoricalSignalSummary Empty { get; } = new(0, 0, 0, 0, 0, 0);
+}
+
+public sealed record ConfidenceContribution(string Evidence, double Weight, string Explanation);
+
+public sealed record EmailClassificationEvidence(
+    bool SyntaxValid,
+    DnsStatus DnsStatus,
+    DomainIntelligence? Domain,
+    bool RoleAccount,
+    MailboxEvidence? Mailbox,
+    HistoricalSignalSummary History)
+{
+    public EmailAddressIntelligence? AddressIntelligence { get; init; }
+}
+
+public sealed record DeliveryOutcome(
+    string Domain,
+    bool Delivered,
+    DateTimeOffset ObservedAt,
+    string? Source = null);

@@ -1,0 +1,22 @@
+{
+  "size": 20,
+  "_source": [
+    "business_email"
+  ],
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "business_email_validation_status": "valid (catch-all)"
+          }
+        },
+        {
+          "exists": {
+            "field": "business_email"
+          }
+        }
+      ]
+    }
+  }
+}
