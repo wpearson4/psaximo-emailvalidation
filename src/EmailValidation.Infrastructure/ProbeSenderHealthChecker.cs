@@ -480,17 +480,23 @@ internal static class SmtpSenderFailureClassifier
     {
         var session = result.SessionEvidence;
         var evidence = result.Evidence;
+        var response = evidence?.SanitizedResponse ?? result.Response ?? string.Empty;
+        var explicitlySenderSpecific = SenderMarkers.Any(marker =>
+            response.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        if (!explicitlySenderSpecific &&
+            (evidence?.Category == SmtpResponseCategory.RateLimited ||
+             SourceOrProviderMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)) ||
+             GenericProviderPolicyMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)) ||
+             evidence?.TextClassification is SmtpResponseTextClassification.AntiAbuse or
+                 SmtpResponseTextClassification.RateLimit or
+                 SmtpResponseTextClassification.VerificationUnavailable))
+            return ProbeSenderOutcomeKind.ProviderRestriction;
         if (session?.MailFromSucceeded == true)
             return session.RecipientStageReached ? ProbeSenderOutcomeKind.RecipientOutcome : ProbeSenderOutcomeKind.MailFromAccepted;
         if (session?.FailedStage != SmtpCommand.MailFrom && evidence?.Command != SmtpCommand.MailFrom)
             return ProbeSenderOutcomeKind.Inconclusive;
-        if (evidence?.Category == SmtpResponseCategory.RateLimited)
-            return ProbeSenderOutcomeKind.ProviderRestriction;
-        var response = evidence?.SanitizedResponse ?? result.Response ?? string.Empty;
         if (SourceOrProviderMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)))
             return ProbeSenderOutcomeKind.ProviderRestriction;
-        var explicitlySenderSpecific = SenderMarkers.Any(marker =>
-            response.Contains(marker, StringComparison.OrdinalIgnoreCase));
         if (!explicitlySenderSpecific &&
             (GenericProviderPolicyMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)) ||
              evidence?.TextClassification is SmtpResponseTextClassification.AntiAbuse or
@@ -518,10 +524,14 @@ internal static class SmtpSenderFailureClassifier
         if (outcome == ProbeSenderOutcomeKind.RecipientOutcome)
             return ValidationFailureScope.Recipient;
         if (outcome == ProbeSenderOutcomeKind.ProviderRestriction)
-            return result.Response?.Contains("source ip", StringComparison.OrdinalIgnoreCase) == true ||
-                   result.Response?.Contains("your ip", StringComparison.OrdinalIgnoreCase) == true
+        {
+            var response = result.Evidence?.SanitizedResponse ?? result.Response ?? string.Empty;
+            return response.Contains("source ip", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("your ip", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("ip address", StringComparison.OrdinalIgnoreCase)
                 ? ValidationFailureScope.SourceIp
                 : ValidationFailureScope.Provider;
+        }
         return result.Evidence?.Category is SmtpResponseCategory.ConnectionRejected or SmtpResponseCategory.Timeout
             ? ValidationFailureScope.Connection
             : ValidationFailureScope.Unknown;

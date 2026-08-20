@@ -190,6 +190,11 @@ public interface IDomainBackoffPolicy
         DateTimeOffset now);
 }
 
+public interface IProviderPolicyResolver
+{
+    ProviderPolicy Resolve(MailProvider provider);
+}
+
 public interface IDomainValidationScheduler
 {
     Task<IReadOnlyList<ValidationWorkResult>> ScheduleAsync(
@@ -224,6 +229,7 @@ public interface ISmtpProbeThrottle
 {
     ValueTask<IAsyncDisposable> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default);
     void RecordOutcome(SmtpThrottleContext context, SmtpProbeResult result) { }
+    void RecordProviderRetry(MailProvider provider, bool exhausted) { }
     SmtpSchedulingSnapshot GetSnapshot() => new(0, 0, 0, 0, 0, 0, 0, 0);
 }
 

@@ -291,7 +291,7 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
 {
     public override bool CanHandle(ProviderDetectionResult provider) =>
         provider.Provider is MailProvider.GenericSmtp or MailProvider.Unknown or
-            MailProvider.AmazonSes or MailProvider.Fastmail or MailProvider.Zoho;
+            MailProvider.AmazonSes or MailProvider.Fastmail or MailProvider.Zoho or MailProvider.Yahoo;
 
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {

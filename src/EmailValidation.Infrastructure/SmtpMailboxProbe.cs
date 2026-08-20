@@ -16,6 +16,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly IProbeSenderPool _senderPool;
     private readonly IProbeSenderAffinityStore _affinityStore;
     private readonly ISmtpSessionBudget _sessionBudget;
+    private readonly IProviderPolicyResolver _providerPolicyResolver;
 
     public SmtpMailboxProbe(
         IOptions<EmailValidationOptions> options,
@@ -24,7 +25,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         ISmtpResponseClassifier responseClassifier,
         IProbeSenderPool senderPool,
         IProbeSenderAffinityStore affinityStore,
-        ISmtpSessionBudget sessionBudget)
+        ISmtpSessionBudget sessionBudget,
+        IProviderPolicyResolver providerPolicyResolver)
     {
         _options = options.Value.Smtp;
         _senderOptions = options.Value.ProbeSenderRotation;
@@ -34,6 +36,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _senderPool = senderPool;
         _affinityStore = affinityStore;
         _sessionBudget = sessionBudget;
+        _providerPolicyResolver = providerPolicyResolver;
     }
 
     public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default) =>
@@ -55,6 +58,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         SmtpProbeResult? lastResult = null;
         string? previousSenderForDomainChange = null;
         var maximumSenders = Math.Max(1, _senderOptions.MaxSenderAttemptsPerValidation);
+        var maximumRetries = EffectiveRetryLimit(
+            _options.RetryCount, _providerPolicyResolver.Resolve(provider));
         for (var senderAttempt = 0; senderAttempt < maximumSenders; senderAttempt++)
         {
             var selected = await _senderPool.GetSenderAsync(new ProbeSenderContext(
@@ -99,8 +104,14 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                     SessionHistory = sessionHistory.ToArray()
                 };
                 if (SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
-                    !IsTransient(lastResult.Status) || transientAttempt > Math.Max(0, _options.RetryCount)) break;
+                    !IsTransient(lastResult.Status)) break;
+                if (transientAttempt > maximumRetries)
+                {
+                    _throttle.RecordProviderRetry(provider, exhausted: true);
+                    break;
+                }
 
+                _throttle.RecordProviderRetry(provider, exhausted: false);
                 _logger.LogWarning(
                     "Transient SMTP result {Result}; domain/provider backoff will apply before retry {Attempt}",
                     lastResult.Status, transientAttempt);
@@ -366,6 +377,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
 
     private static bool IsTransient(SmtpMailboxStatus status) =>
         status is SmtpMailboxStatus.TemporaryFailure or SmtpMailboxStatus.Timeout or SmtpMailboxStatus.ConnectionFailure;
+
+    internal static int EffectiveRetryLimit(int globalRetryCount, ProviderPolicy policy) =>
+        Math.Min(Math.Max(0, globalRetryCount), policy.MaxRetries);
 
     private SmtpProbeResult BudgetExhausted(string mxHost, MailProvider provider)
     {

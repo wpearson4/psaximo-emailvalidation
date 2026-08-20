@@ -66,6 +66,8 @@ public sealed class MailProviderDetector : IMailProviderDetector
             GatewayProvider.GoogleWorkspace, 0.99),
         new("googlemail.com", MailProvider.GoogleWorkspace, ProviderFamily.GoogleWorkspace,
             GatewayProvider.GoogleWorkspace, 0.99),
+        new("yahoodns.net", MailProvider.Yahoo, ProviderFamily.Yahoo,
+            GatewayProvider.GenericSmtp, 0.99),
         new("pphosted.com", MailProvider.Proofpoint, ProviderFamily.Proofpoint,
             GatewayProvider.Proofpoint, 0.97),
         new("ppe-hosted.com", MailProvider.Proofpoint, ProviderFamily.Proofpoint,

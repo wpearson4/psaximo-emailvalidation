@@ -35,6 +35,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IDomainPacingJitter, DomainPacingJitter>();
         services.AddSingleton<IDomainBackoffPolicy, DomainBackoffPolicy>();
+        services.AddSingleton<IProviderPolicyResolver, ProviderPolicyResolver>();
         services.AddSingleton<IProbeSenderAffinityStore, ProbeSenderAffinityStore>();
         services.AddSingleton<IProbeSenderJitter, ProbeSenderJitter>();
         services.AddSingleton<IProbeSenderRotationPolicy, ProbeSenderRotationPolicy>();
@@ -69,6 +70,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IHistoricalSignalAggregator, HistoricalSignalAggregator>();
         services.AddSingleton<IDeliveryOutcomeRecorder, InMemoryDeliveryOutcomeRecorder>();
         services.AddSingleton<IEmailValidator, EmailValidator>();
+        services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;
     }
 }

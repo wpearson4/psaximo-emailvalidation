@@ -25,13 +25,21 @@ public sealed class SchedulingOptions
     public int MaxActiveDomains { get; set; } = 1000;
     public int TemporaryFailureBackoffMilliseconds { get; set; } = 5000;
     public int MaximumBackoffMilliseconds { get; set; } = 120000;
-    public Dictionary<MailProvider, ProviderSchedulingOptions> ProviderPolicies { get; set; } = [];
+    public ProviderPolicyOptions? DefaultProviderPolicy { get; set; }
+    public Dictionary<string, ProviderPolicyOptions> ProviderPolicies { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
 }
 
-public sealed class ProviderSchedulingOptions
+public sealed class ProviderPolicyOptions
 {
+    /// <summary>Optional compatibility override for the existing domain-level constraint.</summary>
     public int? PerDomainConcurrency { get; set; }
-    public int? PerProviderConcurrency { get; set; }
+    public int PerProviderConcurrency { get; set; } = 2;
+    public int DelayMilliseconds { get; set; } = 1000;
+    public int PolicyBlockCooldownMinutes { get; set; } = 15;
+    public int MaxRetries { get; set; } = 1;
+
+    /// <summary>Legacy configuration alias. When supplied, it takes precedence over DelayMilliseconds.</summary>
     public int? MinIntervalMilliseconds { get; set; }
 }
 

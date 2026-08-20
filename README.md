@@ -63,7 +63,33 @@ Before live use, configure Elasticsearch as the source of authorized sender iden
       "PerDomainConcurrency": 1,
       "DomainMinIntervalMilliseconds": 1500,
       "DomainIntervalJitterMilliseconds": 250,
-      "MaxActiveDomains": 1000
+      "MaxActiveDomains": 1000,
+      "DefaultProviderPolicy": {
+        "PerProviderConcurrency": 2,
+        "DelayMilliseconds": 1000,
+        "PolicyBlockCooldownMinutes": 15,
+        "MaxRetries": 1
+      },
+      "ProviderPolicies": {
+        "Yahoo": {
+          "PerProviderConcurrency": 1,
+          "DelayMilliseconds": 2500,
+          "PolicyBlockCooldownMinutes": 30,
+          "MaxRetries": 1
+        },
+        "Microsoft": {
+          "PerProviderConcurrency": 1,
+          "DelayMilliseconds": 3000,
+          "PolicyBlockCooldownMinutes": 60,
+          "MaxRetries": 1
+        },
+        "Google": {
+          "PerProviderConcurrency": 1,
+          "DelayMilliseconds": 2000,
+          "PolicyBlockCooldownMinutes": 30,
+          "MaxRetries": 1
+        }
+      }
     }
   }
 }
@@ -97,7 +123,7 @@ The confidence value is a heuristic measure of confidence in the selected classi
 
 Catch-all inference is deliberately conservative. One accepted randomized recipient is insufficient for ordinary providers; they require at least two accepted probes before `LikelyCatchAll`. Microsoft EOP random-recipient acceptance is immediately recorded as likely gateway-or-catch-all behavior so a target acceptance cannot be mistaken for mailbox proof. Google Workspace randomized-recipient acceptance remains `Unknown` because an SMTP `RCPT TO` acceptance does not establish final routing for an unrecognized recipient. Verbose results expose accepted, rejected, and ambiguous probe counts plus the interpretation used.
 
-Provider detection returns both a provider and confidence from centralized MX signatures. Microsoft 365, Google Workspace, Proofpoint, and Mimecast have dedicated interpretation strategies; `GenericSmtpStrategy` handles all other routes. Gateway acceptance is recorded separately from strong mailbox evidence. SMTP results include a complete command-stage session, basic and enhanced status codes, normalized category, text classification, failed stage, MX, provider, attempt, timing, banner/EHLO/TLS diagnostics, and sanitized response excerpts. A recipient rejection is definitive only when session evidence proves that `MAIL FROM` succeeded and `RCPT TO` returned a recipient-specific permanent rejection.
+Provider detection returns both a provider and confidence from centralized MX signatures. Microsoft 365, Google Workspace, Yahoo, Proofpoint, and Mimecast are recognized provider families; the existing provider strategies remain responsible for interpreting SMTP evidence. Provider policies add process-wide concurrency, minimum intervals, bounded retries, and policy-block cooldowns without replacing domain pacing. After a policy cooldown, one half-open probe decides whether the provider resumes or returns to cooldown. Gateway acceptance is recorded separately from strong mailbox evidence. SMTP results include a complete command-stage session, basic and enhanced status codes, normalized category, text classification, failed stage, MX, provider, attempt, timing, banner/EHLO/TLS diagnostics, and sanitized response excerpts. A recipient rejection is definitive only when session evidence proves that `MAIL FROM` succeeded and `RCPT TO` returned a recipient-specific permanent rejection.
 
 An in-memory observation store records non-sensitive domain/provider behavior such as catch-all outcomes, gateway acceptance, verification blocking, rate limiting, greylisting probability, and temporary failures. The abstraction is replaceable by Redis, SQL, or telemetry-backed history later. It never stores the target address as domain-level history.
 

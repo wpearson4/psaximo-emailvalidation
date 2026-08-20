@@ -61,6 +61,33 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         if (scheduling.TemporaryFailureBackoffMilliseconds <= 0 ||
             scheduling.MaximumBackoffMilliseconds < scheduling.TemporaryFailureBackoffMilliseconds)
             failures.Add("Scheduling backoff must be positive and MaximumBackoffMilliseconds must not be smaller than the initial backoff.");
+        if (scheduling.DefaultProviderPolicy is not null)
+            ValidateProviderPolicy("EmailValidation:Scheduling:DefaultProviderPolicy", scheduling.DefaultProviderPolicy, failures);
+        foreach (var entry in scheduling.ProviderPolicies)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Key))
+                failures.Add("EmailValidation:Scheduling:ProviderPolicies keys cannot be empty.");
+            ValidateProviderPolicy($"EmailValidation:Scheduling:ProviderPolicies:{entry.Key}", entry.Value, failures);
+        }
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static void ValidateProviderPolicy(
+        string path,
+        ProviderPolicyOptions policy,
+        List<string> failures)
+    {
+        if (policy.PerProviderConcurrency < 1)
+            failures.Add($"{path}:PerProviderConcurrency must be at least 1.");
+        if (policy.PerDomainConcurrency is < 1)
+            failures.Add($"{path}:PerDomainConcurrency must be at least 1 when configured.");
+        if (policy.DelayMilliseconds < 0)
+            failures.Add($"{path}:DelayMilliseconds cannot be negative.");
+        if (policy.MinIntervalMilliseconds is < 0)
+            failures.Add($"{path}:MinIntervalMilliseconds cannot be negative.");
+        if (policy.PolicyBlockCooldownMinutes < 0)
+            failures.Add($"{path}:PolicyBlockCooldownMinutes cannot be negative.");
+        if (policy.MaxRetries < 0)
+            failures.Add($"{path}:MaxRetries cannot be negative.");
     }
 }

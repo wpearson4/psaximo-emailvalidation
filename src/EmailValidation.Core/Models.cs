@@ -43,7 +43,8 @@ public enum MailProvider
     AmazonSes = 5,
     Fastmail = 6,
     Zoho = 7,
-    GenericSmtp = 8
+    GenericSmtp = 8,
+    Yahoo = 9
 }
 
 public enum ProviderFamily
@@ -53,7 +54,8 @@ public enum ProviderFamily
     GoogleWorkspace = 2,
     Proofpoint = 3,
     Mimecast = 4,
-    GenericSmtp = 5
+    GenericSmtp = 5,
+    Yahoo = 6
 }
 
 public enum GatewayProvider
@@ -147,6 +149,25 @@ public sealed class DomainPacingState
 
 public sealed record DomainBackoffDecision(DateTimeOffset NextAllowedAttemptAt, TimeSpan Cooldown);
 
+public enum ProviderCircuitState { Closed, Open, HalfOpen }
+
+public sealed record ProviderPolicy(
+    string ProviderKey,
+    int PerProviderConcurrency,
+    int DelayMilliseconds,
+    int PolicyBlockCooldownMinutes,
+    int MaxRetries,
+    int? PerDomainConcurrency = null);
+
+public sealed record ProviderRuntimeState(
+    string Provider,
+    int ActiveCount,
+    DateTimeOffset? LastAttemptAt,
+    DateTimeOffset? NextAllowedAttemptAt,
+    DateTimeOffset? CooldownUntil,
+    ProviderCircuitState CircuitState,
+    string? CooldownReason);
+
 public sealed record ValidationWorkItem(long Sequence, string Email, EmailValidationRequest Request);
 
 public sealed record ValidationWorkResult(
@@ -169,7 +190,13 @@ public sealed record SmtpSchedulingSnapshot(
     int CoolingProviders,
     long DomainCooldownEvents,
     long ProviderCooldownEvents,
-    long PacingWaitMilliseconds);
+    long PacingWaitMilliseconds,
+    long HalfOpenAttempts = 0,
+    long ProviderResumptions = 0,
+    long ProviderConcurrencyWaits = 0,
+    long ProviderPacingWaits = 0,
+    long ProviderRetries = 0,
+    long ProviderRetryExhaustions = 0);
 
 public sealed record ProbeSenderAffinitySnapshot(
     int ActiveAffinities,
