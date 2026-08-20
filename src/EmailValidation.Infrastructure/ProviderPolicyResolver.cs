@@ -32,11 +32,16 @@ public sealed class ProviderPolicyResolver(IOptions<EmailValidationOptions> opti
 
     internal static string Normalize(MailProvider provider) => provider switch
     {
-        MailProvider.Microsoft365 => "Microsoft",
+        MailProvider.Microsoft365 => "Microsoft365",
+        MailProvider.MicrosoftConsumer => "MicrosoftConsumer",
         MailProvider.GoogleWorkspace => "Google",
         MailProvider.Yahoo => "Yahoo",
-        MailProvider.Unknown or MailProvider.GenericSmtp or MailProvider.AmazonSes or
-            MailProvider.Fastmail or MailProvider.Zoho => "Generic",
+        MailProvider.AppleICloud => "AppleICloud",
+        MailProvider.Comcast => "Comcast",
+        MailProvider.Proton => "Proton",
+        MailProvider.Fastmail => "Fastmail",
+        MailProvider.Zoho => "Zoho",
+        MailProvider.Unknown or MailProvider.GenericSmtp or MailProvider.AmazonSes => "Generic",
         _ => provider.ToString()
     };
 
@@ -45,7 +50,9 @@ public sealed class ProviderPolicyResolver(IOptions<EmailValidationOptions> opti
         foreach (var entry in _scheduling.ProviderPolicies)
         {
             if (string.Equals(entry.Key, providerKey, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(entry.Key, provider.ToString(), StringComparison.OrdinalIgnoreCase))
+                string.Equals(entry.Key, provider.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                ((provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer) &&
+                 string.Equals(entry.Key, "Microsoft", StringComparison.OrdinalIgnoreCase)))
                 return entry.Value;
         }
         return null;

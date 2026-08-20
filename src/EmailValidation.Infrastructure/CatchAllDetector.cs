@@ -52,7 +52,7 @@ public sealed class CatchAllDetector(
                     "Google Workspace accepted randomized recipients; RCPT acceptance alone is not treated as catch-all proof.",
                     0.35), results);
 
-            if (provider == MailProvider.Microsoft365)
+            if (provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer)
                 return WithResults(new(CatchAllStatus.LikelyCatchAll, attempted, accepted, rejected, ambiguous,
                     "Exchange Online Protection accepted every randomized recipient; this indicates gateway or catch-all acceptance, not mailbox existence.",
                     attempted > 1 ? 0.90 : 0.72), results);

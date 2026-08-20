@@ -58,7 +58,7 @@ public sealed class MailProviderDetector : IMailProviderDetector
     [
         new("mail.protection.outlook.com", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
             GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
-        new("olc.protection.outlook.com", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
+        new("olc.protection.outlook.com", MailProvider.MicrosoftConsumer, ProviderFamily.MicrosoftConsumer,
             GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
         new("mx.microsoft", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
             GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
@@ -68,6 +68,14 @@ public sealed class MailProviderDetector : IMailProviderDetector
             GatewayProvider.GoogleWorkspace, 0.99),
         new("yahoodns.net", MailProvider.Yahoo, ProviderFamily.Yahoo,
             GatewayProvider.GenericSmtp, 0.99),
+        new("mail.icloud.com", MailProvider.AppleICloud, ProviderFamily.AppleICloud,
+            GatewayProvider.GenericSmtp, 0.99),
+        new("mxge.comcast.net", MailProvider.Comcast, ProviderFamily.Comcast,
+            GatewayProvider.GenericSmtp, 0.99),
+        new("comcast.net", MailProvider.Comcast, ProviderFamily.Comcast,
+            GatewayProvider.GenericSmtp, 0.97),
+        new("protonmail.ch", MailProvider.Proton, ProviderFamily.Proton,
+            GatewayProvider.GenericSmtp, 0.99),
         new("pphosted.com", MailProvider.Proofpoint, ProviderFamily.Proofpoint,
             GatewayProvider.Proofpoint, 0.97),
         new("ppe-hosted.com", MailProvider.Proofpoint, ProviderFamily.Proofpoint,
@@ -76,9 +84,9 @@ public sealed class MailProviderDetector : IMailProviderDetector
             GatewayProvider.Mimecast, 0.96),
         new("amazonses.com", MailProvider.AmazonSes, ProviderFamily.GenericSmtp,
             GatewayProvider.GenericSmtp, 0.92),
-        new("messagingengine.com", MailProvider.Fastmail, ProviderFamily.GenericSmtp,
+        new("messagingengine.com", MailProvider.Fastmail, ProviderFamily.Fastmail,
             GatewayProvider.GenericSmtp, 0.95),
-        new("zoho.com", MailProvider.Zoho, ProviderFamily.GenericSmtp,
+        new("zoho.com", MailProvider.Zoho, ProviderFamily.Zoho,
             GatewayProvider.GenericSmtp, 0.92)
     ];
 

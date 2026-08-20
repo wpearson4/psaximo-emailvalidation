@@ -142,6 +142,53 @@ public sealed class ProviderStrategyTests
         Assert.IsType<GenericSmtpStrategy>(resolver.Resolve(new ProviderDetectionResult(MailProvider.Unknown, 0)));
     }
 
+    [Fact]
+    public void Resolver_UsesMicrosoftInterpretationForConsumerInfrastructure()
+    {
+        IMailProviderStrategy[] strategies = [new Microsoft365Strategy(), new GenericSmtpStrategy()];
+        var resolver = new MailProviderStrategyResolver(strategies);
+
+        Assert.IsType<Microsoft365Strategy>(resolver.Resolve(
+            new ProviderDetectionResult(MailProvider.MicrosoftConsumer, 0.99)));
+    }
+
+    [Fact]
+    public async Task MicrosoftConsumer_UsesMicrosoftEvidenceRulesWithoutChangingFamily()
+    {
+        var context = Context(
+            MailProvider.MicrosoftConsumer, SmtpResponseCategory.Accepted, CatchAllStatus.LikelyNotCatchAll);
+
+        var result = await new Microsoft365Strategy().EvaluateAsync(context);
+
+        Assert.Equal(MailProvider.MicrosoftConsumer, result.Provider);
+        Assert.Equal(MailProvider.MicrosoftConsumer, result.MailboxProvider);
+        Assert.Equal(AcceptanceStrength.High, result.AcceptanceStrength);
+    }
+
+    [Theory]
+    [InlineData(MailProvider.AppleICloud)]
+    [InlineData(MailProvider.Proton)]
+    public async Task ConservativeHostedProviders_DoNotTreatAcceptanceAsStrongMailboxProof(MailProvider provider)
+    {
+        var context = Context(provider, SmtpResponseCategory.Accepted, CatchAllStatus.LikelyNotCatchAll);
+
+        var result = await new GenericSmtpStrategy().EvaluateAsync(context);
+
+        Assert.Equal(SmtpResponseCategory.GatewayAccepted, result.EffectiveCategory);
+        Assert.Equal(AcceptanceStrength.Low, result.AcceptanceStrength);
+        Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+    }
+
+    [Fact]
+    public async Task ComcastAcceptance_RemainsMediumStrengthEvidence()
+    {
+        var result = await new GenericSmtpStrategy().EvaluateAsync(
+            Context(MailProvider.Comcast, SmtpResponseCategory.Accepted, CatchAllStatus.LikelyNotCatchAll));
+
+        Assert.Equal(SmtpResponseCategory.Accepted, result.EffectiveCategory);
+        Assert.Equal(AcceptanceStrength.Medium, result.AcceptanceStrength);
+    }
+
     private static ProviderValidationContext Context(
         MailProvider provider,
         SmtpResponseCategory category,

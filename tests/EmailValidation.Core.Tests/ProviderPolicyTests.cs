@@ -14,44 +14,87 @@ public sealed class ProviderPolicyTests
         var values = new Dictionary<string, string?>
         {
             ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:PerProviderConcurrency"] = "1",
-            ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:DelayMilliseconds"] = "2500",
-            ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:PolicyBlockCooldownMinutes"] = "30",
+            ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:DelayMilliseconds"] = "4000",
+            ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:PolicyBlockCooldownMinutes"] = "60",
             ["EmailValidation:Scheduling:ProviderPolicies:Yahoo:MaxRetries"] = "1",
-            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft:PerProviderConcurrency"] = "1",
-            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft:DelayMilliseconds"] = "3000",
-            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft:PolicyBlockCooldownMinutes"] = "60",
-            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:MicrosoftConsumer:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:MicrosoftConsumer:DelayMilliseconds"] = "4000",
+            ["EmailValidation:Scheduling:ProviderPolicies:MicrosoftConsumer:PolicyBlockCooldownMinutes"] = "90",
+            ["EmailValidation:Scheduling:ProviderPolicies:MicrosoftConsumer:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft365:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft365:DelayMilliseconds"] = "3000",
+            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft365:PolicyBlockCooldownMinutes"] = "60",
+            ["EmailValidation:Scheduling:ProviderPolicies:Microsoft365:MaxRetries"] = "1",
             ["EmailValidation:Scheduling:ProviderPolicies:Google:PerProviderConcurrency"] = "1",
-            ["EmailValidation:Scheduling:ProviderPolicies:Google:DelayMilliseconds"] = "2000",
-            ["EmailValidation:Scheduling:ProviderPolicies:Google:PolicyBlockCooldownMinutes"] = "30",
-            ["EmailValidation:Scheduling:ProviderPolicies:Google:MaxRetries"] = "1"
+            ["EmailValidation:Scheduling:ProviderPolicies:Google:DelayMilliseconds"] = "3000",
+            ["EmailValidation:Scheduling:ProviderPolicies:Google:PolicyBlockCooldownMinutes"] = "45",
+            ["EmailValidation:Scheduling:ProviderPolicies:Google:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:AppleICloud:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:AppleICloud:DelayMilliseconds"] = "4000",
+            ["EmailValidation:Scheduling:ProviderPolicies:AppleICloud:PolicyBlockCooldownMinutes"] = "60",
+            ["EmailValidation:Scheduling:ProviderPolicies:AppleICloud:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Comcast:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Comcast:DelayMilliseconds"] = "3000",
+            ["EmailValidation:Scheduling:ProviderPolicies:Comcast:PolicyBlockCooldownMinutes"] = "45",
+            ["EmailValidation:Scheduling:ProviderPolicies:Comcast:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Proton:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Proton:DelayMilliseconds"] = "4000",
+            ["EmailValidation:Scheduling:ProviderPolicies:Proton:PolicyBlockCooldownMinutes"] = "60",
+            ["EmailValidation:Scheduling:ProviderPolicies:Proton:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Zoho:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Zoho:DelayMilliseconds"] = "2500",
+            ["EmailValidation:Scheduling:ProviderPolicies:Zoho:PolicyBlockCooldownMinutes"] = "45",
+            ["EmailValidation:Scheduling:ProviderPolicies:Zoho:MaxRetries"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Fastmail:PerProviderConcurrency"] = "1",
+            ["EmailValidation:Scheduling:ProviderPolicies:Fastmail:DelayMilliseconds"] = "2500",
+            ["EmailValidation:Scheduling:ProviderPolicies:Fastmail:PolicyBlockCooldownMinutes"] = "45",
+            ["EmailValidation:Scheduling:ProviderPolicies:Fastmail:MaxRetries"] = "1"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var options = new EmailValidationOptions();
 
         configuration.GetSection("EmailValidation").Bind(options);
 
-        AssertPolicy(options.Scheduling.ProviderPolicies["Yahoo"], 1, 2500, 30, 1);
-        AssertPolicy(options.Scheduling.ProviderPolicies["Microsoft"], 1, 3000, 60, 1);
-        AssertPolicy(options.Scheduling.ProviderPolicies["Google"], 1, 2000, 30, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Yahoo"], 1, 4000, 60, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["MicrosoftConsumer"], 1, 4000, 90, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Microsoft365"], 1, 3000, 60, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Google"], 1, 3000, 45, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["AppleICloud"], 1, 4000, 60, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Comcast"], 1, 3000, 45, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Proton"], 1, 4000, 60, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Zoho"], 1, 2500, 45, 1);
+        AssertPolicy(options.Scheduling.ProviderPolicies["Fastmail"], 1, 2500, 45, 1);
+    }
+
+    [Fact]
+    public void Microsoft365Mx_NormalizesToMicrosoft365Policy()
+    {
+        var detector = new MailProviderDetector();
+        var detected = detector.Detect([new MxRecord(10, "tenant.mail.protection.outlook.com")]);
+        var resolver = Resolver(new Dictionary<string, ProviderPolicyOptions>
+        {
+            ["Microsoft365"] = Policy(1, 3000, 60, 1)
+        });
+
+        Assert.Equal(MailProvider.Microsoft365, detected);
+        Assert.Equal("Microsoft365", resolver.Resolve(detected).ProviderKey);
     }
 
     [Theory]
-    [InlineData("tenant.mail.protection.outlook.com")]
     [InlineData("hotmail-com.olc.protection.outlook.com")]
     [InlineData("outlook-com.olc.protection.outlook.com")]
     [InlineData("msn-com.olc.protection.outlook.com")]
-    public void MicrosoftMxFamilies_NormalizeToMicrosoftPolicy(string mxHost)
+    public void MicrosoftConsumerMx_NormalizesToConsumerPolicy(string mxHost)
     {
         var detector = new MailProviderDetector();
         var detected = detector.Detect([new MxRecord(10, mxHost)]);
         var resolver = Resolver(new Dictionary<string, ProviderPolicyOptions>
         {
-            ["Microsoft"] = Policy(1, 3000, 60, 1)
+            ["MicrosoftConsumer"] = Policy(1, 4000, 90, 1)
         });
 
-        Assert.Equal(MailProvider.Microsoft365, detected);
-        Assert.Equal("Microsoft", resolver.Resolve(detected).ProviderKey);
+        Assert.Equal(MailProvider.MicrosoftConsumer, detected);
+        Assert.Equal("MicrosoftConsumer", resolver.Resolve(detected).ProviderKey);
     }
 
     [Fact]
@@ -66,6 +109,32 @@ public sealed class ProviderPolicyTests
 
         Assert.Equal(MailProvider.Yahoo, detected);
         Assert.Equal("Yahoo", resolver.Resolve(detected).ProviderKey);
+    }
+
+    [Theory]
+    [InlineData("mx-aol.mail.gm0.yahoodns.net")]
+    [InlineData("mx-att.mail.am0.yahoodns.net")]
+    [InlineData("mta5.am0.yahoodns.net")]
+    public void YahooHostedConsumerFamilies_ShareYahooPolicy(string mxHost)
+    {
+        var detected = new MailProviderDetector().Detect([new MxRecord(10, mxHost)]);
+
+        Assert.Equal(MailProvider.Yahoo, detected);
+        Assert.Equal("Yahoo", Resolver(new Dictionary<string, ProviderPolicyOptions>
+        {
+            ["Yahoo"] = Policy(1, 4000, 60, 1)
+        }).Resolve(detected).ProviderKey);
+    }
+
+    [Theory]
+    [InlineData(MailProvider.AppleICloud, "AppleICloud")]
+    [InlineData(MailProvider.Comcast, "Comcast")]
+    [InlineData(MailProvider.Proton, "Proton")]
+    [InlineData(MailProvider.Zoho, "Zoho")]
+    [InlineData(MailProvider.Fastmail, "Fastmail")]
+    public void HostedProviders_ResolveToIndependentPolicyKeys(MailProvider provider, string expectedKey)
+    {
+        Assert.Equal(expectedKey, Resolver([]).Resolve(provider).ProviderKey);
     }
 
     [Fact]

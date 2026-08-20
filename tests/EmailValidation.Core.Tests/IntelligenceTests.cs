@@ -29,7 +29,13 @@ public sealed class IntelligenceTests
     [Theory]
     [InlineData("example-com.mail.protection.outlook.com", MailProvider.Microsoft365)]
     [InlineData("example-com.a-v1.mx.microsoft", MailProvider.Microsoft365)]
+    [InlineData("outlook-com.olc.protection.outlook.com", MailProvider.MicrosoftConsumer)]
     [InlineData("aspmx.l.google.com", MailProvider.GoogleWorkspace)]
+    [InlineData("mx01.mail.icloud.com", MailProvider.AppleICloud)]
+    [InlineData("mx1.mxge.comcast.net", MailProvider.Comcast)]
+    [InlineData("mail.protonmail.ch", MailProvider.Proton)]
+    [InlineData("in1-smtp.messagingengine.com", MailProvider.Fastmail)]
+    [InlineData("smtpin.zoho.com", MailProvider.Zoho)]
     [InlineData("mx1-us1.ppe-hosted.com", MailProvider.Proofpoint)]
     [InlineData("mx.example.com", MailProvider.GenericSmtp)]
     public void ProviderDetection_InfersFromMxHost(string host, MailProvider expected)
@@ -58,7 +64,8 @@ public sealed class IntelligenceTests
         var result = new MailProviderDetector().DetectWithConfidence(
             [new MxRecord(2, "hotmail-com.olc.protection.outlook.com")]);
 
-        Assert.Equal(MailProvider.Microsoft365, result.Provider);
+        Assert.Equal(MailProvider.MicrosoftConsumer, result.Provider);
+        Assert.Equal(ProviderFamily.MicrosoftConsumer, result.Family);
         Assert.Equal("olc.protection.outlook.com", result.MatchedSignature);
         Assert.Equal(GatewayProvider.MicrosoftExchangeOnlineProtection, result.GatewayProvider);
     }

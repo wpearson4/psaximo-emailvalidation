@@ -21,7 +21,7 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseClassifier
         var textClass = IsMicrosoftRecipientRejection(command, responseCode, enhanced, text, provider)
             ? SmtpResponseTextClassification.RecipientDoesNotExist
             : ClassifyText(text, enhanced);
-        var category = ClassifyCategory(command, responseCode, enhanced, textClass);
+        var category = ClassifyCategory(command, responseCode, enhanced, textClass, provider);
         return new(
             command,
             responseCode,
@@ -60,9 +60,14 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseClassifier
         SmtpCommand command,
         int? code,
         string? enhanced,
-        SmtpResponseTextClassification textClass)
+        SmtpResponseTextClassification textClass,
+        MailProvider provider)
     {
         if (code is null) return SmtpResponseCategory.Unknown;
+        if ((provider is MailProvider.GoogleWorkspace or MailProvider.MicrosoftConsumer) &&
+            (code is >= 400 and < 500 || enhanced?.StartsWith("4.", StringComparison.Ordinal) == true) &&
+            enhanced?.StartsWith("4.7.", StringComparison.Ordinal) == true)
+            return SmtpResponseCategory.RateLimited;
         if (command != SmtpCommand.RcptTo)
         {
             if (code is >= 200 and < 300) return SmtpResponseCategory.Accepted;
@@ -126,7 +131,7 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseClassifier
         string? enhanced,
         string text,
         MailProvider provider) =>
-        provider == MailProvider.Microsoft365 &&
+        (provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer) &&
         command == SmtpCommand.RcptTo &&
         code == 550 &&
         enhanced == "5.4.1" &&

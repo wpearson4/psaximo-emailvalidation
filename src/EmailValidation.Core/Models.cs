@@ -44,7 +44,11 @@ public enum MailProvider
     Fastmail = 6,
     Zoho = 7,
     GenericSmtp = 8,
-    Yahoo = 9
+    Yahoo = 9,
+    MicrosoftConsumer = 10,
+    AppleICloud = 11,
+    Comcast = 12,
+    Proton = 13
 }
 
 public enum ProviderFamily
@@ -55,7 +59,13 @@ public enum ProviderFamily
     Proofpoint = 3,
     Mimecast = 4,
     GenericSmtp = 5,
-    Yahoo = 6
+    Yahoo = 6,
+    MicrosoftConsumer = 7,
+    AppleICloud = 8,
+    Comcast = 9,
+    Proton = 10,
+    Fastmail = 11,
+    Zoho = 12
 }
 
 public enum GatewayProvider

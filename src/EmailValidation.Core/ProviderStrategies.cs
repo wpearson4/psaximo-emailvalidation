@@ -153,6 +153,9 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
 
 public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvider.Microsoft365)
 {
+    public override bool CanHandle(ProviderDetectionResult provider) =>
+        provider.Provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer;
+
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {
         var category = ResolveCategory(context.MailboxProbe);
@@ -170,7 +173,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
         {
             effectiveCategory = SmtpResponseCategory.Accepted;
             strength = AcceptanceStrength.High;
-            mailboxProvider = MailProvider.Microsoft365;
+            mailboxProvider = context.Domain.Provider.Provider;
             reliability = Math.Max(0.88, context.Domain.CatchAll.Confidence);
             reasons.Add(ReasonCode.MailboxAccepted);
             explanation = "Exchange Online Protection accepted the target while randomized recipients were rejected.";
@@ -228,7 +231,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
         };
 
         return new ProviderValidationResult(
-            MailProvider.Microsoft365,
+            context.Domain.Provider.Provider,
             context.Domain.Provider.Confidence,
             effectiveCategory,
             strength,
@@ -291,11 +294,24 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
 {
     public override bool CanHandle(ProviderDetectionResult provider) =>
         provider.Provider is MailProvider.GenericSmtp or MailProvider.Unknown or
-            MailProvider.AmazonSes or MailProvider.Fastmail or MailProvider.Zoho or MailProvider.Yahoo;
+            MailProvider.AmazonSes or MailProvider.Fastmail or MailProvider.Zoho or MailProvider.Yahoo or
+            MailProvider.AppleICloud or MailProvider.Comcast or MailProvider.Proton;
 
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {
         var catchAllIsNegative = context.Domain.CatchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll;
+        if (context.Domain.Provider.Provider is MailProvider.AppleICloud or MailProvider.Proton)
+            return Interpret(
+                context,
+                SmtpResponseCategory.GatewayAccepted,
+                AcceptanceStrength.Low,
+                "The hosted provider accepted RCPT TO, but mailbox existence remains provider-controlled and requires secondary evidence.");
+        if (context.Domain.Provider.Provider == MailProvider.Comcast)
+            return Interpret(
+                context,
+                SmtpResponseCategory.Accepted,
+                AcceptanceStrength.Medium,
+                "Comcast accepted the recipient; the result is retained as conservative SMTP evidence.");
         return Interpret(
             context,
             SmtpResponseCategory.Accepted,

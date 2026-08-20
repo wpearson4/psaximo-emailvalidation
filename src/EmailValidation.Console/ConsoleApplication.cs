@@ -209,7 +209,7 @@ internal sealed class ConsoleApplication(
         };
         if (verbose)
         {
-            lines.Add($"Microsoft365 domains:{CountDomains(MailProvider.Microsoft365),8}");
+            lines.Add($"Microsoft domains:   {CountDomains(MailProvider.Microsoft365) + CountDomains(MailProvider.MicrosoftConsumer),8}");
             lines.Add($"Google domains:      {CountDomains(MailProvider.GoogleWorkspace),8}");
             lines.Add($"Proofpoint domains:  {CountDomains(MailProvider.Proofpoint),8}");
             lines.Add($"Mimecast domains:    {CountDomains(MailProvider.Mimecast),8}");
