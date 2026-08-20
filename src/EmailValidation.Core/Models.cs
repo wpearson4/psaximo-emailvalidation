@@ -178,6 +178,14 @@ public sealed record ProviderRuntimeState(
     ProviderCircuitState CircuitState,
     string? CooldownReason);
 
+public sealed record ProviderThrottleAvailability(
+    bool CanProbe,
+    DateTimeOffset? RetryAfter = null,
+    string? Reason = null)
+{
+    public static ProviderThrottleAvailability Available { get; } = new(true);
+}
+
 public sealed record ValidationWorkItem(long Sequence, string Email, EmailValidationRequest Request);
 
 public sealed record ValidationWorkResult(

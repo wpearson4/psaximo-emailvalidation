@@ -45,6 +45,26 @@ public sealed class DomainSchedulingTests
     }
 
     [Fact]
+    public async Task StreamingScheduler_YieldsCompletedRowsWithoutWaitingForPendingRows()
+    {
+        var validator = new ControlledValidator();
+        var scheduler = Scheduler(validator, global: 2, perDomain: 1);
+        var work = new[]
+        {
+            new ValidationWorkItem(0, "held@cooling.test", new EmailValidationRequest()),
+            new ValidationWorkItem(1, "ready@yahoo.test", new EmailValidationRequest())
+        };
+
+        await using var results = scheduler.ScheduleStreamingAsync(work).GetAsyncEnumerator();
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, results.Current.Sequence);
+        validator.Release();
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(0, results.Current.Sequence);
+        Assert.False(await results.MoveNextAsync());
+    }
+
+    [Fact]
     public void BackoffPolicy_IsBoundedAndDeterministic()
     {
         var options = Options.Create(new EmailValidationOptions
@@ -121,10 +141,10 @@ public sealed class DomainSchedulingTests
     private static SmtpProbeResult TemporaryResult()
     {
         var evidence = new SmtpEvidence(
-            SmtpCommand.Greeting, 451, "4.7.0", SmtpResponseCategory.RateLimited,
-            SmtpResponseTextClassification.RateLimit, 1, MailProvider.Microsoft365,
-            "mx.cooling.test", 1, DateTimeOffset.UtcNow, "451 rate limited");
-        return new(SmtpMailboxStatus.TemporaryFailure, 451, "451 rate limited", TimeSpan.Zero,
+            SmtpCommand.Connect, null, null, SmtpResponseCategory.Timeout,
+            SmtpResponseTextClassification.TemporaryCondition, 1, MailProvider.Microsoft365,
+            "mx.cooling.test", 1, DateTimeOffset.UtcNow, "connection timed out");
+        return new(SmtpMailboxStatus.Timeout, null, "connection timed out", TimeSpan.Zero,
             Evidence: evidence);
     }
 
@@ -169,5 +189,29 @@ public sealed class DomainSchedulingTests
             Confidence = 1,
             Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true }
         };
+    }
+
+    private sealed class ControlledValidator : IEmailValidator
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<EmailValidationResult> ValidateAsync(
+            string email,
+            EmailValidationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (email.StartsWith("held", StringComparison.Ordinal))
+                await _release.Task.WaitAsync(cancellationToken);
+            return new EmailValidationResult
+            {
+                Email = email,
+                NormalizedEmail = email,
+                Status = EmailValidationStatus.Valid,
+                Confidence = 1,
+                Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true }
+            };
+        }
+
+        public void Release() => _release.TrySetResult();
     }
 }

@@ -79,6 +79,34 @@ public sealed class CsvFileProcessorTests
     }
 
     [Fact]
+    public async Task Processing_ReportsAndWritesCompletedRowsWhileAnotherValidationIsPending()
+    {
+        var validator = new HeldValidator();
+        await using var fixture = await CsvFixture.CreateAsync(
+            "Email\nready@yahoo.com\nheld@cooling.test\n", validator, concurrency: 2);
+        var progress = new SignalingProgressWriter();
+        var processing = fixture.Processor.ProcessAsync(
+            fixture.Path, null, true, false, progress, default);
+
+        try
+        {
+            await progress.FirstCompletedRow.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.False(processing.IsCompleted);
+            Assert.Contains("1 / 2", progress.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            validator.Release();
+        }
+
+        await processing.WaitAsync(TimeSpan.FromSeconds(1));
+        var output = await File.ReadAllTextAsync(fixture.Path);
+        Assert.True(output.IndexOf("ready@yahoo.com", StringComparison.Ordinal) <
+            output.IndexOf("held@cooling.test", StringComparison.Ordinal));
+        Assert.Contains("LikelyValid", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ExistingResultColumns_AreUpdatedWithoutDuplicates()
     {
         await using var fixture = await CsvFixture.CreateAsync(
@@ -157,6 +185,39 @@ public sealed class CsvFileProcessorTests
             if (Interlocked.Increment(ref _calls) == 2) cancellation.Cancel();
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(Result(email));
+        }
+    }
+
+    private sealed class HeldValidator : IEmailValidator
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<EmailValidationResult> ValidateAsync(
+            string email,
+            EmailValidationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (email.StartsWith("held", StringComparison.Ordinal))
+                await _release.Task.WaitAsync(cancellationToken);
+            return Result(email);
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class SignalingProgressWriter : StringWriter
+    {
+        private readonly TaskCompletionSource _firstCompletedRow =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task FirstCompletedRow => _firstCompletedRow.Task;
+
+        public override Task WriteLineAsync(string? value)
+        {
+            var result = base.WriteLineAsync(value);
+            if (value?.Contains("1 / 2", StringComparison.Ordinal) == true)
+                _firstCompletedRow.TrySetResult();
+            return result;
         }
     }
 

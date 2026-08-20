@@ -198,24 +198,37 @@ internal sealed class CsvFileProcessor
     {
         var work = rows.Select(row => new ValidationWorkItem(
             row.Sequence, row.Email, new EmailValidationRequest(live, verbose))).ToArray();
-        var scheduled = await _scheduler.ScheduleAsync(work, cancellationToken);
-        var completed = scheduled.Select((result, index) => new CsvRowResult(
-            rows[index], result.Result, result.CompletedAt)).ToArray();
-
-        foreach (var row in completed)
+        var inputs = rows.ToDictionary(row => (long)row.Sequence);
+        var pending = new SortedDictionary<long, CsvRowResult>();
+        var nextSequence = (long)rows[0].Sequence;
+        var writtenCount = 0;
+        await foreach (var result in _scheduler.ScheduleStreamingAsync(work, cancellationToken))
         {
-            var values = new string[outputFieldCount];
-            Array.Copy(row.Input.Fields, values, row.Input.Fields.Length);
-            values[resultIndexes["Status"]] = row.Result.Status.ToString();
-            values[resultIndexes["Confidence"]] = FormatConfidence(row.Result.Confidence);
-            values[resultIndexes["Confidence Reason"]] = row.Result.ConfidenceReason ?? "No confidence explanation was available.";
-            values[resultIndexes["Validation Date/Time"]] = row.CompletedAt.UtcDateTime.ToString(
-                "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
-            foreach (var value in values) writer.WriteField(value ?? string.Empty);
-            await writer.NextRecordAsync();
-            counts[row.Result.Status]++;
-        }
+            pending[result.Sequence] = new(inputs[result.Sequence], result.Result, result.CompletedAt);
+            var wroteRows = false;
+            while (pending.Remove(nextSequence, out var row))
+            {
+                await WriteRowAsync(writer, row, outputFieldCount, resultIndexes);
+                counts[row.Result.Status]++;
+                nextSequence++;
+                writtenCount++;
+                wroteRows = true;
+            }
+            if (!wroteRows) continue;
 
+            await writer.FlushAsync();
+            await WriteProgressAsync(counts, totalRows, progress);
+        }
+        if (pending.Count != 0 || writtenCount != rows.Count)
+            throw new IOException("Validation scheduling completed without producing every CSV row in sequence.");
+
+    }
+
+    private async Task WriteProgressAsync(
+        IReadOnlyDictionary<EmailValidationStatus, int> counts,
+        int totalRows,
+        TextWriter progress)
+    {
         var processed = counts.Values.Sum();
         var percent = totalRows == 0 ? 100 : processed * 100d / totalRows;
         await progress.WriteLineAsync(
@@ -223,6 +236,24 @@ internal sealed class CsvFileProcessor
             string.Join("  ", Enum.GetValues<EmailValidationStatus>()
                 .Select(status => $"{status}: {counts[status]:N0}")));
         _logger.LogInformation("CSV rows processed: {Processed}/{Total}", processed, totalRows);
+    }
+
+    private static async Task WriteRowAsync(
+        CsvWriter writer,
+        CsvRowResult row,
+        int outputFieldCount,
+        Dictionary<string, int> resultIndexes)
+    {
+        var values = new string[outputFieldCount];
+        Array.Copy(row.Input.Fields, values, row.Input.Fields.Length);
+        values[resultIndexes["Status"]] = row.Result.Status.ToString();
+        values[resultIndexes["Confidence"]] = FormatConfidence(row.Result.Confidence);
+        values[resultIndexes["Confidence Reason"]] =
+            row.Result.ConfidenceReason ?? "No confidence explanation was available.";
+        values[resultIndexes["Validation Date/Time"]] = row.CompletedAt.UtcDateTime.ToString(
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        foreach (var value in values) writer.WriteField(value ?? string.Empty);
+        await writer.NextRecordAsync();
     }
 
     private static string FormatConfidence(double confidence)

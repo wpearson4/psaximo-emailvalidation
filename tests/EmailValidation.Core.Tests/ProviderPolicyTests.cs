@@ -236,7 +236,7 @@ public sealed class ProviderPolicyTests
     }
 
     [Fact]
-    public async Task PolicyBlock_OpensConfiguredCooldown_WhileYahooContinues()
+    public async Task PolicyBlock_ReturnsImmediatelyWithoutProbe_WhileYahooContinues()
     {
         var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var time = new ManualTimeProvider(start);
@@ -253,16 +253,61 @@ public sealed class ProviderPolicyTests
         var state = throttle.GetProviderState(MailProvider.Microsoft365)!;
         Assert.Equal(ProviderCircuitState.Open, state.CircuitState);
         Assert.Equal(start.AddMinutes(60), state.CooldownUntil);
-        using var cancellation = new CancellationTokenSource();
-        var microsoftWaiting = throttle.AcquireAsync(
-            Context("another.test", MailProvider.Microsoft365), cancellation.Token).AsTask();
-        await WaitForAsync(() => throttle.GetSnapshot().ProviderPacingWaits > 0);
+        var availability = throttle.GetAvailability(
+            Context("another.test", MailProvider.Microsoft365));
+        Assert.False(availability.CanProbe);
+        Assert.Equal(start.AddMinutes(60), availability.RetryAfter);
+        var microsoftSkipped = await throttle.AcquireAsync(
+            Context("another.test", MailProvider.Microsoft365));
 
         await (await throttle.AcquireAsync(Context("yahoo.test", MailProvider.Yahoo))
             .AsTask().WaitAsync(TimeSpan.FromSeconds(1))).DisposeAsync();
-        Assert.False(microsoftWaiting.IsCompleted);
-        cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => microsoftWaiting);
+        Assert.False(microsoftSkipped.Acquired);
+        Assert.Equal(start.AddMinutes(60), microsoftSkipped.RetryAfter);
+        await microsoftSkipped.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task MailboxProbe_DuringProviderCooldown_ReturnsBlockedWithoutSelectingSender()
+    {
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var settings = new EmailValidationOptions
+        {
+            Smtp = new SmtpOptions
+            {
+                GlobalConcurrency = 2,
+                PerDomainConcurrency = 1,
+                PerProviderConcurrency = 1,
+                DelayBetweenDomainRequestsMilliseconds = 0
+            },
+            Scheduling = Policies(("Microsoft", Policy(1, 0, 60, 1)))
+        };
+        var options = Options.Create(settings);
+        var resolver = new ProviderPolicyResolver(options);
+        using var throttle = new DomainSmtpProbeThrottle(
+            options, time, new DomainPacingJitter(), new DomainBackoffPolicy(options), resolver,
+            NullLogger<DomainSmtpProbeThrottle>.Instance);
+        var context = Context("blocked.test", MailProvider.Microsoft365);
+        await using (var initial = await throttle.AcquireAsync(context))
+            throttle.RecordOutcome(context, PolicyBlock(MailProvider.Microsoft365));
+        var senderPool = new NoCallSenderPool();
+        var probe = new SmtpMailboxProbe(
+            options,
+            NullLogger<SmtpMailboxProbe>.Instance,
+            throttle,
+            new SmtpResponseClassifier(),
+            senderPool,
+            new ProbeSenderAffinityStore(time, options),
+            new SmtpSessionBudget(),
+            resolver);
+
+        var result = await probe.ProbeAsync(
+            "blocked.test", "person@blocked.test", MailProvider.Microsoft365);
+
+        Assert.Equal(SmtpMailboxStatus.Blocked, result.Status);
+        Assert.Equal(SmtpResponseCategory.VerificationBlocked, result.Evidence!.Category);
+        Assert.Equal(0, result.Attempts);
+        Assert.Equal(0, senderPool.Selections);
     }
 
     [Fact]
@@ -556,5 +601,26 @@ public sealed class ProviderPolicyTests
                 _dueAt = _period == Timeout.InfiniteTimeSpan ? null : current.Add(_period);
             }
         }
+    }
+
+    private sealed class NoCallSenderPool : IProbeSenderPool
+    {
+        public int Selections { get; private set; }
+        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<ProbeSenderSelection?> GetSenderAsync(
+            ProbeSenderContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Selections++;
+            return Task.FromResult<ProbeSenderSelection?>(new("probe@example.test", ProbeSenderCandidateState.Healthy));
+        }
+
+        public Task RecordOutcomeAsync(
+            ProbeSenderOutcome outcome,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public ProbeSenderPoolSnapshot GetSnapshot() => new(
+            "test", "test", 1, 1, 1, 0, null, 0, 0, 0, 0, 0, 0, 0, TimeSpan.Zero);
     }
 }

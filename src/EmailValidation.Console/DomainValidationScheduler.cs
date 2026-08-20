@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
@@ -26,22 +27,65 @@ public sealed class DomainValidationScheduler(
         IReadOnlyList<ValidationWorkItem> items,
         CancellationToken cancellationToken = default)
     {
-        if (items.Count == 0) return [];
+        var results = new ConcurrentDictionary<long, ValidationWorkResult>();
+        await foreach (var result in ScheduleStreamingAsync(items, cancellationToken))
+            results[result.Sequence] = result;
+        return items.Select(item => results[item.Sequence]).ToArray();
+    }
+
+    public async IAsyncEnumerable<ValidationWorkResult> ScheduleStreamingAsync(
+        IReadOnlyList<ValidationWorkItem> items,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (items.Count == 0) yield break;
         Interlocked.Add(ref _scheduled, items.Count);
         var groups = Group(items);
         _uniqueDomains = groups.Count;
         _maximumQueueDepth = groups.Count == 0 ? 0 : groups.Max(group => group.Value.Count);
-        var results = new ConcurrentDictionary<long, ValidationWorkResult>();
-        var maxActiveDomains = Math.Max(1, _options.MaxActiveDomains);
-
-        foreach (var wave in groups.Chunk(maxActiveDomains))
+        var completed = Channel.CreateUnbounded<ValidationWorkResult>(new UnboundedChannelOptions
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Exchange(ref _activeDomains, wave.Length);
-            await ProcessWaveAsync(wave, results, cancellationToken);
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false
+        });
+        var producer = ProduceAsync(groups, completed.Writer, cancellationToken);
+
+        try
+        {
+            await foreach (var result in completed.Reader.ReadAllAsync(cancellationToken))
+                yield return result;
         }
-        Interlocked.Exchange(ref _activeDomains, 0);
-        return items.Select(item => results[item.Sequence]).ToArray();
+        finally
+        {
+            await producer;
+        }
+    }
+
+    private async Task ProduceAsync(
+        Dictionary<string, Queue<ValidationWorkItem>> groups,
+        ChannelWriter<ValidationWorkResult> completed,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var maxActiveDomains = Math.Max(1, _options.MaxActiveDomains);
+            foreach (var wave in groups.Chunk(maxActiveDomains))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Interlocked.Exchange(ref _activeDomains, wave.Length);
+                await ProcessWaveAsync(wave, completed, cancellationToken);
+            }
+            completed.TryComplete();
+        }
+        catch (Exception exception)
+        {
+            completed.TryComplete(exception);
+            throw;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _activeDomains, 0);
+        }
     }
 
     public DomainSchedulerSnapshot GetSnapshot() => new(
@@ -53,7 +97,7 @@ public sealed class DomainValidationScheduler(
 
     private async Task ProcessWaveAsync(
         KeyValuePair<string, Queue<ValidationWorkItem>>[] wave,
-        ConcurrentDictionary<long, ValidationWorkResult> results,
+        ChannelWriter<ValidationWorkResult> completed,
         CancellationToken cancellationToken)
     {
         var ready = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
@@ -93,7 +137,8 @@ public sealed class DomainValidationScheduler(
                     logger.LogWarning(exception, "Validation work item {Sequence} failed; continuing with Unknown", item.Sequence);
                     result = FailedValidation(item.Email);
                 }
-                results[item.Sequence] = new(item.Sequence, result, DateTimeOffset.UtcNow);
+                await completed.WriteAsync(
+                    new(item.Sequence, result, DateTimeOffset.UtcNow), cancellationToken);
                 Interlocked.Increment(ref _completed);
 
                 var shouldContinue = false;

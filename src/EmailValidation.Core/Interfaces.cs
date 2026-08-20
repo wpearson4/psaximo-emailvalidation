@@ -200,6 +200,13 @@ public interface IDomainValidationScheduler
     Task<IReadOnlyList<ValidationWorkResult>> ScheduleAsync(
         IReadOnlyList<ValidationWorkItem> items,
         CancellationToken cancellationToken = default);
+    async IAsyncEnumerable<ValidationWorkResult> ScheduleStreamingAsync(
+        IReadOnlyList<ValidationWorkItem> items,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var results = await ScheduleAsync(items, cancellationToken);
+        foreach (var result in results) yield return result;
+    }
     DomainSchedulerSnapshot GetSnapshot();
 }
 
@@ -227,10 +234,18 @@ public interface ISmtpResponseClassifier
 /// </summary>
 public interface ISmtpProbeThrottle
 {
-    ValueTask<IAsyncDisposable> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default);
+    ProviderThrottleAvailability GetAvailability(SmtpThrottleContext context) => ProviderThrottleAvailability.Available;
+    ValueTask<ISmtpThrottleLease> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default);
     void RecordOutcome(SmtpThrottleContext context, SmtpProbeResult result) { }
     void RecordProviderRetry(MailProvider provider, bool exhausted) { }
     SmtpSchedulingSnapshot GetSnapshot() => new(0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+public interface ISmtpThrottleLease : IAsyncDisposable
+{
+    bool Acquired { get; }
+    DateTimeOffset? RetryAfter { get; }
+    string? Reason { get; }
 }
 
 public interface ICatchAllDetector

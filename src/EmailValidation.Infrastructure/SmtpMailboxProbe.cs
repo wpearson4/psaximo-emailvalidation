@@ -50,6 +50,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     {
         var domain = recipient[(recipient.LastIndexOf('@') + 1)..].Trim().ToLowerInvariant();
         var throttleContext = new SmtpThrottleContext(domain, mxHost, provider);
+        var availability = _throttle.GetAvailability(throttleContext);
+        if (!availability.CanProbe)
+            return CooldownActive(mxHost, provider, availability, attempts: 0);
         var affinity = _affinityStore.GetAffinity(domain);
         var excludedSenders = new HashSet<string>(
             _affinityStore.GetIncompatibleSenders(domain), StringComparer.OrdinalIgnoreCase);
@@ -82,6 +85,12 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             var transientAttempt = 0;
             do
             {
+                await using var throttleLease = await _throttle.AcquireAsync(throttleContext, cancellationToken);
+                if (!throttleLease.Acquired)
+                    return lastResult ?? CooldownActive(
+                        mxHost, provider,
+                        new(false, throttleLease.RetryAfter, throttleLease.Reason),
+                        sessions);
                 if (!_sessionBudget.TryConsume())
                 {
                     _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
@@ -90,12 +99,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
 
                 transientAttempt++;
                 sessions++;
-                await using (await _throttle.AcquireAsync(throttleContext, cancellationToken))
-                {
-                    lastResult = await ProbeOnceAsync(
-                        mxHost, recipient, provider, sessions, selected.Sender, cancellationToken);
-                    _throttle.RecordOutcome(throttleContext, lastResult);
-                }
+                lastResult = await ProbeOnceAsync(
+                    mxHost, recipient, provider, sessions, selected.Sender, cancellationToken);
+                _throttle.RecordOutcome(throttleContext, lastResult);
                 if (lastResult.SessionEvidence is not null)
                     sessionHistory.Add(lastResult.SessionEvidence);
                 lastResult = lastResult with
@@ -380,6 +386,29 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
 
     internal static int EffectiveRetryLimit(int globalRetryCount, ProviderPolicy policy) =>
         Math.Min(Math.Max(0, globalRetryCount), policy.MaxRetries);
+
+    private SmtpProbeResult CooldownActive(
+        string mxHost,
+        MailProvider provider,
+        ProviderThrottleAvailability availability,
+        int attempts)
+    {
+        var detail = availability.RetryAfter is null
+            ? "Provider policy cooldown is active; no SMTP session was attempted."
+            : $"Provider policy cooldown is active until {availability.RetryAfter.Value:O}; no SMTP session was attempted.";
+        var evidence = _responseClassifier.Classify(
+            SmtpCommand.Connect, null, detail, TimeSpan.Zero, provider, mxHost, attempts) with
+        {
+            Category = SmtpResponseCategory.VerificationBlocked,
+            TextClassification = SmtpResponseTextClassification.VerificationUnavailable
+        };
+        _logger.LogDebug(
+            "SMTP probe skipped for {Provider}; provider cooldown remains active until {RetryAfter}",
+            provider, availability.RetryAfter);
+        return new SmtpProbeResult(
+            SmtpMailboxStatus.Blocked, null, evidence.SanitizedResponse, TimeSpan.Zero,
+            attempts, evidence);
+    }
 
     private SmtpProbeResult BudgetExhausted(string mxHost, MailProvider provider)
     {

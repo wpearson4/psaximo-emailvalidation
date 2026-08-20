@@ -88,7 +88,15 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         _globalGate = new SemaphoreSlim(EffectiveGlobalConcurrency());
     }
 
-    public async ValueTask<IAsyncDisposable> AcquireAsync(
+    public ProviderThrottleAvailability GetAvailability(SmtpThrottleContext context)
+    {
+        var key = _policyResolver.Resolve(context.Provider).ProviderKey;
+        return _providers.TryGetValue(key, out var provider)
+            ? Availability(provider)
+            : ProviderThrottleAvailability.Available;
+    }
+
+    public async ValueTask<ISmtpThrottleLease> AcquireAsync(
         SmtpThrottleContext context,
         CancellationToken cancellationToken = default)
     {
@@ -97,6 +105,9 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             key, Math.Max(1, policy.PerDomainConcurrency ?? EffectivePerDomainConcurrency())));
         var provider = _providers.GetOrAdd(policy.ProviderKey, key => new ProviderEntry(
             key, policy.PerProviderConcurrency));
+        var initialAvailability = Availability(provider);
+        if (!initialAvailability.CanProbe)
+            return new UnavailableLease(initialAvailability.RetryAfter, initialAvailability.Reason);
 
         await domain.Gate.WaitAsync(cancellationToken);
         var providerAcquired = false;
@@ -119,7 +130,20 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             domainPacingAcquired = true;
             await provider.PacingGate.WaitAsync(cancellationToken);
             providerPacingAcquired = true;
-            halfOpen = await WaitUntilReadyAsync(domain, provider, policy, cancellationToken);
+            var readiness = await WaitUntilReadyAsync(domain, provider, policy, cancellationToken);
+            if (!readiness.CanProbe)
+            {
+                provider.PacingGate.Release();
+                providerPacingAcquired = false;
+                domain.PacingGate.Release();
+                domainPacingAcquired = false;
+                provider.Gate.Release();
+                providerAcquired = false;
+                lock (domain.Sync) domain.State.ActiveCount--;
+                domain.Gate.Release();
+                return new UnavailableLease(readiness.RetryAfter, readiness.Reason);
+            }
+            halfOpen = readiness.HalfOpen;
             await _globalGate.WaitAsync(cancellationToken);
             globalAcquired = true;
 
@@ -304,7 +328,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             Interlocked.Read(ref _providerRetryExhaustions));
     }
 
-    private async Task<bool> WaitUntilReadyAsync(
+    private async Task<ProviderReadiness> WaitUntilReadyAsync(
         DomainEntry domain,
         ProviderEntry provider,
         ProviderPolicy policy,
@@ -322,6 +346,8 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             {
                 var now = _timeProvider.GetUtcNow();
                 providerNext = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil) ?? DateTimeOffset.MinValue;
+                if (provider.CircuitState == ProviderCircuitState.Open && providerNext > now)
+                    return new(false, false, providerNext, provider.CooldownReason ?? "ProviderPolicyCooldown");
                 if (provider.CircuitState == ProviderCircuitState.Open &&
                     providerNext <= now && domainNext <= now)
                 {
@@ -337,7 +363,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
                     "Provider circuit half-open for {Provider}; allowing one validation attempt", policy.ProviderKey);
             var next = Max(domainNext, providerNext);
             var delay = next - _timeProvider.GetUtcNow();
-            if (delay <= TimeSpan.Zero) return ownsHalfOpen;
+            if (delay <= TimeSpan.Zero) return new(true, ownsHalfOpen);
             Interlocked.Add(ref _pacingWaitMilliseconds, (long)Math.Ceiling(delay.TotalMilliseconds));
             if (providerNext > _timeProvider.GetUtcNow())
             {
@@ -374,6 +400,18 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left > right ? left : right;
     private static KeyValuePair<string, object?> ProviderTag(string provider) => new("provider", provider);
 
+    private ProviderThrottleAvailability Availability(ProviderEntry provider)
+    {
+        lock (provider.Sync)
+        {
+            var now = _timeProvider.GetUtcNow();
+            var retryAfter = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
+            return provider.CircuitState == ProviderCircuitState.Open && retryAfter > now
+                ? new(false, retryAfter, provider.CooldownReason ?? "ProviderPolicyCooldown")
+                : ProviderThrottleAvailability.Available;
+        }
+    }
+
     private sealed class DomainEntry(string domain, int concurrency)
     {
         public object Sync { get; } = new();
@@ -402,9 +440,12 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         DomainEntry domain,
         ProviderEntry provider,
         bool ownsHalfOpen,
-        int policyBlockCooldownMinutes) : IAsyncDisposable
+        int policyBlockCooldownMinutes) : ISmtpThrottleLease
     {
         private int _disposed;
+        public bool Acquired => true;
+        public DateTimeOffset? RetryAfter => null;
+        public string? Reason => null;
         public ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
@@ -423,6 +464,20 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             return ValueTask.CompletedTask;
         }
     }
+
+    private sealed class UnavailableLease(DateTimeOffset? retryAfter, string? reason) : ISmtpThrottleLease
+    {
+        public bool Acquired => false;
+        public DateTimeOffset? RetryAfter { get; } = retryAfter;
+        public string? Reason { get; } = reason;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed record ProviderReadiness(
+        bool CanProbe,
+        bool HalfOpen,
+        DateTimeOffset? RetryAfter = null,
+        string? Reason = null);
 
     private void AbandonHalfOpen(ProviderEntry provider, int cooldownMinutes)
     {
