@@ -58,6 +58,8 @@ public sealed class MailProviderDetector : IMailProviderDetector
     [
         new("mail.protection.outlook.com", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
             GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
+        new("olc.protection.outlook.com", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
+            GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
         new("mx.microsoft", MailProvider.Microsoft365, ProviderFamily.Microsoft365,
             GatewayProvider.MicrosoftExchangeOnlineProtection, 0.99),
         new("google.com", MailProvider.GoogleWorkspace, ProviderFamily.GoogleWorkspace,

@@ -152,18 +152,21 @@ public sealed class ProbeSenderHealthChecker(
         try
         {
             if (!_states.TryGetValue(outcome.Sender, out var state)) return;
-            if (string.Equals(_activeSender, state.Address, StringComparison.OrdinalIgnoreCase))
-                _activeCompletedCount++;
             switch (outcome.Kind)
             {
                 case ProbeSenderOutcomeKind.MailFromAccepted:
                 case ProbeSenderOutcomeKind.RecipientOutcome:
                     state.MailFromSuccessCount++;
                     if (string.Equals(_activeSender, state.Address, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _activeCompletedCount++;
                         _activeMailFromSuccessCount++;
+                    }
                     state.ConsecutiveSenderFailures = 0;
                     break;
                 case ProbeSenderOutcomeKind.SenderInvalid:
+                    if (string.Equals(_activeSender, state.Address, StringComparison.OrdinalIgnoreCase))
+                        _activeCompletedCount++;
                     state.SenderFailureCount++;
                     state.ConsecutiveSenderFailures++;
                     state.State = ProbeSenderCandidateState.Retired;
@@ -174,6 +177,8 @@ public sealed class ProbeSenderHealthChecker(
                     _states.Remove(state.Address);
                     break;
                 case ProbeSenderOutcomeKind.SenderTemporaryFailure:
+                    if (string.Equals(_activeSender, state.Address, StringComparison.OrdinalIgnoreCase))
+                        _activeCompletedCount++;
                     state.SenderFailureCount++;
                     state.ConsecutiveSenderFailures++;
                     state.State = ProbeSenderCandidateState.CoolingDown;
@@ -443,7 +448,9 @@ internal static class SmtpSenderFailureClassifier
     private static readonly string[] SenderMarkers =
         ["sender", "mail from", "from address", "return path", "return-path"];
     private static readonly string[] SourceOrProviderMarkers =
-        ["rate limit", "too many", "throttl", "source ip", "your ip", "ip address", "blacklist", "spamhaus", "reputation", "anti-abuse"];
+        ["rate limit", "too many", "throttl", "source ip", "your ip", "ip address", "blacklist", "spamhaus", "reputation", "anti-abuse", "reverse dns", "forward-confirmed"];
+    private static readonly string[] GenericProviderPolicyMarkers =
+        ["access denied", "blocked by policy", "rejected by policy", "authentication required", "relay denied", "relaying denied", "unable to relay"];
 
     internal static ProbeSenderOutcomeKind Classify(SmtpProbeResult result)
     {
@@ -458,12 +465,20 @@ internal static class SmtpSenderFailureClassifier
         var response = evidence?.SanitizedResponse ?? result.Response ?? string.Empty;
         if (SourceOrProviderMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)))
             return ProbeSenderOutcomeKind.ProviderRestriction;
-        if (!SenderMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)))
-            return ProbeSenderOutcomeKind.Inconclusive;
+        var explicitlySenderSpecific = SenderMarkers.Any(marker =>
+            response.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        if (!explicitlySenderSpecific &&
+            (GenericProviderPolicyMarkers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase)) ||
+             evidence?.TextClassification is SmtpResponseTextClassification.AntiAbuse or
+                 SmtpResponseTextClassification.RateLimit or
+                 SmtpResponseTextClassification.RelayDenied or
+                 SmtpResponseTextClassification.VerificationUnavailable))
+            return ProbeSenderOutcomeKind.ProviderRestriction;
         if (evidence?.ResponseCode is >= 500 and < 600)
             return ProbeSenderOutcomeKind.SenderInvalid;
-        if (evidence?.ResponseCode is >= 400 and < 500 ||
+        if (explicitlySenderSpecific && (evidence?.ResponseCode is >= 400 and < 500 ||
             evidence?.Category is SmtpResponseCategory.TemporaryFailure or SmtpResponseCategory.Greylisted)
+           )
             return ProbeSenderOutcomeKind.SenderTemporaryFailure;
         return ProbeSenderOutcomeKind.Inconclusive;
     }

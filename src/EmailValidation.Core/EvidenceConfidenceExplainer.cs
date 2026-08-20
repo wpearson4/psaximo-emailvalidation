@@ -22,7 +22,9 @@ public static class EvidenceConfidenceExplainer
             return "Low confidence because the configured probe sender was not healthy enough for recipient validation.";
 
         if (session?.MailFrom is { ResponseCode: >= 500 and < 600 })
-            return "Low confidence because the server rejected the configured probe sender before recipient validation occurred.";
+            return IsSourceOrProviderRestriction(probe)
+                ? "Low confidence because a provider or source-IP policy blocked verification before recipient validation occurred."
+                : "Low confidence because MAIL FROM was rejected before recipient validation occurred.";
         if (mxValidation?.Consensus == MxConsensus.Conflicting)
             return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
         if (probe.Status == SmtpMailboxStatus.Accepted &&
@@ -33,5 +35,20 @@ public static class EvidenceConfidenceExplainer
         if (probe.Status == SmtpMailboxStatus.Accepted)
             return "The target was accepted, but unresolved catch-all or gateway behavior limits mailbox certainty.";
         return "Evidence is incomplete or ambiguous, so the result is intentionally conservative.";
+    }
+
+    private static bool IsSourceOrProviderRestriction(SmtpProbeResult probe)
+    {
+        var evidence = probe.Evidence;
+        if (evidence?.Category == SmtpResponseCategory.RateLimited ||
+            evidence?.TextClassification is SmtpResponseTextClassification.AntiAbuse or
+                SmtpResponseTextClassification.RateLimit or
+                SmtpResponseTextClassification.RelayDenied or
+                SmtpResponseTextClassification.VerificationUnavailable)
+            return true;
+        var response = evidence?.SanitizedResponse ?? probe.Response ?? string.Empty;
+        string[] markers =
+            ["source ip", "your ip", "ip address", "blacklist", "spamhaus", "reputation", "anti-abuse", "reverse dns", "forward-confirmed"];
+        return markers.Any(marker => response.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
 }

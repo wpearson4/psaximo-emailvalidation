@@ -125,10 +125,29 @@ public sealed class ProbeSenderHealthTests
         Assert.Equal(1, checker.GetSnapshot().SenderCooldowns);
     }
 
+    [Fact]
+    public async Task UnexplainedPermanentMailFromRejection_RetiresSenderAndSelectsAlternate()
+    {
+        using var checker = Checker(
+            ["probe1@validator.test", "probe2@validator.test"],
+            new CountingDns());
+        var first = await checker.GetSenderAsync(ProbeSenderContext.Empty);
+        var failure = MailFromFailure("550 Requested action not taken", 550);
+
+        var outcome = SmtpSenderFailureClassifier.Classify(failure);
+        await checker.RecordOutcomeAsync(new(first!.Sender, outcome, failure));
+        var next = await checker.GetSenderAsync(
+            new ProbeSenderContext(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { first.Sender }));
+
+        Assert.Equal(ProbeSenderOutcomeKind.SenderInvalid, outcome);
+        Assert.Equal("probe2@validator.test", next!.Sender);
+    }
+
     [Theory]
     [InlineData(SmtpCommand.RcptTo, 550, "550 5.1.1 User unknown")]
     [InlineData(SmtpCommand.MailFrom, 451, "451 4.7.0 Rate limit exceeded")]
     [InlineData(SmtpCommand.MailFrom, 550, "550 5.7.1 Source IP reputation block")]
+    [InlineData(SmtpCommand.MailFrom, 550, "550 5.7.1 Rejected by policy")]
     public void RotationPolicy_DoesNotRotateForRecipientOrSourceWideFailures(
         SmtpCommand command,
         int responseCode,
@@ -137,6 +156,33 @@ public sealed class ProbeSenderHealthTests
         var result = MailFromFailure(response, responseCode, command);
 
         Assert.False(SmtpSenderFailureClassifier.ShouldTryAlternate(result));
+    }
+
+    [Fact]
+    public async Task ProviderRestrictions_DoNotReduceSenderSuccessRateOrTriggerRotation()
+    {
+        using var checker = Checker(
+            ["probe1@validator.test", "probe2@validator.test"],
+            new CountingDns(),
+            maxValidations: 50);
+        ProbeSenderSelection? selected = null;
+        for (var index = 0; index < 10; index++)
+        {
+            selected = await checker.GetSenderAsync(ProbeSenderContext.Empty);
+            var restriction = MailFromFailure(
+                "550 5.7.1 Client host blocked using Spamhaus due to source IP reputation",
+                550);
+            await checker.RecordOutcomeAsync(new(
+                selected!.Sender,
+                SmtpSenderFailureClassifier.Classify(restriction),
+                restriction));
+        }
+
+        var next = await checker.GetSenderAsync(ProbeSenderContext.Empty);
+
+        Assert.Equal("probe1@validator.test", selected!.Sender);
+        Assert.Equal("probe1@validator.test", next!.Sender);
+        Assert.Equal(0, checker.GetSnapshot().ScheduledRotations);
     }
 
     [Fact]
@@ -203,7 +249,9 @@ public sealed class ProbeSenderHealthTests
                     : SmtpResponseCategory.VerificationBlocked;
         var textClassification = category == SmtpResponseCategory.RateLimited
             ? SmtpResponseTextClassification.RateLimit
-            : SmtpResponseTextClassification.PolicyRejection;
+            : response.Contains("policy", StringComparison.OrdinalIgnoreCase)
+                ? SmtpResponseTextClassification.PolicyRejection
+                : SmtpResponseTextClassification.Unknown;
         var evidence = new SmtpEvidence(
             command, responseCode, responseCode < 500 ? "4.3.0" : "5.7.1", category,
             textClassification, 1, MailProvider.GenericSmtp, "mx.test", 1,

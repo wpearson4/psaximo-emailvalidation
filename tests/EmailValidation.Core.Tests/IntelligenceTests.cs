@@ -52,6 +52,17 @@ public sealed class IntelligenceTests
         Assert.Equal("tenant.mail.protection.outlook.com", result.MxHost);
     }
 
+    [Fact]
+    public void ProviderDetection_RecognizesMicrosoftConsumerMxBoundary()
+    {
+        var result = new MailProviderDetector().DetectWithConfidence(
+            [new MxRecord(2, "hotmail-com.olc.protection.outlook.com")]);
+
+        Assert.Equal(MailProvider.Microsoft365, result.Provider);
+        Assert.Equal("olc.protection.outlook.com", result.MatchedSignature);
+        Assert.Equal(GatewayProvider.MicrosoftExchangeOnlineProtection, result.GatewayProvider);
+    }
+
     [Theory]
     [InlineData("mail.protection.outlook.com.evil.example")]
     [InlineData("tenant.protection.outlook.example")]
