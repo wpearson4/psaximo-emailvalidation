@@ -135,10 +135,33 @@ public interface IProbeSenderHealthChecker
 
 public interface IProbeSenderPool
 {
-    Task<ProbeSenderHealth?> SelectAsync(
-        IReadOnlySet<string> excludedSenders,
+    Task InitializeAsync(CancellationToken cancellationToken = default);
+    Task<ProbeSenderSelection?> GetSenderAsync(
+        ProbeSenderContext context,
         CancellationToken cancellationToken = default);
-    void ReportResult(string sender, SmtpProbeResult result);
+    Task RecordOutcomeAsync(ProbeSenderOutcome outcome, CancellationToken cancellationToken = default);
+    ProbeSenderPoolSnapshot GetSnapshot();
+}
+
+public interface IProbeSenderSource
+{
+    Task<IReadOnlyCollection<ProbeSenderCandidate>> GetCandidatesAsync(
+        int limit,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IProbeSenderRotationPolicy
+{
+    ProbeSenderRotationDecision Evaluate(
+        ProbeSenderRuntimeStatistics sender,
+        int validationThreshold,
+        DateTimeOffset now,
+        bool alternateAvailable);
+}
+
+public interface IProbeSenderJitter
+{
+    int Apply(int target, int percent);
 }
 
 public interface ISmtpSessionBudget

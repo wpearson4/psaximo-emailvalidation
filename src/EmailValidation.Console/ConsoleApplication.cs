@@ -10,6 +10,7 @@ internal sealed class ConsoleApplication(
     IEmailValidator validator,
     IDnsMailResolver dnsResolver,
     IOptions<EmailValidationOptions> options,
+    IProbeSenderPool senderPool,
     CsvFileProcessor csvFileProcessor)
 {
     private readonly EmailValidationOptions _options = options.Value;
@@ -19,6 +20,11 @@ internal sealed class ConsoleApplication(
         try
         {
             var parsed = CliOptions.Parse(args);
+            if (parsed.Live)
+            {
+                await senderPool.InitializeAsync(cancellationToken);
+                if (parsed.Verbose) await WriteProbeSenderDiagnosticsAsync(senderPool.GetSnapshot());
+            }
             return parsed.Command switch
             {
                 "validate" => await ValidateCommandAsync(parsed, cancellationToken),
@@ -39,6 +45,22 @@ internal sealed class ConsoleApplication(
             await System.Console.Error.WriteLineAsync($"Error: {exception.Message}");
             return 2;
         }
+    }
+
+    private async Task WriteProbeSenderDiagnosticsAsync(ProbeSenderPoolSnapshot snapshot)
+    {
+        await System.Console.Error.WriteLineAsync(string.Join(Environment.NewLine,
+        [
+            "Probe Sender Pool",
+            $"Source: {snapshot.Source}",
+            $"Index: {snapshot.Index}",
+            $"Query Limit: {snapshot.QueryLimit}",
+            $"Candidates Retrieved: {snapshot.CandidatesRetrieved}",
+            $"Usable: {snapshot.Usable}",
+            $"Active Sender: {snapshot.ActiveSender ?? "None"}",
+            $"Rotation Policy: maximum {_options.ProbeSenderRotation.MaxValidationsPerSender} validations / {_options.ProbeSenderRotation.MaxActiveMinutes} minutes",
+            $"Elasticsearch Query Duration: {snapshot.LastQueryDuration.TotalMilliseconds:0} ms"
+        ]));
     }
 
     private async Task<int> ValidateCommandAsync(CliOptions parsed, CancellationToken cancellationToken)

@@ -1,5 +1,8 @@
+using Elastic.Clients.Elasticsearch;
+using Elastic.Transport;
 using EmailValidation.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Infrastructure;
 
@@ -7,6 +10,7 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddEmailValidation(this IServiceCollection services)
     {
+        services.AddSingleton<IValidateOptions<EmailValidationOptions>, EmailValidationOptionsValidator>();
         services.AddSingleton<IEmailNormalizer, EmailNormalizer>();
         services.AddSingleton<IDnsMailResolver, MxDnsResolver>();
         services.AddSingleton<IDisposableEmailDetector, DisposableEmailDetector>();
@@ -28,6 +32,21 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMailProviderDetector, MailProviderDetector>();
         services.AddSingleton<ISmtpProbeThrottle, DomainSmtpProbeThrottle>();
         services.AddSingleton<ISmtpResponseClassifier, SmtpResponseClassifier>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IProbeSenderJitter, ProbeSenderJitter>();
+        services.AddSingleton<IProbeSenderRotationPolicy, ProbeSenderRotationPolicy>();
+        services.AddSingleton(provider =>
+        {
+            var source = provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.ProbeSenderSource;
+            var settings = new ElasticsearchClientSettings(new Uri(source.Endpoint));
+            if (!string.IsNullOrWhiteSpace(source.ApiKey))
+                settings.Authentication(new ApiKey(source.ApiKey));
+            else if (!string.IsNullOrWhiteSpace(source.Username))
+                settings.Authentication(new BasicAuthentication(source.Username, source.Password));
+            return new ElasticsearchClient(settings);
+        });
+        services.AddSingleton<IElasticsearchSearchClient, ElasticsearchSearchClient>();
+        services.AddSingleton<IProbeSenderSource, ElasticsearchProbeSenderSource>();
         services.AddSingleton<ProbeSenderHealthChecker>();
         services.AddSingleton<IProbeSenderHealthChecker>(provider => provider.GetRequiredService<ProbeSenderHealthChecker>());
         services.AddSingleton<IProbeSenderPool>(provider => provider.GetRequiredService<ProbeSenderHealthChecker>());

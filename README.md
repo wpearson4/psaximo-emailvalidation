@@ -31,22 +31,38 @@ DNS/MX lookup is part of normal validation. SMTP mailbox and catch-all probing r
 dotnet run --project src/EmailValidation.Console -- validate test@example.com --live --verbose
 ```
 
-Before live use, configure one or more legitimate sender identities on domains you control. `ProbeSender` remains supported for single-sender compatibility; new configurations can use `ProbeSenders`:
+Before live use, configure Elasticsearch as the source of authorized sender identities. Individual addresses are not stored in application settings. The Query DSL object is deployment-owned and is sent as the request's `query`; only the configured email field is returned:
 
 ```json
 {
   "EmailValidation": {
-    "Smtp": {
-      "ProbeSenders": [
-        { "Address": "probe1@verify.example-owned-domain.com", "Enabled": true },
-        { "Address": "probe2@verify.example-owned-domain.com", "Enabled": true }
-      ]
+    "ProbeSenderSource": {
+      "Provider": "Elasticsearch",
+      "Endpoint": "https://elasticsearch.example-owned-domain.com:9200",
+      "Index": "authorized-probe-senders",
+      "EmailField": "business_email",
+      "QueryLimit": 500,
+      "RefreshThreshold": 100,
+      "Query": {
+        "bool": {
+          "filter": [
+            { "exists": { "field": "business_email" } }
+          ]
+        }
+      }
+    },
+    "ProbeSenderRotation": {
+      "MaxValidationsPerSender": 50,
+      "MaxActiveMinutes": 15,
+      "MaxSenderAttemptsPerValidation": 2
     }
   }
 }
 ```
 
-The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. Sender DNS health and cooldown state are shared across a batch. Selection is deterministic round-robin. An alternate sender is considered only after an explicit sender-specific `MAIL FROM` rejection; recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and other SMTP work share a strict per-address session budget.
+Store `Username`/`Password` or `ApiKey` through user secrets or environment variables (for example, `EmailValidation__ProbeSenderSource__ApiKey`), never in committed configuration. Anonymous Elasticsearch is also supported when the deployment allows it.
+
+The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. A bounded, process-wide pool is loaded once and shared by interactive and CSV validation. Selection is sticky until the configurable validation/time threshold is reached. Syntax is checked while loading; sender-domain DNS health is checked lazily before first use. Definitive sender-specific rejection retires the sender, and a temporary sender-specific response cools it down. Recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and all other SMTP work share the strict per-address session budget.
 
 ## CSV input
 
@@ -91,7 +107,9 @@ Domain observations include target/random acceptance rates, recipient rejection,
 Defaults are in `src/EmailValidation.Console/appsettings.json` and can be overridden with environment variables. Available controls include:
 
 - DNS timeout/cache lifetime;
-- SMTP enablement, legacy single probe sender or sender pool, sender cooldown/fallback limit, total session budget, connection/command timeout, retry count, and bounded greylisting retry delay;
+- SMTP enablement, sender cooldown/fallback limit, total session budget, connection/command timeout, retry count, and bounded greylisting retry delay;
+- Elasticsearch endpoint/authentication, index, email field, configurable Query DSL, bounded query/refresh limits, and stale refresh interval;
+- sticky sender rotation validation/time thresholds, bounded jitter, and MAIL FROM health threshold;
 - global/per-domain/per-provider concurrency and domain delay;
 - catch-all enablement, probe count (clamped to 1–3), minimum accepted probes, and cache lifetime;
 - configurable role names, disposable/free domains, and safe typo mappings;

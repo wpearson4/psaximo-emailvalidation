@@ -9,6 +9,7 @@ namespace EmailValidation.Infrastructure;
 public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
 {
     private readonly SmtpOptions _options;
+    private readonly ProbeSenderRotationOptions _senderOptions;
     private readonly ILogger<SmtpMailboxProbe> _logger;
     private readonly ISmtpProbeThrottle _throttle;
     private readonly ISmtpResponseClassifier _responseClassifier;
@@ -24,6 +25,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         ISmtpSessionBudget sessionBudget)
     {
         _options = options.Value.Smtp;
+        _senderOptions = options.Value.ProbeSenderRotation;
         _logger = logger;
         _throttle = throttle;
         _responseClassifier = responseClassifier;
@@ -47,11 +49,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             var excludedSenders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var sessionHistory = new List<SmtpSessionEvidence>();
             SmtpProbeResult? lastResult = null;
-            var maximumSenders = Math.Max(1, _options.MaxSenderAttemptsPerValidation);
+            var maximumSenders = Math.Max(1, _senderOptions.MaxSenderAttemptsPerValidation);
             for (var senderAttempt = 0; senderAttempt < maximumSenders; senderAttempt++)
             {
-                var selected = await _senderPool.SelectAsync(excludedSenders, cancellationToken);
-                if (selected?.Sender is null) break;
+                var selected = await _senderPool.GetSenderAsync(new ProbeSenderContext(excludedSenders), cancellationToken);
+                if (selected is null) break;
                 var transientAttempt = 0;
                 do
                 {
@@ -72,7 +74,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                         Attempts = sessions,
                         SessionHistory = sessionHistory.ToArray()
                     };
-                    if (!IsTransient(lastResult.Status) || transientAttempt > Math.Max(0, _options.RetryCount)) break;
+                    if (SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
+                        !IsTransient(lastResult.Status) || transientAttempt > Math.Max(0, _options.RetryCount)) break;
 
                     var backoff = lastResult.Evidence?.Category == SmtpResponseCategory.Greylisted
                         ? TimeSpan.FromMilliseconds(Math.Clamp(_options.GreylistingRetryDelayMilliseconds, 250, 30_000))
@@ -81,8 +84,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                     await Task.Delay(backoff, cancellationToken);
                 } while (true);
 
-                _senderPool.ReportResult(selected.Sender, lastResult);
-                if (!SmtpSenderRotationPolicy.IsSenderSpecificFailure(lastResult)) return lastResult;
+                var senderOutcome = SmtpSenderFailureClassifier.Classify(lastResult);
+                await _senderPool.RecordOutcomeAsync(
+                    new ProbeSenderOutcome(selected.Sender, senderOutcome, lastResult),
+                    cancellationToken);
+                if (!SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult)) return lastResult;
 
                 excludedSenders.Add(selected.Sender);
                 _logger.LogWarning("Probe sender was rejected at MAIL FROM; trying one healthy alternate sender");

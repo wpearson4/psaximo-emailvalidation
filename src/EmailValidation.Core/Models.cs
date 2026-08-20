@@ -3,6 +3,8 @@ namespace EmailValidation.Core;
 public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid }
 public enum ConfidenceType { Heuristic, CalibratedProbability }
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
+public enum ProbeSenderCandidateState { Candidate, Healthy, Active, CoolingDown, Invalid, Degraded, Retired }
+public enum ProbeSenderOutcomeKind { MailFromAccepted, RecipientOutcome, SenderInvalid, SenderTemporaryFailure, ProviderRestriction, Inconclusive }
 public enum ReasonCode
 {
     InvalidSyntax, EmptyInput, MissingDomain, MissingLocalPart, DomainNotFound,
@@ -103,6 +105,57 @@ public sealed record ProbeSenderHealth(
     public bool IsOperational => Status == ProbeSenderHealthStatus.Valid;
     public static ProbeSenderHealth NotChecked { get; } =
         new(ProbeSenderHealthStatus.NotChecked, null, null, "Live SMTP validation was not requested.");
+}
+
+public sealed record ProbeSenderCandidate(string Address, DateTimeOffset LoadedAt);
+
+public sealed record ProbeSenderContext(IReadOnlySet<string> ExcludedSenders)
+{
+    public static ProbeSenderContext Empty { get; } = new(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+}
+
+public sealed record ProbeSenderSelection(string Sender, ProbeSenderCandidateState State);
+
+public sealed record ProbeSenderOutcome(
+    string Sender,
+    ProbeSenderOutcomeKind Kind,
+    SmtpProbeResult Result);
+
+public sealed record ProbeSenderRuntimeStatistics(
+    string Address,
+    ProbeSenderCandidateState State,
+    DateTimeOffset LoadedAt,
+    DateTimeOffset? FirstUsedAt,
+    DateTimeOffset? LastUsedAt,
+    int ValidationCount,
+    int ActiveValidationCount,
+    int ActiveCompletedCount,
+    int MailFromSuccessCount,
+    int SenderFailureCount,
+    int ConsecutiveSenderFailures,
+    DateTimeOffset? CooldownUntil,
+    DateTimeOffset? ActiveSince);
+
+public sealed record ProbeSenderPoolSnapshot(
+    string Source,
+    string Index,
+    int QueryLimit,
+    int CandidatesRetrieved,
+    int Usable,
+    int InvalidCandidates,
+    string? ActiveSender,
+    long PoolRefreshes,
+    long SenderRotations,
+    long ScheduledRotations,
+    long FailureTriggeredRotations,
+    long SenderCooldowns,
+    long SenderRetirements,
+    long PoolExhaustions,
+    TimeSpan LastQueryDuration);
+
+public sealed record ProbeSenderRotationDecision(bool ShouldRotate, string Reason)
+{
+    public static ProbeSenderRotationDecision Keep { get; } = new(false, string.Empty);
 }
 
 public sealed record CatchAllDetectionResult(

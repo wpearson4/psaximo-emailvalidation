@@ -276,7 +276,7 @@ public sealed class EmailValidatorTests
 
     private static EmailValidationOptions LiveSettings() => new()
     {
-        Smtp = new SmtpOptions { Enabled = true, ProbeSender = "probe@validator.example", MaxMxAttempts = 3 },
+        Smtp = new SmtpOptions { Enabled = true, MaxMxAttempts = 3 },
         CatchAll = new CatchAllOptions { Enabled = true, ProbeCount = 1, MaxProbeCount = 1 }
     };
 

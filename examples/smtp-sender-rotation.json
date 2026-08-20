@@ -1,19 +1,26 @@
 {
   "EmailValidation": {
-    "Smtp": {
-      "ProbeSenders": [
-        {
-          "Address": "probe1@verify.example-owned-domain.com",
-          "Enabled": true
-        },
-        {
-          "Address": "probe2@verify.example-owned-domain.com",
-          "Enabled": true
+    "ProbeSenderSource": {
+      "Provider": "Elasticsearch",
+      "Endpoint": "https://elasticsearch.example-owned-domain.com:9200",
+      "Index": "authorized-probe-senders",
+      "EmailField": "business_email",
+      "QueryLimit": 500,
+      "RefreshThreshold": 100,
+      "Query": {
+        "bool": {
+          "filter": [
+            { "exists": { "field": "business_email" } }
+          ]
         }
-      ],
+      }
+    },
+    "ProbeSenderRotation": {
+      "MaxValidationsPerSender": 50,
+      "MaxActiveMinutes": 15,
       "MaxSenderAttemptsPerValidation": 2,
-      "MaxSmtpSessionsPerAddress": 8,
-      "SenderCooldownSeconds": 300
+      "SenderCooldownSeconds": 300,
+      "JitterPercent": 20
     }
   }
 }

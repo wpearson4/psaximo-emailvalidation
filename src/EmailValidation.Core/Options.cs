@@ -3,6 +3,8 @@ namespace EmailValidation.Core;
 public sealed class EmailValidationOptions
 {
     public SmtpOptions Smtp { get; set; } = new();
+    public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
+    public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
     public CatchAllOptions CatchAll { get; set; } = new();
     public DnsOptions Dns { get; set; } = new();
     public IntelligenceOptions Intelligence { get; set; } = new();
@@ -11,9 +13,6 @@ public sealed class EmailValidationOptions
 public sealed class SmtpOptions
 {
     public bool Enabled { get; set; }
-    /// <summary>Legacy single-sender setting. Used when ProbeSenders is empty.</summary>
-    public string ProbeSender { get; set; } = string.Empty;
-    public List<ProbeSenderOptions> ProbeSenders { get; set; } = [];
     public int ConnectionTimeoutSeconds { get; set; } = 10;
     public int CommandTimeoutSeconds { get; set; } = 10;
     public int RetryCount { get; set; } = 1;
@@ -23,16 +22,38 @@ public sealed class SmtpOptions
     public int DelayBetweenDomainRequestsMilliseconds { get; set; } = 500;
     public int GreylistingRetryDelayMilliseconds { get; set; } = 2000;
     public int MaxMxAttempts { get; set; } = 3;
-    public int MaxSenderAttemptsPerValidation { get; set; } = 2;
     public int MaxSmtpSessionsPerAddress { get; set; } = 8;
-    public int SenderCooldownSeconds { get; set; } = 300;
     public int ProbeSenderHealthCacheMinutes { get; set; } = 60;
 }
 
-public sealed class ProbeSenderOptions
+public sealed class ProbeSenderSourceOptions
 {
-    public string Address { get; set; } = string.Empty;
-    public bool Enabled { get; set; } = true;
+    public string Provider { get; set; } = "Elasticsearch";
+    public string Endpoint { get; set; } = "http://localhost:9200";
+    public string Index { get; set; } = string.Empty;
+    public string EmailField { get; set; } = "business_email";
+    public int QueryLimit { get; set; } = 500;
+    public int RefreshThreshold { get; set; } = 100;
+    public int RefreshIntervalSeconds { get; set; } = 300;
+    public int StaleAfterMinutes { get; set; } = 30;
+    public int RecentlyUsedLimit { get; set; } = 1_000;
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>Populated from the Query configuration object during application startup.</summary>
+    public string QueryJson { get; set; } = string.Empty;
+}
+
+public sealed class ProbeSenderRotationOptions
+{
+    public int MaxValidationsPerSender { get; set; } = 50;
+    public int MaxActiveMinutes { get; set; } = 15;
+    public int MaxSenderAttemptsPerValidation { get; set; } = 2;
+    public int SenderCooldownSeconds { get; set; } = 300;
+    public int JitterPercent { get; set; } = 20;
+    public int MinimumSuccessRateSampleSize { get; set; } = 10;
+    public double MinimumMailFromSuccessRate { get; set; } = 0.8;
 }
 
 public sealed class CatchAllOptions
