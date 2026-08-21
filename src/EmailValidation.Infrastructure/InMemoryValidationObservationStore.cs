@@ -99,14 +99,45 @@ public sealed class HistoricalSignalAggregator : IHistoricalSignalAggregator
         : Math.Round((double)numerator / denominator, 4);
 }
 
-public sealed class InMemoryDeliveryOutcomeRecorder : IDeliveryOutcomeRecorder
+public sealed class InMemoryDeliveryOutcomeRecorder : IDeliveryOutcomeStore
 {
     private readonly ConcurrentQueue<DeliveryOutcome> _outcomes = new();
+    private readonly ConcurrentQueue<DeliveryOutcomeRecord> _records = new();
 
     public Task RecordOutcomeAsync(DeliveryOutcome outcome, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         _outcomes.Enqueue(outcome);
         return Task.CompletedTask;
+    }
+
+    public Task RecordAsync(DeliveryOutcomeRecord outcome, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _records.Enqueue(outcome with
+        {
+            Prediction = outcome.Prediction with { ReasonCodes = outcome.Prediction.ReasonCodes.ToArray() }
+        });
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<DeliveryOutcomeRecord>> QueryAsync(
+        CalibrationQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<DeliveryOutcomeRecord> records = _records.Where(item =>
+            (!query.Provider.HasValue || item.Prediction.Provider == query.Provider) &&
+            (!query.Status.HasValue || item.Prediction.PredictedStatus == query.Status) &&
+            (!query.MinimumConfidence.HasValue || item.Prediction.PredictedConfidence >= query.MinimumConfidence) &&
+            (!query.MaximumConfidence.HasValue || item.Prediction.PredictedConfidence <= query.MaximumConfidence) &&
+            (!query.CatchAllStatus.HasValue || item.Prediction.CatchAllStatus == query.CatchAllStatus) &&
+            (!query.VerificationReliability.HasValue || item.Prediction.VerificationReliability == query.VerificationReliability) &&
+            (!query.ReasonCode.HasValue || item.Prediction.ReasonCodes.Contains(query.ReasonCode.Value)) &&
+            (query.DomainType is null || string.Equals(item.Prediction.DomainType, query.DomainType, StringComparison.OrdinalIgnoreCase)) &&
+            (query.ClassificationPolicyVersion is null || item.Prediction.Policy.ClassificationPolicyVersion == query.ClassificationPolicyVersion) &&
+            (query.ProviderStrategyVersion is null || item.Prediction.Policy.ProviderStrategyVersion == query.ProviderStrategyVersion) &&
+            (!query.MaximumEvidenceAgeHours.HasValue || item.Prediction.EvidenceAgeHours <= query.MaximumEvidenceAgeHours)).ToArray();
+        return Task.FromResult(records);
     }
 }

@@ -11,6 +11,9 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var source = options.ProbeSenderSource;
         var rotation = options.ProbeSenderRotation;
         var scheduling = options.Scheduling;
+        var persistence = options.Persistence;
+        var reuse = options.ResultReuse;
+        var policy = options.Policy;
         var failures = new List<string>();
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
             failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
@@ -69,6 +72,20 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 failures.Add("EmailValidation:Scheduling:ProviderPolicies keys cannot be empty.");
             ValidateProviderPolicy($"EmailValidation:Scheduling:ProviderPolicies:{entry.Key}", entry.Value, failures);
         }
+        if (persistence.Enabled && string.IsNullOrWhiteSpace(persistence.StoragePath))
+            failures.Add("EmailValidation:Persistence:StoragePath is required when persistence is enabled.");
+        if (persistence.MaximumObservationsPerDomain <= 0)
+            failures.Add("EmailValidation:Persistence:MaximumObservationsPerDomain must be greater than zero.");
+        if (reuse.StrongPositiveMinutes < 0 || reuse.StrongNegativeMinutes < 0 || reuse.RiskyMinutes < 0)
+            failures.Add("EmailValidation:ResultReuse freshness windows cannot be negative.");
+        if (new[]
+            {
+                policy.ValidationEngineVersion,
+                policy.ClassificationPolicyVersion,
+                policy.ConfidenceModelVersion,
+                policy.ProviderStrategyVersion
+            }.Any(string.IsNullOrWhiteSpace))
+            failures.Add("EmailValidation:Policy versions are required.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 

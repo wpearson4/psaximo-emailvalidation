@@ -345,12 +345,16 @@ public sealed record EmailValidationResult
     public IReadOnlyList<ConfidenceContribution> ConfidenceEvidence { get; init; } = [];
     public DetailedStatus DetailedStatus { get; init; } = DetailedStatus.Unknown;
     public IReadOnlyList<DetailedStatus> DetailedStatuses { get; init; } = [];
+    public DetailedStatus SubStatus { get; init; } = DetailedStatus.Unknown;
+    public IReadOnlyList<DetailedStatus> SubStatuses { get; init; } = [];
     public EmailAddressIntelligence? AddressIntelligence { get; init; }
     public ValidationRisk? Risk { get; init; }
+    public EmailRiskResult? MailingRisk { get; init; }
     public SendRecommendation? Recommendation { get; init; }
     public IReadOnlyList<EvidenceProvenance> Evidence { get; init; } = [];
     public long DurationMs { get; init; }
     public ValidationDiagnostics? Diagnostics { get; init; }
+    public ValidationResultMetadata? Metadata { get; init; }
 }
 
 public sealed record MailboxValidationDetails(

@@ -5,6 +5,12 @@ public interface IEmailValidator
     Task<EmailValidationResult> ValidateAsync(string email, EmailValidationRequest request, CancellationToken cancellationToken = default);
 }
 
+/// <summary>The live validation pipeline before persistence/reuse orchestration.</summary>
+public interface IEmailValidationExecutor
+{
+    Task<EmailValidationResult> ValidateAsync(string email, EmailValidationRequest request, CancellationToken cancellationToken = default);
+}
+
 public interface IEmailNormalizer
 {
     NormalizationResult Normalize(string input);
@@ -262,6 +268,20 @@ public interface IDomainValidationCache
     bool TryGet(string domain, out DomainIntelligence? data);
     void Store(DomainIntelligence data, TimeSpan lifetime);
     int Count { get; }
+
+    Task<DomainIntelligence?> GetAsync(string domain, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        TryGet(domain, out var data);
+        return Task.FromResult(data);
+    }
+
+    Task StoreAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Store(data, lifetime);
+        return Task.CompletedTask;
+    }
 }
 
 public interface IEmailClassificationEngine
@@ -299,4 +319,73 @@ public interface IHistoricalSignalAggregator
 public interface IDeliveryOutcomeRecorder
 {
     Task RecordOutcomeAsync(DeliveryOutcome outcome, CancellationToken cancellationToken = default);
+
+    Task RecordAsync(DeliveryOutcomeRecord outcome, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This recorder does not support prediction snapshots.");
+}
+
+public interface IDeliveryOutcomeStore : IDeliveryOutcomeRecorder
+{
+    Task<IReadOnlyList<DeliveryOutcomeRecord>> QueryAsync(
+        CalibrationQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationIntelligenceStore
+{
+    Task<DomainIntelligence?> GetDomainAsync(string domain, CancellationToken cancellationToken = default);
+    Task<MailboxIntelligence?> GetMailboxAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+    Task SaveDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default);
+    Task SaveMailboxAsync(MailboxIntelligence intelligence, CancellationToken cancellationToken = default);
+}
+
+public interface IValidationSingleFlight
+{
+    Task<EmailValidationResult> ExecuteAsync(
+        string key,
+        Func<CancellationToken, Task<EmailValidationResult>> factory,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationResultReusePolicy
+{
+    bool CanReuse(
+        MailboxIntelligence intelligence,
+        DomainIntelligence? currentDomain,
+        EmailValidationRequest request,
+        ValidationPolicyVersions currentPolicy,
+        DateTimeOffset now);
+}
+
+public interface IConfidenceCalibrationService
+{
+    Task<CalibrationResult> EvaluateAsync(
+        CalibrationQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IRiskDataSource
+{
+    Task<RiskDataResult> LookupAsync(
+        EmailRiskContext context,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IEmailRiskIntelligence
+{
+    Task<EmailRiskResult> EvaluateAsync(
+        EmailRiskContext context,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IGlobalSuppressionStore
+{
+    Task<SuppressionEntry?> GetAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+    Task AddAsync(SuppressionEntry entry, CancellationToken cancellationToken = default);
+}
+
+public interface IValidationQualityMetrics
+{
+    void Record(EmailValidationResult result);
+    ValidationQualitySnapshot GetSnapshot();
 }

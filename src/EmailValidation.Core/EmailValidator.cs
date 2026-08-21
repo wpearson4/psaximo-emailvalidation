@@ -23,7 +23,7 @@ public sealed class EmailValidator(
     IResultEvaluator resultEvaluator,
     ISmtpSessionBudget smtpSessionBudget,
     IOptions<EmailValidationOptions> options,
-    ILogger<EmailValidator> logger) : IEmailValidator
+    ILogger<EmailValidator> logger) : IEmailValidator, IEmailValidationExecutor
 {
     private readonly EmailValidationOptions _options = options.Value;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _domainLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -34,13 +34,15 @@ public sealed class EmailValidator(
         CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
+        var validatedAt = DateTimeOffset.UtcNow;
         using var smtpBudget = smtpSessionBudget.Begin(_options.Smtp.MaxSmtpSessionsPerAddress);
         logger.LogInformation("Validation started");
         var normalized = normalizer.Normalize(email);
         if (!normalized.IsValid)
         {
             var reason = normalized.FailureReason ?? ReasonCode.InvalidSyntax;
-            var invalidResult = InvalidSyntaxResult(email, reason, stopwatch.ElapsedMilliseconds);
+            var invalidResult = InvalidSyntaxResult(
+                email, reason, stopwatch.ElapsedMilliseconds, validatedAt, _options.Policy.ToVersions());
             logger.LogInformation("Validation ended with {Status} in {DurationMs} ms", invalidResult.Status, invalidResult.DurationMs);
             return invalidResult;
         }
@@ -215,7 +217,17 @@ public sealed class EmailValidator(
                 IntelligenceLookupDurationMs = domainIntelligenceDurationMs + addressIntelligenceDurationMs,
                 MailInfrastructureDurationMs = domainData.MailInfrastructure.DurationMs,
                 Detail = domainData.Dns.Error ?? mailbox.Response
-            } : null
+            } : null,
+            Metadata = new ValidationResultMetadata(
+                _options.Policy.ToVersions(),
+                validatedAt,
+                MxTopologyFingerprint: effectiveProvider.TopologyFingerprint)
+        };
+        var subStatus = ValidationSubStatusMapper.Map(result);
+        result = result with
+        {
+            SubStatus = subStatus,
+            SubStatuses = result.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
         await RecordObservationsAsync(domainData, mailbox, providerValidation, selectedMx, catchAllProbes, cancellationToken);
         logger.LogInformation(
@@ -309,7 +321,8 @@ public sealed class EmailValidator(
         bool smtpEnabled,
         CancellationToken cancellationToken)
     {
-        if (cache.TryGet(domain, out var cached) && cached is not null &&
+        var cached = await cache.GetAsync(domain, cancellationToken);
+        if (cached is not null &&
             (!smtpEnabled || cached.CatchAll.Status != CatchAllStatus.NotAttempted || !_options.CatchAll.Enabled))
             return (cached, true, 0, 0);
 
@@ -317,7 +330,8 @@ public sealed class EmailValidator(
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var wasCached = cache.TryGet(domain, out cached) && cached is not null;
+            cached = await cache.GetAsync(domain, cancellationToken);
+            var wasCached = cached is not null;
             var data = cached;
             var intelligenceDurationMs = 0L;
             if (data is null)
@@ -339,7 +353,8 @@ public sealed class EmailValidator(
                     MailInfrastructure = supplemental.MailInfrastructure,
                     Provider = providerDetector.DetectWithConfidence(dns.MxRecords),
                     CatchAll = new CatchAllDetectionResult(CatchAllStatus.NotAttempted, 0, 0, 0, 0),
-                    ObservedAt = DateTimeOffset.UtcNow
+                    ObservedAt = DateTimeOffset.UtcNow,
+                    StrategyVersion = _options.Policy.ProviderStrategyVersion
                 };
                 intelligenceDurationMs = supplemental.LookupDurationMs;
             }
@@ -361,7 +376,8 @@ public sealed class EmailValidator(
             var lifetime = TimeSpan.FromMinutes(data.CatchAll.Status == CatchAllStatus.NotAttempted
                 ? _options.Dns.CacheMinutes
                 : Math.Min(_options.Dns.CacheMinutes, _options.CatchAll.CacheMinutes));
-            cache.Store(data, lifetime);
+            data = data with { EvidenceExpiresAt = DateTimeOffset.UtcNow.Add(lifetime) };
+            await cache.StoreAsync(data, lifetime, cancellationToken);
             return (data, wasCached, probes, intelligenceDurationMs);
         }
         finally
@@ -434,24 +450,32 @@ public sealed class EmailValidator(
         _ => SmtpMailboxStatus.Unknown
     };
 
-    private static EmailValidationResult InvalidSyntaxResult(string email, ReasonCode reason, long durationMs) => new()
-    {
-        Email = email,
-        Status = EmailValidationStatus.Invalid,
-        Confidence = 0.99,
-        ConfidenceType = ConfidenceType.Heuristic,
-        ConfidenceReason = "High confidence because the address failed deterministic syntax validation.",
-        Checks = new EmailValidationChecks
+    private static EmailValidationResult InvalidSyntaxResult(
+        string email,
+        ReasonCode reason,
+        long durationMs,
+        DateTimeOffset validatedAt,
+        ValidationPolicyVersions policy) => new()
         {
-            Mailbox = SmtpMailboxStatus.NotAttempted,
-            CatchAll = CatchAllStatus.NotAttempted
-        },
-        ReasonCodes = [reason],
-        DetailedStatus = DetailedStatus.InvalidSyntax,
-        DetailedStatuses = [DetailedStatus.InvalidSyntax],
-        Risk = new ValidationRisk(BounceRisk.High, false, SpamTrapRiskStatus.Unknown, AbuseRiskStatus.Unknown),
-        Recommendation = new SendRecommendation(false, RecommendationRisk.High, ["TechnicallyInvalid"]),
-        Evidence = [new EvidenceProvenance("Syntax", EvidenceSource.LocalIntelligence, 0.99, "The address failed syntax validation.")],
-        DurationMs = durationMs
-    };
+            Email = email,
+            Status = EmailValidationStatus.Invalid,
+            Confidence = 0.99,
+            ConfidenceType = ConfidenceType.Heuristic,
+            ConfidenceReason = "High confidence because the address failed deterministic syntax validation.",
+            Checks = new EmailValidationChecks
+            {
+                Mailbox = SmtpMailboxStatus.NotAttempted,
+                CatchAll = CatchAllStatus.NotAttempted
+            },
+            ReasonCodes = [reason],
+            DetailedStatus = DetailedStatus.InvalidSyntax,
+            DetailedStatuses = [DetailedStatus.InvalidSyntax],
+            SubStatus = DetailedStatus.InvalidSyntax,
+            SubStatuses = [DetailedStatus.InvalidSyntax],
+            Risk = new ValidationRisk(BounceRisk.High, false, SpamTrapRiskStatus.Unknown, AbuseRiskStatus.Unknown),
+            Recommendation = new SendRecommendation(false, RecommendationRisk.High, ["TechnicallyInvalid"]),
+            Evidence = [new EvidenceProvenance("Syntax", EvidenceSource.LocalIntelligence, 0.99, "The address failed syntax validation.")],
+            DurationMs = durationMs,
+            Metadata = new ValidationResultMetadata(policy, validatedAt)
+        };
 }

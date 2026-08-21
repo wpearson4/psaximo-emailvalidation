@@ -9,6 +9,38 @@ public sealed class EmailValidationOptions
     public CatchAllOptions CatchAll { get; set; } = new();
     public DnsOptions Dns { get; set; } = new();
     public IntelligenceOptions Intelligence { get; set; } = new();
+    public PersistenceOptions Persistence { get; set; } = new();
+    public ResultReuseOptions ResultReuse { get; set; } = new();
+    public ValidationPolicyOptions Policy { get; set; } = new();
+}
+
+public sealed class PersistenceOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string StoragePath { get; set; } = "data/email-validation-intelligence";
+    public int MaximumObservationsPerDomain { get; set; } = 200;
+}
+
+public sealed class ResultReuseOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int StrongPositiveMinutes { get; set; } = 60;
+    public int StrongNegativeMinutes { get; set; } = 240;
+    public int RiskyMinutes { get; set; } = 30;
+}
+
+public sealed class ValidationPolicyOptions
+{
+    public string ValidationEngineVersion { get; set; } = "1.0.0";
+    public string ClassificationPolicyVersion { get; set; } = "2.1.0";
+    public string ConfidenceModelVersion { get; set; } = "3.0.0";
+    public string ProviderStrategyVersion { get; set; } = "1.0.0";
+
+    public ValidationPolicyVersions ToVersions() => new(
+        ValidationEngineVersion,
+        ClassificationPolicyVersion,
+        ConfidenceModelVersion,
+        ProviderStrategyVersion);
 }
 
 public sealed class SchedulingOptions
@@ -121,6 +153,8 @@ public sealed class IntelligenceOptions
         ["gmal.com"] = "gmail.com",
         ["gmial.com"] = "gmail.com",
         ["hotmial.com"] = "hotmail.com",
+        ["hotnail.com"] = "hotmail.com",
+        ["yaho.com"] = "yahoo.com",
         ["outlok.com"] = "outlook.com"
     };
     public string[] ToxicDomains { get; set; } = [];

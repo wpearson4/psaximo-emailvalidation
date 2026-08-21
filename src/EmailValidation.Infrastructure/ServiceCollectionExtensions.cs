@@ -57,7 +57,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISmtpSessionBudget, SmtpSessionBudget>();
         services.AddSingleton<ISmtpMailboxProbe, SmtpMailboxProbe>();
         services.AddSingleton<ICatchAllDetector, CatchAllDetector>();
-        services.AddSingleton<IDomainValidationCache, InMemoryDomainValidationCache>();
+        services.AddSingleton<JsonValidationIntelligenceStore>();
+        services.AddSingleton<IValidationIntelligenceStore>(provider =>
+            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IValidationObservationStore>(provider =>
+            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IDeliveryOutcomeStore>(provider =>
+            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IDeliveryOutcomeRecorder>(provider =>
+            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IGlobalSuppressionStore>(provider =>
+            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IDomainValidationCache, PersistentDomainValidationCache>();
         services.AddSingleton<IEmailClassificationEngine, EmailClassificationEngine>();
         services.AddSingleton<IResultEvaluator, ResultEvaluator>();
         services.AddSingleton<IMailProviderStrategy, Microsoft365Strategy>();
@@ -66,10 +77,17 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMailProviderStrategy, MimecastStrategy>();
         services.AddSingleton<IMailProviderStrategy, GenericSmtpStrategy>();
         services.AddSingleton<IMailProviderStrategyResolver, MailProviderStrategyResolver>();
-        services.AddSingleton<IValidationObservationStore, InMemoryValidationObservationStore>();
         services.AddSingleton<IHistoricalSignalAggregator, HistoricalSignalAggregator>();
-        services.AddSingleton<IDeliveryOutcomeRecorder, InMemoryDeliveryOutcomeRecorder>();
-        services.AddSingleton<IEmailValidator, EmailValidator>();
+        services.AddSingleton<IValidationSingleFlight, ValidationSingleFlight>();
+        services.AddSingleton<IValidationResultReusePolicy, ValidationResultReusePolicy>();
+        services.AddSingleton<IConfidenceCalibrationService, ConfidenceCalibrationService>();
+        services.AddSingleton<IRiskDataSource, ExistingIntelligenceRiskDataSource>();
+        services.AddSingleton<IRiskDataSource, PersistentSuppressionRiskDataSource>();
+        services.AddSingleton<IEmailRiskIntelligence, EmailRiskIntelligence>();
+        services.AddSingleton<IValidationQualityMetrics, ValidationQualityMetrics>();
+        services.AddSingleton<EmailValidator>();
+        services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
+        services.AddSingleton<IEmailValidator, IntelligenceEmailValidator>();
         services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;
     }

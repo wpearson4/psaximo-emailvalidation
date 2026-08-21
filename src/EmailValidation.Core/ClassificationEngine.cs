@@ -78,8 +78,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (domain.ToxicDomain.Status is ToxicDomainStatus.KnownToxic or ToxicDomainStatus.LikelyToxic)
         {
             reasons.Add(ReasonCode.ToxicDomain);
-            Add(contributions, "Toxic-domain intelligence", -0.20,
-                "The domain matches configured reputation intelligence.");
         }
         if (evidence.RoleAccount)
         {
@@ -99,7 +97,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
             reasons.Add(address.SpamTrapRisk.Status == SpamTrapRiskStatus.KnownSpamTrap
                 ? ReasonCode.KnownSpamTrap
                 : ReasonCode.PossibleSpamTrap);
-            Add(contributions, "Spam-trap risk", -0.20, "Address intelligence indicates trap risk.");
         }
         if (address?.AbuseRisk.Status == AbuseRiskStatus.KnownRisk) reasons.Add(ReasonCode.AbuseRisk);
         if (address?.Suppression.Status == SuppressionStatus.Suppressed) reasons.Add(ReasonCode.SuppressionMatch);
@@ -189,11 +186,10 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
 
         var historicalCatchAll = evidence.History.LikelyCatchAllCount >= 2 ||
             (domain.Provider.Provider != MailProvider.GoogleWorkspace && evidence.History.RandomRecipientAcceptedCount >= 2);
-        var intelligenceRisk = domain.ToxicDomain.Status is ToxicDomainStatus.KnownToxic or ToxicDomainStatus.LikelyToxic ||
-            address?.Typo.TypoDetected == true ||
-            address?.SpamTrapRisk.Status is SpamTrapRiskStatus.PossibleSpamTrap or SpamTrapRiskStatus.LikelySpamTrap or SpamTrapRiskStatus.KnownSpamTrap ||
-            address?.AbuseRisk.Status == AbuseRiskStatus.KnownRisk ||
-            address?.Suppression.Status == SuppressionStatus.Suppressed;
+        // Mailing reputation and suppression answer whether an address should be mailed,
+        // not whether its mailbox appears technically deliverable. Keep those signals in
+        // the independent risk result. A domain typo remains relevant to deliverability.
+        var intelligenceRisk = address?.Typo.TypoDetected == true;
         var risky = domain.Disposable || evidence.RoleAccount || intelligenceRisk ||
             catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll;
         if (risky)

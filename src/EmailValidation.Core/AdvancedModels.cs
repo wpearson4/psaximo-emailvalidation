@@ -28,7 +28,17 @@ public enum DetailedStatus
     Timeout,
     TypoDetected,
     Alias,
-    AlternateAddress
+    AlternateAddress,
+    RecipientRejected,
+    ProviderVerificationBlocked,
+    SenderIdentityRejected,
+    PolicyBlocked,
+    LikelyCatchAll,
+    DisposableAddress,
+    RoleAccount,
+    NullMx,
+    NoMailExchanger,
+    KnownSuppression
 }
 
 public enum EvidenceSource

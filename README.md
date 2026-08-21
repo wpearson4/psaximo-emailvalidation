@@ -151,7 +151,7 @@ The source file is replaced only after all rows have been validated and a same-d
 
 ## Classification and confidence
 
-Classification is centralized in `EmailClassificationEngine`. Definitive syntax, NXDOMAIN, missing or definitively unroutable infrastructure, and explicit recipient rejection evidence can produce `Invalid`. Timeouts, temporary responses, connection failures, and blocked verification produce `Unknown`. Disposable, role, likely catch-all, configured reputation, and high-confidence typo signals produce `Risky` unless a definitive invalid condition takes precedence. Mailbox-full evidence is preserved separately and produces `Risky`, not a false mailbox-not-found result.
+Classification is centralized in `EmailClassificationEngine`. Definitive syntax, NXDOMAIN, missing or definitively unroutable infrastructure, and explicit recipient rejection evidence can produce `Invalid`. Timeouts, temporary responses, connection failures, and blocked verification produce `Unknown`. Disposable, role, likely catch-all, and high-confidence typo signals can produce `Risky` unless a definitive invalid condition takes precedence. Mailbox-full evidence is preserved separately and produces `Risky`, not a false mailbox-not-found result. Suppression, abuse, toxic-domain, and trap intelligence do not rewrite technical deliverability; they are exposed by the independent mailing-risk result.
 
 The top-level classification is accompanied by additive typed detailed statuses, evidence provenance, `BounceRisk`, and a separate send recommendation. The recommendation is campaign policy rather than a rewrite of technical validity: for example, an accepted but configured suppression match can remain technically deliverable while `recommendation.send` is `false`.
 
@@ -161,7 +161,13 @@ Catch-all inference is deliberately conservative. One accepted randomized recipi
 
 Provider detection returns both a provider and confidence from centralized MX signatures. Microsoft consumer and Microsoft 365 infrastructure have separate pacing policies; Google Workspace, Yahoo, Apple/iCloud, Comcast, Proton, Zoho, Fastmail, Proofpoint, and Mimecast are also recognized. AOL, AT&T-hosted, and Verizon legacy MX routes normalize to the shared Yahoo infrastructure policy so they cannot probe the same provider concurrently under different labels. The existing provider strategies remain responsible for interpreting SMTP evidence. Provider policies add process-wide concurrency, minimum intervals, bounded retries, and policy-block cooldowns without replacing domain pacing. After a policy cooldown, one half-open probe decides whether the provider resumes or returns to cooldown. Google `421`/`451` responses with `4.7.x` enhanced codes are treated as rate-limited, inconclusive evidence rather than mailbox rejection. Gateway acceptance is recorded separately from strong mailbox evidence. SMTP results include a complete command-stage session, basic and enhanced status codes, normalized category, text classification, failed stage, MX, provider, attempt, timing, banner/EHLO/TLS diagnostics, and sanitized response excerpts. A recipient rejection is definitive only when session evidence proves that `MAIL FROM` succeeded and `RCPT TO` returned a recipient-specific permanent rejection.
 
-An in-memory observation store records non-sensitive domain/provider behavior such as catch-all outcomes, gateway acceptance, verification blocking, rate limiting, greylisting probability, and temporary failures. The abstraction is replaceable by Redis, SQL, or telemetry-backed history later. It never stores the target address as domain-level history.
+The default local store persists non-sensitive domain/provider observations, structured domain intelligence, mailbox prediction history, delivery-outcome snapshots, and suppression records beneath the configured `Persistence:StoragePath`. Domain and mailbox records are physically separate and keyed with SHA-256 filenames. Persisted mailbox results omit SMTP sessions, sanitized server responses, and diagnostic server text. `IValidationIntelligenceStore`, `IValidationObservationStore`, `IDeliveryOutcomeStore`, and `IGlobalSuppressionStore` keep the engine replaceable by SQL or another durable host implementation.
+
+Fresh conclusive mailbox results are reused only when their classification, confidence, engine, and provider-strategy versions match current policy, their evidence is inside the configured status-specific freshness window, their SMTP strength satisfies the new request, and the latest known MX topology has not changed. Concurrent requests for the same normalized address and request mode use a process-local single-flight operation, so one live validation serves all callers. Distributed locking is deliberately outside the console phase.
+
+Authorized downstream systems can record `DeliveryOutcomeRecord` values containing an immutable `ValidationPredictionSnapshot` and an actual `Delivered`, `HardBounce`, `SoftBounce`, `Suppressed`, or `Unknown` outcome. `IConfidenceCalibrationService` reports cohort counts, delivery/bounce rates, false-valid/false-invalid rates, precision, recall, Brier score, calibration error, and confidence bands. It explicitly reports aggregate-only results until a sufficient calibrated-probability sample exists. Hard-bounce outcomes also create a source-attributed persistent suppression entry.
+
+`IValidationQualityMetrics` provides host-neutral validation and provider summaries, including status/unknown rates, verification blocks, catch-all, disposable, typo, suppression, reliability, and latency. No dashboard framework or console dependency is embedded in the engine.
 
 Address intelligence is intentionally separate from domain intelligence. Conservative typo suggestions and free-provider detection work locally. Toxic-domain, known spam-trap, abuse-risk, suppression, and MX-forward results require explicitly configured application-owned intelligence. Alias, alternate-address, and domain-age contracts are available, but the default providers return `Unknown` because SMTP and DNS cannot establish those facts reliably.
 
@@ -186,6 +192,7 @@ Defaults are in `src/EmailValidation.Console/appsettings.json` and can be overri
 - catch-all enablement, probe count (clamped to 1–3), minimum accepted probes, and cache lifetime;
 - configurable role names, disposable/free domains, and safe typo mappings;
 - application-owned toxic-domain, known-trap, abuse-risk, suppression, and MX-forward intelligence;
+- local persistence path, result-freshness windows, and explicit engine/classification/confidence/provider policy versions;
 - standard structured logging levels.
 
 ## Tests
@@ -208,5 +215,5 @@ EMAIL_VALIDATION_RUN_LIVE_TESTS=1 dotnet test tests/EmailValidation.IntegrationT
 - Absence from a local disposable, toxic, trap, or abuse list is not represented as authoritative proof that an address is clean.
 - Domain age, aliases, and alternate addresses remain `Unknown` until a reliable provider is registered.
 - Provider strategies interpret acceptance conservatively: Google Workspace, Microsoft 365, Proofpoint, and Mimecast acceptance can represent gateway-level rather than mailbox-level acceptance.
-- The in-memory cache and throttles are process-local abstractions intended to be replaced for a distributed deployment.
-- This phase intentionally contains no hosted API, persistence, queues, proxy/IP rotation, tenant/authentication, or commercial validation-provider integration.
+- The hot cache, single-flight operation, and throttles are process-local abstractions intended to be replaced or coordinated for a distributed deployment; durable intelligence remains host-neutral behind interfaces.
+- This phase intentionally contains no hosted API, queues, proxy/IP rotation, tenant/authentication, machine-learning calibration, or commercial validation-provider integration.

@@ -130,6 +130,8 @@ public sealed record DomainIntelligence
         new(CatchAllStatus.NotAttempted, 0, 0, 0, 0);
     public DomainBehaviorProfile? Behavior { get; init; }
     public DateTimeOffset ObservedAt { get; init; }
+    public DateTimeOffset? EvidenceExpiresAt { get; init; }
+    public string StrategyVersion { get; init; } = "1.0.0";
 }
 
 public sealed record DomainBehaviorProfile(

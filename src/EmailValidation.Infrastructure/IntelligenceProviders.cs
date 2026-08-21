@@ -84,9 +84,6 @@ public sealed class ToxicDomainDetector(IOptions<EmailValidationOptions> options
 
 public sealed class SpamTrapRiskDetector(IOptions<EmailValidationOptions> options) : ISpamTrapRiskDetector
 {
-    private static readonly HashSet<string> SuspiciousLocalParts = new(
-        ["spamtrap", "honeypot"],
-        StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _knownAddresses = new(
         options.Value.Intelligence.KnownSpamTrapAddresses,
         StringComparer.OrdinalIgnoreCase);
@@ -94,16 +91,9 @@ public sealed class SpamTrapRiskDetector(IOptions<EmailValidationOptions> option
     public Task<SpamTrapRiskResult> EvaluateAsync(string email, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        SpamTrapRiskResult result;
-        if (_knownAddresses.Contains(email))
-            result = new(SpamTrapRiskStatus.KnownSpamTrap, 0.99, EvidenceSource.ConfiguredIntelligenceProvider);
-        else
-        {
-            var at = email.LastIndexOf('@');
-            result = at > 0 && SuspiciousLocalParts.Contains(email[..at])
-                ? new(SpamTrapRiskStatus.PossibleSpamTrap, 0.45, EvidenceSource.Heuristic)
-                : new(SpamTrapRiskStatus.NoEvidence, 0, EvidenceSource.Heuristic);
-        }
+        var result = _knownAddresses.Contains(email)
+            ? new SpamTrapRiskResult(SpamTrapRiskStatus.KnownSpamTrap, 0.99, EvidenceSource.ConfiguredIntelligenceProvider)
+            : SpamTrapRiskResult.Unknown;
         return Task.FromResult(result);
     }
 }
