@@ -21,7 +21,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void CatchAllAcceptance_IsRiskyNotDefinitivelyValid()
+    public void CatchAllAcceptance_HasDedicatedCatchAllStatus()
     {
         var result = _classifier.Classify(Evidence(
             SmtpResponseCategory.GatewayAccepted,
@@ -29,8 +29,33 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.LikelyCatchAll,
             catchAllConfidence: 0.90));
 
-        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
         Assert.Contains(ReasonCode.CatchAllLikely, result.ReasonCodes);
+    }
+
+    [Fact]
+    public void CatchAllStatus_TakesPrecedenceOverOtherRiskFlags()
+    {
+        var evidence = Evidence(
+            SmtpResponseCategory.Accepted,
+            AcceptanceStrength.Medium,
+            CatchAllStatus.LikelyCatchAll,
+            catchAllConfidence: 0.90);
+        var result = _classifier.Classify(evidence with
+        {
+            RoleAccount = true,
+            Domain = evidence.Domain! with { Disposable = true },
+            AddressIntelligence = new EmailAddressIntelligence
+            {
+                Email = "support@example.com",
+                Typo = new TypoDetectionResult(true, "example.org", "support@example.org", 0.95)
+            }
+        });
+
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Contains(ReasonCode.RoleAccount, result.ReasonCodes);
+        Assert.Contains(ReasonCode.DisposableDomain, result.ReasonCodes);
+        Assert.Contains(ReasonCode.TypoDetected, result.ReasonCodes);
     }
 
     [Fact]
@@ -72,7 +97,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void RepeatedHistoricalCatchAllEvidence_ProducesRisk()
+    public void RepeatedHistoricalCatchAllEvidence_UsesCatchAllStatus()
     {
         var history = new HistoricalSignalSummary(3, 2, 0, 1, 0, 0);
         var result = _classifier.Classify(Evidence(
@@ -81,12 +106,12 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
         Assert.Contains(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
     }
 
     [Fact]
-    public void RepeatedHistoricalRandomAcceptance_StrengthensGenericCatchAllRisk()
+    public void RepeatedHistoricalRandomAcceptance_UsesCatchAllStatus()
     {
         var history = new HistoricalSignalSummary(2, 0, 0, 0, 0, 0, RandomRecipientAcceptedCount: 2);
         var result = _classifier.Classify(Evidence(
@@ -95,7 +120,7 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
         Assert.Contains(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
     }
 

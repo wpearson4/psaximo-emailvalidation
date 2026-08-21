@@ -20,7 +20,10 @@ internal sealed record CsvProcessingResult(
 internal sealed class CsvFileProcessor
 {
     internal static readonly string[] ResultColumns =
-        ["Status", "Confidence", "Confidence Reason", "Validation Date/Time"];
+    [
+        "Status", "Confidence", "Confidence Reason", "Validation Date/Time",
+        "Classification Confidence", "Confidence Type", "Deliverability Probability"
+    ];
 
     private readonly IDomainValidationScheduler _scheduler;
     private readonly IOptions<EmailValidationOptions> _options;
@@ -252,6 +255,11 @@ internal sealed class CsvFileProcessor
             row.Result.ConfidenceReason ?? "No confidence explanation was available.";
         values[resultIndexes["Validation Date/Time"]] = row.CompletedAt.UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        values[resultIndexes["Classification Confidence"]] = FormatConfidence(row.Result.ClassificationConfidence);
+        values[resultIndexes["Confidence Type"]] = row.Result.ConfidenceType.ToString();
+        values[resultIndexes["Deliverability Probability"]] = row.Result.DeliverabilityProbability is { } probability
+            ? FormatConfidence(probability)
+            : string.Empty;
         foreach (var value in values) writer.WriteField(value ?? string.Empty);
         await writer.NextRecordAsync();
     }

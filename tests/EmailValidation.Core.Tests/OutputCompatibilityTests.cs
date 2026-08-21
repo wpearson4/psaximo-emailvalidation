@@ -13,6 +13,8 @@ public sealed class OutputCompatibilityTests
         Assert.Contains("\"email\"", json, StringComparison.Ordinal);
         Assert.Contains("\"status\"", json, StringComparison.Ordinal);
         Assert.Contains("\"confidence\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"classificationConfidence\": 0.8", json, StringComparison.Ordinal);
+        Assert.Contains("\"deliverabilityProbability\": null", json, StringComparison.Ordinal);
         Assert.Contains("\"checks\"", json, StringComparison.Ordinal);
         Assert.Contains("\"mailProvider\"", json, StringComparison.Ordinal);
         Assert.Contains("\"provider\"", json, StringComparison.Ordinal);
@@ -29,6 +31,16 @@ public sealed class OutputCompatibilityTests
 
         Assert.StartsWith("email,normalizedEmail,status,confidence,syntaxValid,domainExists,mxPresent", header, StringComparison.Ordinal);
         Assert.Contains("providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus", header, StringComparison.Ordinal);
+        Assert.EndsWith("classificationConfidence,deliverabilityProbability", header, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TextOutput_LabelsClassificationConfidenceAndUncalibratedProbability()
+    {
+        var text = ResultFormatter.Format([Result()], OutputFormat.Text, single: true);
+
+        Assert.Contains("Classification Confidence: 80 %", text, StringComparison.Ordinal);
+        Assert.Contains("Deliverability Probability: Not calibrated", text, StringComparison.Ordinal);
     }
 
     private static EmailValidationResult Result() => new()

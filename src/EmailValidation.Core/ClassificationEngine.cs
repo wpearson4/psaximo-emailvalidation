@@ -186,17 +186,30 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
 
         var historicalCatchAll = evidence.History.LikelyCatchAllCount >= 2 ||
             (domain.Provider.Provider != MailProvider.GoogleWorkspace && evidence.History.RandomRecipientAcceptedCount >= 2);
+        var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
+        if (catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll)
+        {
+            var catchAllConfidence = catchAll.Status == CatchAllStatus.LikelyCatchAll
+                ? catchAll.Confidence
+                : 0.80;
+            return FinalizeResult(
+                EmailValidationStatus.CatchAll,
+                Math.Max(score, catchAllConfidence),
+                reasons,
+                contributions);
+        }
+
         // Mailing reputation and suppression answer whether an address should be mailed,
         // not whether its mailbox appears technically deliverable. Keep those signals in
-        // the independent risk result. A domain typo remains relevant to deliverability.
+        // the independent risk result. Catch-all acceptance has already been classified
+        // independently above. A domain typo remains relevant to deliverability.
         var intelligenceRisk = address?.Typo.TypoDetected == true;
-        var risky = domain.Disposable || evidence.RoleAccount || intelligenceRisk ||
-            catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll;
+        var risky = domain.Disposable || evidence.RoleAccount || intelligenceRisk;
         if (risky)
         {
             var riskConfidence = Math.Clamp(
-                0.65 + (catchAll.Status == CatchAllStatus.LikelyCatchAll ? catchAll.Confidence * 0.25 : 0) +
-                (historicalCatchAll ? 0.08 : 0) + (domain.Disposable ? 0.08 : 0),
+                0.65 + (domain.Disposable ? 0.08 : 0) + (evidence.RoleAccount ? 0.08 : 0) +
+                (intelligenceRisk ? 0.08 : 0),
                 0.65,
                 0.96);
             return FinalizeResult(EmailValidationStatus.Risky, riskConfidence, reasons, contributions);
@@ -207,7 +220,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         var status = providerResult.AcceptanceStrength == AcceptanceStrength.High && strongCatchAllNegative
             ? EmailValidationStatus.Valid
             : EmailValidationStatus.LikelyValid;
-        var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
         return FinalizeResult(status, score, reasons, contributions);
     }
 

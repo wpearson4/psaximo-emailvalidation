@@ -31,8 +31,9 @@ internal static class ResultFormatter
         Add(builder, "Normalized:", result.NormalizedEmail ?? "—");
         Add(builder, "Status:", result.Status.ToString());
         Add(builder, "Detailed Status:", result.DetailedStatus.ToString());
-        Add(builder, "Confidence:", result.Confidence.ToString("P0", CultureInfo.InvariantCulture));
+        Add(builder, "Classification Confidence:", result.ClassificationConfidence.ToString("P0", CultureInfo.InvariantCulture));
         Add(builder, "Confidence Type:", result.ConfidenceType.ToString());
+        Add(builder, "Deliverability Probability:", result.DeliverabilityProbability?.ToString("P0", CultureInfo.InvariantCulture) ?? "Not calibrated");
         if (result.ConfidenceReason is not null) Add(builder, "Confidence Reason:", result.ConfidenceReason);
         Add(builder, "Syntax:", result.Checks.SyntaxValid ? "Valid" : "Invalid");
         Add(builder, "Domain:", result.Checks.DomainExists ? "Valid" : "Not verified");
@@ -154,7 +155,7 @@ internal static class ResultFormatter
 
     private static string ToCsv(IReadOnlyList<EmailValidationResult> results)
     {
-        var builder = new StringBuilder("email,normalizedEmail,status,confidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth\n");
+        var builder = new StringBuilder("email,normalizedEmail,status,confidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth,classificationConfidence,deliverabilityProbability\n");
         foreach (var result in results)
         {
             var fields = new[]
@@ -199,7 +200,9 @@ internal static class ResultFormatter
                 result.SmtpSessionEvidence?.FailedStage?.ToString() ?? string.Empty,
                 result.MxValidation is null ? string.Empty : string.Join(';', result.MxValidation.HostsAttempted),
                 result.MxValidation?.Consensus.ToString() ?? string.Empty,
-                result.ProbeSenderHealth?.Status.ToString() ?? string.Empty
+                result.ProbeSenderHealth?.Status.ToString() ?? string.Empty,
+                result.ClassificationConfidence.ToString("0.00", CultureInfo.InvariantCulture),
+                result.DeliverabilityProbability?.ToString("0.00", CultureInfo.InvariantCulture) ?? string.Empty
             };
             builder.AppendLine(string.Join(',', fields.Select(Escape)));
         }

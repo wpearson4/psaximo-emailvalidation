@@ -70,7 +70,7 @@ public sealed class ProviderStrategyTests
         Assert.Equal(MailProvider.Unknown, result.MailboxProvider);
         Assert.Equal(VerificationReliabilityLevel.Low, result.VerificationReliabilityLevel);
         Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
-        Assert.Equal(EmailValidationStatus.Risky, Classify(context, result).Status);
+        Assert.Equal(EmailValidationStatus.CatchAll, Classify(context, result).Status);
     }
 
     [Fact]

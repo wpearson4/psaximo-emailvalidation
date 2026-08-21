@@ -163,7 +163,7 @@ public sealed class EmailValidator(
             Confidence = classification.Confidence,
             ConfidenceType = ConfidenceType.Heuristic,
             ConfidenceReason = EvidenceConfidenceExplainer.Explain(
-                classification.Status, activeDomainData, mailbox, mxValidation, probeSenderHealth),
+                classification.Status, activeDomainData, mailbox, mxValidation, probeSenderHealth, providerValidation),
             Checks = checks,
             MailProvider = domainData.Provider.Provider,
             Provider = effectiveProvider,

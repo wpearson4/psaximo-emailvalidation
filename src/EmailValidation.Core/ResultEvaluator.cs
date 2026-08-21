@@ -258,6 +258,8 @@ public sealed class ResultEvaluator : IResultEvaluator
                 [status == EmailValidationStatus.Invalid ? "TechnicallyInvalid" : "LikelyInvalid"]);
         if (status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid)
             return new(true, status == EmailValidationStatus.Valid ? RecommendationRisk.Low : RecommendationRisk.Moderate, []);
+        if (status == EmailValidationStatus.CatchAll)
+            return new(true, RecommendationRisk.Moderate, ["CatchAll"]);
         return new(null, status == EmailValidationStatus.Risky ? RecommendationRisk.Moderate : RecommendationRisk.Unknown, []);
     }
 

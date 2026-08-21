@@ -302,6 +302,32 @@ public sealed class ProductionIntelligenceTests
     public void ExistingConfidence_RemainsExplicitlyHeuristic()
     {
         Assert.Equal(ConfidenceType.Heuristic, Result().ConfidenceType);
+        Assert.Equal(0.9, Result().ClassificationConfidence);
+        Assert.Null(Result().DeliverabilityProbability);
+    }
+
+    [Fact]
+    public void ConfidenceExplanation_IdentifiesProviderBlockedUnknownAsInconclusive()
+    {
+        var provider = new ProviderValidationResult(
+            MailProvider.GenericSmtp,
+            0.8,
+            SmtpResponseCategory.VerificationBlocked,
+            AcceptanceStrength.None,
+            [ReasonCode.ProviderVerificationBlocked],
+            "Provider blocked verification.");
+
+        var explanation = EvidenceConfidenceExplainer.Explain(
+            EmailValidationStatus.Unknown,
+            Domain(DateTimeOffset.UtcNow.AddHours(1)),
+            new SmtpProbeResult(SmtpMailboxStatus.Blocked, 550, null, TimeSpan.Zero),
+            new MxValidationEvidence([], [], MxConsensus.ConsistentAmbiguous),
+            ProbeSenderHealth.NotChecked,
+            provider);
+
+        Assert.Equal(
+            "High confidence that validation is inconclusive because the provider blocked mailbox verification.",
+            explanation);
     }
 
     private static IOptions<EmailValidationOptions> StoreOptions(string path) => Options.Create(new EmailValidationOptions

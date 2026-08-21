@@ -11,7 +11,8 @@ public static class EvidenceConfidenceExplainer
         DomainIntelligence domain,
         SmtpProbeResult probe,
         MxValidationEvidence? mxValidation,
-        ProbeSenderHealth senderHealth)
+        ProbeSenderHealth senderHealth,
+        ProviderValidationResult? providerValidation = null)
     {
         var session = probe.SessionEvidence;
         if (session?.HasStrongRecipientRejection == true)
@@ -27,6 +28,26 @@ public static class EvidenceConfidenceExplainer
                 : "Low confidence because MAIL FROM was rejected before recipient validation occurred.";
         if (mxValidation?.Consensus == MxConsensus.Conflicting)
             return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
+        var category = providerValidation?.EffectiveCategory ?? probe.Evidence?.Category ?? SmtpResponseCategory.Unknown;
+        var inconclusiveReason = category switch
+        {
+            SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown =>
+                "High confidence that validation is inconclusive because the provider blocked mailbox verification.",
+            SmtpResponseCategory.Greylisted =>
+                "High confidence that validation is inconclusive because the provider temporarily greylisted the probe.",
+            SmtpResponseCategory.RateLimited =>
+                "High confidence that validation is inconclusive because the provider rate-limited the probe.",
+            SmtpResponseCategory.TemporaryFailure =>
+                "High confidence that validation is inconclusive because the provider returned a temporary failure.",
+            SmtpResponseCategory.Timeout =>
+                "High confidence that validation is inconclusive because the SMTP verification timed out.",
+            SmtpResponseCategory.ConnectionRejected =>
+                "High confidence that validation is inconclusive because the SMTP connection was rejected before mailbox verification.",
+            SmtpResponseCategory.NotAttempted =>
+                "The classification is Unknown because live SMTP mailbox verification was not performed.",
+            _ => null
+        };
+        if (inconclusiveReason is not null) return inconclusiveReason;
         if (probe.Status == SmtpMailboxStatus.Accepted &&
             domain.CatchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll)
             return "High confidence because the target recipient was accepted while randomized recipients were consistently rejected.";

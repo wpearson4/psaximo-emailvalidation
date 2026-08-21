@@ -77,7 +77,7 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
 
         var lifetime = intelligence.PreviousStatus switch
         {
-            EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid =>
+            EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll =>
                 TimeSpan.FromMinutes(Math.Max(0, _options.StrongPositiveMinutes)),
             EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid =>
                 TimeSpan.FromMinutes(Math.Max(0, _options.StrongNegativeMinutes)),
@@ -166,14 +166,14 @@ public sealed class ConfidenceCalibrationService(IDeliveryOutcomeStore outcomes)
     }
 
     private static bool IsPositive(EmailValidationStatus status) =>
-        status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid;
+        status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll;
 
     private static bool IsNegative(EmailValidationStatus status) =>
         status is EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid;
 
     private static double DeliveryProbability(ValidationPredictionSnapshot prediction) => prediction.PredictedStatus switch
     {
-        EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid => prediction.PredictedConfidence,
+        EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll => prediction.PredictedConfidence,
         EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid => 1 - prediction.PredictedConfidence,
         _ => 0.5
     };
@@ -208,7 +208,7 @@ public sealed class ExistingIntelligenceRiskDataSource : IRiskDataSource
             MailingRiskReason.KnownAbuse or MailingRiskReason.SpamTrapIndicator or MailingRiskReason.ToxicDomain)
             ? MailingRiskLevel.High
             : reasons.Count > 0 ? MailingRiskLevel.Medium
-            : context.DeliverabilityStatus is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid
+            : context.DeliverabilityStatus is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll
                 ? MailingRiskLevel.Low : MailingRiskLevel.Unknown;
         return Task.FromResult(new RiskDataResult("ExistingIntelligence", level, reasons, evidence));
 
@@ -462,7 +462,7 @@ public sealed class IntelligenceEmailValidator(
     private MailboxIntelligence ToMailboxIntelligence(EmailValidationResult result, bool usedLiveSmtp)
     {
         var at = result.Metadata!.ValidatedAt;
-        var positive = result.Status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid;
+        var positive = result.Status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll;
         var negative = result.Status is EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid;
         return new MailboxIntelligence
         {

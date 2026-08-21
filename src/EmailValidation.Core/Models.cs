@@ -1,6 +1,7 @@
 namespace EmailValidation.Core;
 
-public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid }
+// Append new values to preserve numeric compatibility with persisted intelligence.
+public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid, CatchAll }
 public enum ConfidenceType { Heuristic, CalibratedProbability }
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
 public enum ProbeSenderCandidateState { Candidate, Healthy, Active, CoolingDown, Invalid, Degraded, Retired }
@@ -322,7 +323,9 @@ public sealed record EmailValidationResult
     public string? NormalizedEmail { get; init; }
     public EmailValidationStatus Status { get; init; }
     public double Confidence { get; init; }
+    public double ClassificationConfidence => Confidence;
     public ConfidenceType ConfidenceType { get; init; } = ConfidenceType.Heuristic;
+    public double? DeliverabilityProbability { get; init; }
     public double EvidenceConfidence => Confidence;
     public string? ConfidenceReason { get; init; }
     public required EmailValidationChecks Checks { get; init; }
