@@ -99,6 +99,7 @@ public sealed class ResultEvaluator : IResultEvaluator
             SmtpResponseCategory.Greylisted => DetailedStatus.Greylisted,
             SmtpResponseCategory.RateLimited => DetailedStatus.RateLimited,
             SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown => DetailedStatus.VerificationBlocked,
+            SmtpResponseCategory.LocalCooldown => DetailedStatus.LocalCooldown,
             SmtpResponseCategory.TemporaryFailure => DetailedStatus.TemporaryFailure,
             SmtpResponseCategory.Timeout => DetailedStatus.Timeout,
             _ => DetailedStatus.Unknown
@@ -272,7 +273,7 @@ public sealed class ResultEvaluator : IResultEvaluator
             DetailedStatus.SpamTrapRisk, DetailedStatus.PossibleTrap, DetailedStatus.ToxicDomain,
             DetailedStatus.Disposable, DetailedStatus.RoleBasedCatchAll, DetailedStatus.CatchAll,
             DetailedStatus.Greylisted, DetailedStatus.RateLimited, DetailedStatus.VerificationBlocked,
-            DetailedStatus.TemporaryFailure, DetailedStatus.Timeout, DetailedStatus.TypoDetected,
+            DetailedStatus.LocalCooldown, DetailedStatus.TemporaryFailure, DetailedStatus.Timeout, DetailedStatus.TypoDetected,
             DetailedStatus.MailboxAccepted, DetailedStatus.RoleBased, DetailedStatus.MxForward,
             DetailedStatus.Alias, DetailedStatus.AlternateAddress
         ];

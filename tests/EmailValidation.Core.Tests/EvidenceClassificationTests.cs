@@ -59,7 +59,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void GatewayAcceptanceWithoutCatchAllProof_IsLikelyValid()
+    public void GatewayAcceptanceWithoutCatchAllProof_IsCatchAllWithAmbiguousReason()
     {
         var result = _classifier.Classify(Evidence(
             SmtpResponseCategory.GatewayAccepted,
@@ -67,8 +67,22 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             provider: MailProvider.Microsoft365));
 
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Contains(ReasonCode.CatchAllGatewayAmbiguous, result.ReasonCodes);
+    }
+
+    [Fact]
+    public void GatewayAcceptanceWithNegativeCatchAllEvidence_RemainsLikelyValid()
+    {
+        var result = _classifier.Classify(Evidence(
+            SmtpResponseCategory.GatewayAccepted,
+            AcceptanceStrength.Medium,
+            CatchAllStatus.LikelyNotCatchAll,
+            catchAllConfidence: 0.85,
+            provider: MailProvider.GoogleWorkspace));
+
         Assert.Equal(EmailValidationStatus.LikelyValid, result.Status);
-        Assert.NotEqual(EmailValidationStatus.Valid, result.Status);
+        Assert.DoesNotContain(ReasonCode.CatchAllGatewayAmbiguous, result.ReasonCodes);
     }
 
     [Fact]
@@ -88,6 +102,7 @@ public sealed class EvidenceClassificationTests
     [InlineData(SmtpResponseCategory.Greylisted, ReasonCode.Greylisted)]
     [InlineData(SmtpResponseCategory.RateLimited, ReasonCode.RateLimited)]
     [InlineData(SmtpResponseCategory.TemporaryFailure, ReasonCode.TemporarySmtpFailure)]
+    [InlineData(SmtpResponseCategory.LocalCooldown, ReasonCode.LocalCooldown)]
     public void AmbiguousOrTemporaryEvidence_IsUnknown(SmtpResponseCategory category, ReasonCode reason)
     {
         var result = _classifier.Classify(Evidence(category, AcceptanceStrength.None, CatchAllStatus.Unknown));
@@ -125,7 +140,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void GoogleRandomAcceptanceHistory_RemainsAmbiguous()
+    public void GoogleGatewayAcceptance_UsesCatchAllStatusWithoutClaimingHistoricalProof()
     {
         var history = new HistoricalSignalSummary(2, 0, 0, 2, 0, 0, RandomRecipientAcceptedCount: 2);
         var result = _classifier.Classify(Evidence(
@@ -135,7 +150,8 @@ public sealed class EvidenceClassificationTests
             provider: MailProvider.GoogleWorkspace,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.LikelyValid, result.Status);
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Contains(ReasonCode.CatchAllGatewayAmbiguous, result.ReasonCodes);
         Assert.DoesNotContain(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
     }
 

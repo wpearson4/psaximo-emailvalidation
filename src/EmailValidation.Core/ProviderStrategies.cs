@@ -55,6 +55,7 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
                 SmtpResponseCategory.Greylisted => "The provider temporarily greylisted verification.",
                 SmtpResponseCategory.RateLimited => "The provider rate-limited verification.",
                 SmtpResponseCategory.VerificationBlocked => "The provider blocked recipient verification.",
+                SmtpResponseCategory.LocalCooldown => "The SMTP probe was deferred because a local MX-scoped cooldown is active.",
                 SmtpResponseCategory.Timeout => "The SMTP operation timed out.",
                 _ => "The provider did not return conclusive mailbox evidence."
             };
@@ -144,6 +145,10 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
             case SmtpResponseCategory.MailboxUnknown:
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
                 break;
+            case SmtpResponseCategory.LocalCooldown:
+                reasons.Add(ReasonCode.LocalCooldown);
+                reasons.Add(ReasonCode.RetryRecommended);
+                break;
             case SmtpResponseCategory.Timeout: reasons.Add(ReasonCode.SmtpTimeout); break;
             case SmtpResponseCategory.TemporaryFailure: reasons.Add(ReasonCode.TemporarySmtpFailure); break;
             case SmtpResponseCategory.ConnectionRejected: reasons.Add(ReasonCode.SmtpConnectionFailure); break;
@@ -200,6 +205,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
                 SmtpResponseCategory.Greylisted => "Exchange Online Protection temporarily greylisted verification.",
                 SmtpResponseCategory.RateLimited => "Exchange Online Protection rate-limited verification.",
                 SmtpResponseCategory.VerificationBlocked => "Exchange Online Protection blocked or obscured recipient verification.",
+                SmtpResponseCategory.LocalCooldown => "The Exchange Online Protection probe was deferred by a local MX-scoped cooldown.",
                 SmtpResponseCategory.TemporaryFailure => "Exchange Online Protection returned a temporary failure.",
                 _ => "Exchange Online Protection did not return conclusive mailbox evidence."
             };
@@ -254,6 +260,10 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
             case SmtpResponseCategory.VerificationBlocked:
             case SmtpResponseCategory.MailboxUnknown:
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
+                break;
+            case SmtpResponseCategory.LocalCooldown:
+                reasons.Add(ReasonCode.LocalCooldown);
+                reasons.Add(ReasonCode.RetryRecommended);
                 break;
             case SmtpResponseCategory.TemporaryFailure: reasons.Add(ReasonCode.TemporarySmtpFailure); break;
             case SmtpResponseCategory.Timeout: reasons.Add(ReasonCode.SmtpTimeout); break;

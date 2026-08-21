@@ -70,12 +70,13 @@ public sealed class CsvFileProcessorTests
 
         Assert.Equal(2, result.RowsProcessed);
         Assert.Equal([0xEF, 0xBB, 0xBF], bytes[..3]);
-        Assert.StartsWith("\uFEFFName,Business Email,Note,Status,Confidence,Confidence Reason,Validation Date/Time", output, StringComparison.Ordinal);
+        Assert.StartsWith("\uFEFFName,Business Email,Note,Status,Classification Confidence,Confidence Reason,Evidence Quality", output, StringComparison.Ordinal);
         Assert.True(output.IndexOf("slow@example.com", StringComparison.Ordinal) < output.IndexOf("fast@example.com", StringComparison.Ordinal));
         Assert.Contains("\"Mailbox accepted, but catch-all behavior was detected.\"", output, StringComparison.Ordinal);
         Assert.Contains("95%", output, StringComparison.Ordinal);
-        Assert.Contains("Classification Confidence,Confidence Type,Deliverability Probability", output, StringComparison.Ordinal);
-        Assert.Contains("95%,Heuristic", output, StringComparison.Ordinal);
+        Assert.Contains("Evidence Quality,Confidence Type,Deliverability Probability,Catch-All Classification", output, StringComparison.Ordinal);
+        Assert.Contains("95%,\"Mailbox accepted, but catch-all behavior was detected.\",Unknown,Heuristic", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(output.Split('\n')[0].Split(','), column => column == "Confidence");
         Assert.Contains("Zoë", output, StringComparison.Ordinal);
         Assert.Contains("\"line one\nline two\"", output, StringComparison.Ordinal);
     }

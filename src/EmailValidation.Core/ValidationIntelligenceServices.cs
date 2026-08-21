@@ -356,6 +356,7 @@ public static class ValidationSubStatusMapper
         if (result.DomainIntelligence?.Dns.ExplicitNullMx == true) return DetailedStatus.NullMx;
         if (result.ReasonCodes.Contains(ReasonCode.DomainNotFound)) return DetailedStatus.DomainNotFound;
         if (result.ReasonCodes.Contains(ReasonCode.NoMailExchanger)) return DetailedStatus.NoMailExchanger;
+        if (result.ReasonCodes.Contains(ReasonCode.LocalCooldown)) return DetailedStatus.LocalCooldown;
         if (result.ReasonCodes.Contains(ReasonCode.ProviderVerificationBlocked)) return DetailedStatus.ProviderVerificationBlocked;
         if (result.ReasonCodes.Contains(ReasonCode.SenderIdentityRejected)) return DetailedStatus.SenderIdentityRejected;
         if (result.ReasonCodes.Contains(ReasonCode.PolicyBlock)) return DetailedStatus.PolicyBlocked;

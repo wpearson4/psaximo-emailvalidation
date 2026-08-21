@@ -21,8 +21,10 @@ internal sealed class CsvFileProcessor
 {
     internal static readonly string[] ResultColumns =
     [
-        "Status", "Confidence", "Confidence Reason", "Validation Date/Time",
-        "Classification Confidence", "Confidence Type", "Deliverability Probability"
+        "Status", "Classification Confidence", "Confidence Reason", "Evidence Quality",
+        "Confidence Type", "Deliverability Probability", "Catch-All Classification",
+        "Probe Attempted", "Probe Disposition", "SMTP Response Category", "Retry After",
+        "Validation Date/Time"
     ];
 
     private readonly IDomainValidationScheduler _scheduler;
@@ -140,6 +142,10 @@ internal sealed class CsvFileProcessor
             column => column,
             column => outputHeaders.FindIndex(header => string.Equals(header.Trim(), column, StringComparison.OrdinalIgnoreCase)),
             StringComparer.OrdinalIgnoreCase);
+        // Do not add the retired duplicate column to new exports, but refresh it when reprocessing an older file.
+        var legacyConfidenceIndex = outputHeaders.FindIndex(header =>
+            string.Equals(header.Trim(), "Confidence", StringComparison.OrdinalIgnoreCase));
+        if (legacyConfidenceIndex >= 0) resultIndexes["Confidence"] = legacyConfidenceIndex;
 
         await using var inputStream = new FileStream(
             sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
@@ -250,16 +256,27 @@ internal sealed class CsvFileProcessor
         var values = new string[outputFieldCount];
         Array.Copy(row.Input.Fields, values, row.Input.Fields.Length);
         values[resultIndexes["Status"]] = row.Result.Status.ToString();
-        values[resultIndexes["Confidence"]] = FormatConfidence(row.Result.Confidence);
+        if (resultIndexes.TryGetValue("Confidence", out var legacyConfidenceIndex))
+            values[legacyConfidenceIndex] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Confidence Reason"]] =
             row.Result.ConfidenceReason ?? "No confidence explanation was available.";
         values[resultIndexes["Validation Date/Time"]] = row.CompletedAt.UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
         values[resultIndexes["Classification Confidence"]] = FormatConfidence(row.Result.ClassificationConfidence);
+        values[resultIndexes["Evidence Quality"]] = row.Result.EvidenceQuality.ToString();
         values[resultIndexes["Confidence Type"]] = row.Result.ConfidenceType.ToString();
         values[resultIndexes["Deliverability Probability"]] = row.Result.DeliverabilityProbability is { } probability
             ? FormatConfidence(probability)
             : string.Empty;
+        values[resultIndexes["Catch-All Classification"]] = row.Result.CatchAllClassification.ToString();
+        values[resultIndexes["Probe Attempted"]] = row.Result.ProbeAttempted ? "Yes" : "No";
+        values[resultIndexes["Probe Disposition"]] = row.Result.ProbeDisposition.ToString();
+        values[resultIndexes["SMTP Response Category"]] =
+            row.Result.ProviderValidation?.EffectiveCategory.ToString()
+            ?? row.Result.SmtpEvidence?.Category.ToString()
+            ?? SmtpResponseCategory.NotAttempted.ToString();
+        values[resultIndexes["Retry After"]] = row.Result.RetryAfter?.UtcDateTime.ToString(
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) ?? string.Empty;
         foreach (var value in values) writer.WriteField(value ?? string.Empty);
         await writer.NextRecordAsync();
     }

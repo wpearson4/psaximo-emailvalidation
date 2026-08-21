@@ -236,7 +236,7 @@ public sealed class ProviderPolicyTests
     }
 
     [Fact]
-    public async Task PolicyBlock_ReturnsImmediatelyWithoutProbe_WhileYahooContinues()
+    public async Task PolicyBlock_IsScopedToMx_WhileOtherMxAndProvidersContinue()
     {
         var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var time = new ManualTimeProvider(start);
@@ -253,12 +253,15 @@ public sealed class ProviderPolicyTests
         var state = throttle.GetProviderState(MailProvider.Microsoft365)!;
         Assert.Equal(ProviderCircuitState.Open, state.CircuitState);
         Assert.Equal(start.AddMinutes(60), state.CooldownUntil);
-        var availability = throttle.GetAvailability(
-            Context("another.test", MailProvider.Microsoft365));
+        var sameMxContext = ContextWithMx(
+            "another.test", microsoftContext.MxHost, MailProvider.Microsoft365);
+        var availability = throttle.GetAvailability(sameMxContext);
         Assert.False(availability.CanProbe);
         Assert.Equal(start.AddMinutes(60), availability.RetryAfter);
-        var microsoftSkipped = await throttle.AcquireAsync(
-            Context("another.test", MailProvider.Microsoft365));
+        var microsoftSkipped = await throttle.AcquireAsync(sameMxContext);
+
+        await (await throttle.AcquireAsync(Context("other-mx.test", MailProvider.Microsoft365))
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(1))).DisposeAsync();
 
         await (await throttle.AcquireAsync(Context("yahoo.test", MailProvider.Yahoo))
             .AsTask().WaitAsync(TimeSpan.FromSeconds(1))).DisposeAsync();
@@ -268,7 +271,7 @@ public sealed class ProviderPolicyTests
     }
 
     [Fact]
-    public async Task MailboxProbe_DuringProviderCooldown_ReturnsBlockedWithoutSelectingSender()
+    public async Task MailboxProbe_DuringMxCooldown_ReturnsDeferredWithoutSelectingSender()
     {
         var time = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         var settings = new EmailValidationOptions
@@ -287,7 +290,7 @@ public sealed class ProviderPolicyTests
         using var throttle = new DomainSmtpProbeThrottle(
             options, time, new DomainPacingJitter(), new DomainBackoffPolicy(options), resolver,
             NullLogger<DomainSmtpProbeThrottle>.Instance);
-        var context = Context("blocked.test", MailProvider.Microsoft365);
+        var context = ContextWithMx("blocked.test", "blocked.test", MailProvider.Microsoft365);
         await using (var initial = await throttle.AcquireAsync(context))
             throttle.RecordOutcome(context, PolicyBlock(MailProvider.Microsoft365));
         var senderPool = new NoCallSenderPool();
@@ -304,8 +307,11 @@ public sealed class ProviderPolicyTests
         var result = await probe.ProbeAsync(
             "blocked.test", "person@blocked.test", MailProvider.Microsoft365);
 
-        Assert.Equal(SmtpMailboxStatus.Blocked, result.Status);
-        Assert.Equal(SmtpResponseCategory.VerificationBlocked, result.Evidence!.Category);
+        Assert.Equal(SmtpMailboxStatus.NotAttempted, result.Status);
+        Assert.Equal(SmtpResponseCategory.LocalCooldown, result.Evidence!.Category);
+        Assert.Equal(SmtpProbeDisposition.LocalCooldown, result.Disposition);
+        Assert.False(result.ProbeAttempted);
+        Assert.NotNull(result.RetryAfter);
         Assert.Equal(0, result.Attempts);
         Assert.Equal(0, senderPool.Selections);
     }
@@ -321,12 +327,14 @@ public sealed class ProviderPolicyTests
             throttle.RecordOutcome(context, PolicyBlock(MailProvider.Microsoft365));
         time.Advance(TimeSpan.FromMinutes(60));
 
-        var halfOpen = await throttle.AcquireAsync(Context("two.test", MailProvider.Microsoft365));
+        var secondContext = ContextWithMx("two.test", context.MxHost, MailProvider.Microsoft365);
+        var halfOpen = await throttle.AcquireAsync(secondContext);
         Assert.Equal(ProviderCircuitState.HalfOpen,
             throttle.GetProviderState(MailProvider.Microsoft365)!.CircuitState);
-        var second = throttle.AcquireAsync(Context("three.test", MailProvider.Microsoft365)).AsTask();
+        var thirdContext = ContextWithMx("three.test", context.MxHost, MailProvider.Microsoft365);
+        var second = throttle.AcquireAsync(thirdContext).AsTask();
         Assert.False(second.IsCompleted);
-        throttle.RecordOutcome(Context("two.test", MailProvider.Microsoft365), Success(MailProvider.Microsoft365));
+        throttle.RecordOutcome(secondContext, Success(MailProvider.Microsoft365));
         await halfOpen.DisposeAsync();
         await (await second.WaitAsync(TimeSpan.FromSeconds(1))).DisposeAsync();
 
@@ -346,7 +354,7 @@ public sealed class ProviderPolicyTests
         await using (var initial = await throttle.AcquireAsync(firstContext))
             throttle.RecordOutcome(firstContext, PolicyBlock(MailProvider.Microsoft365));
         time.Advance(TimeSpan.FromMinutes(60));
-        var secondContext = Context("two.test", MailProvider.Microsoft365);
+        var secondContext = ContextWithMx("two.test", firstContext.MxHost, MailProvider.Microsoft365);
 
         await using (var halfOpen = await throttle.AcquireAsync(secondContext))
             throttle.RecordOutcome(secondContext, PolicyBlock(MailProvider.Microsoft365));
@@ -426,6 +434,9 @@ public sealed class ProviderPolicyTests
 
     private static SmtpThrottleContext Context(string domain, MailProvider provider) =>
         new(domain, $"mx.{domain}", provider);
+
+    private static SmtpThrottleContext ContextWithMx(string domain, string mxHost, MailProvider provider) =>
+        new(domain, mxHost, provider);
 
     private static SmtpProbeResult PolicyBlock(MailProvider provider)
     {

@@ -31,6 +31,9 @@ public static class EvidenceConfidenceExplainer
         var category = providerValidation?.EffectiveCategory ?? probe.Evidence?.Category ?? SmtpResponseCategory.Unknown;
         var inconclusiveReason = category switch
         {
+            SmtpResponseCategory.LocalCooldown => probe.RetryAfter is { } retryAfter
+                ? $"Live SMTP verification was not attempted because a local MX-scoped cooldown is active until {retryAfter:O}; retry is recommended."
+                : "Live SMTP verification was not attempted because a local MX-scoped cooldown is active; retry is recommended.",
             SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown =>
                 "High confidence that validation is inconclusive because the provider blocked mailbox verification.",
             SmtpResponseCategory.Greylisted =>

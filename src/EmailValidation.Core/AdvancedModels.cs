@@ -38,7 +38,11 @@ public enum DetailedStatus
     RoleAccount,
     NullMx,
     NoMailExchanger,
-    KnownSuppression
+    KnownSuppression,
+    LocalCooldown,
+    CatchAllConfirmed,
+    CatchAllGatewayAmbiguous,
+    CatchAllHistorical
 }
 
 public enum EvidenceSource

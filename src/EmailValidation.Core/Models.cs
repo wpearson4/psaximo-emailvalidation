@@ -3,6 +3,12 @@ namespace EmailValidation.Core;
 // Append new values to preserve numeric compatibility with persisted intelligence.
 public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid, CatchAll }
 public enum ConfidenceType { Heuristic, CalibratedProbability }
+// Evidence quality describes how much direct validation evidence was obtained; it is independent of label confidence.
+public enum EvidenceQuality { Unknown, Conclusive, Partial, Blocked, NotAttempted }
+// Public CatchAll results retain the internal basis without reintroducing separate deliverability statuses.
+public enum CatchAllClassification { None, Confirmed, Likely, GatewayAmbiguous, Historical }
+// Distinguishes an observed remote result from work deliberately skipped by local scheduling policy.
+public enum SmtpProbeDisposition { Completed, RemoteBlocked, LocalCooldown, SessionBudgetExhausted, NotAttempted }
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
 public enum ProbeSenderCandidateState { Candidate, Healthy, Active, CoolingDown, Invalid, Degraded, Retired }
 public enum ProbeSenderOutcomeKind { MailFromAccepted, RecipientOutcome, SenderInvalid, SenderTemporaryFailure, ProviderRestriction, Inconclusive }
@@ -21,7 +27,8 @@ public enum ReasonCode
     AbuseRisk, SuppressionMatch, MxForward, FreeEmailProvider, TypoDetected,
     SuggestedDomainCorrection, TemporaryFailure, Timeout, Alias, AlternateAddress,
     SenderIdentityRejected, SenderDomainRejected, PolicyBlock, AuthenticationRequired,
-    RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting
+    RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
+    LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -107,6 +114,11 @@ public sealed record SmtpProbeResult(
 {
     /// <summary>All sessions used for transient retries or sender fallback, in attempt order.</summary>
     public IReadOnlyList<SmtpSessionEvidence> SessionHistory { get; init; } = [];
+    /// <summary>Whether the result came from an SMTP session or from a local control path.</summary>
+    public SmtpProbeDisposition Disposition { get; init; } = SmtpProbeDisposition.Completed;
+    /// <summary>The earliest useful retry time when local policy deferred the probe.</summary>
+    public DateTimeOffset? RetryAfter { get; init; }
+    public bool ProbeAttempted => SessionEvidence is not null || Attempts > 0;
 }
 
 public sealed record ProbeSenderHealth(
@@ -303,6 +315,10 @@ public sealed record ValidationDiagnostics
     public string? Detail { get; init; }
     public long IntelligenceLookupDurationMs { get; init; }
     public long MailInfrastructureDurationMs { get; init; }
+    public bool ProbeAttempted { get; init; }
+    public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;
+    public SmtpResponseCategory SmtpResponseCategory { get; init; } = SmtpResponseCategory.NotAttempted;
+    public DateTimeOffset? RetryAfter { get; init; }
 }
 
 public sealed record EmailValidationChecks
@@ -323,10 +339,17 @@ public sealed record EmailValidationResult
     public string? NormalizedEmail { get; init; }
     public EmailValidationStatus Status { get; init; }
     public double Confidence { get; init; }
+    /// <summary>Confidence in the assigned classification, not a probability of delivery.</summary>
     public double ClassificationConfidence => Confidence;
     public ConfidenceType ConfidenceType { get; init; } = ConfidenceType.Heuristic;
+    /// <summary>Populated only by a calibrated outcome model; heuristic classifications leave this null.</summary>
     public double? DeliverabilityProbability { get; init; }
     public double EvidenceConfidence => Confidence;
+    public EvidenceQuality EvidenceQuality { get; init; } = EvidenceQuality.Unknown;
+    public CatchAllClassification CatchAllClassification { get; init; } = CatchAllClassification.None;
+    public bool ProbeAttempted { get; init; }
+    public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;
+    public DateTimeOffset? RetryAfter { get; init; }
     public string? ConfidenceReason { get; init; }
     public required EmailValidationChecks Checks { get; init; }
     public MailProvider MailProvider { get; init; }

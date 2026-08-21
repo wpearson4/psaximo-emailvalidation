@@ -91,7 +91,10 @@ public sealed class EmailValidator(
                 history.GreylistingProbability)
         };
 
-        var mailbox = new SmtpProbeResult(SmtpMailboxStatus.NotAttempted, null, null, TimeSpan.Zero, 0);
+        var mailbox = new SmtpProbeResult(SmtpMailboxStatus.NotAttempted, null, null, TimeSpan.Zero, 0)
+        {
+            Disposition = SmtpProbeDisposition.NotAttempted
+        };
         var mxValidation = new MxValidationEvidence([], [], MxConsensus.Unknown);
         if (smtpEnabled && domainData.Dns.Status == DnsStatus.Success && selectedMx is not null)
         {
@@ -164,6 +167,9 @@ public sealed class EmailValidator(
             ConfidenceType = ConfidenceType.Heuristic,
             ConfidenceReason = EvidenceConfidenceExplainer.Explain(
                 classification.Status, activeDomainData, mailbox, mxValidation, probeSenderHealth, providerValidation),
+            ProbeAttempted = mailbox.ProbeAttempted,
+            ProbeDisposition = mailbox.Disposition,
+            RetryAfter = mailbox.RetryAfter,
             Checks = checks,
             MailProvider = domainData.Provider.Provider,
             Provider = effectiveProvider,
@@ -216,6 +222,10 @@ public sealed class EmailValidator(
                 CatchAllDetail = domainData.CatchAll.Detail,
                 IntelligenceLookupDurationMs = domainIntelligenceDurationMs + addressIntelligenceDurationMs,
                 MailInfrastructureDurationMs = domainData.MailInfrastructure.DurationMs,
+                ProbeAttempted = mailbox.ProbeAttempted,
+                ProbeDisposition = mailbox.Disposition,
+                SmtpResponseCategory = providerValidation.EffectiveCategory,
+                RetryAfter = mailbox.RetryAfter,
                 Detail = domainData.Dns.Error ?? mailbox.Response
             } : null,
             Metadata = new ValidationResultMetadata(
@@ -223,9 +233,21 @@ public sealed class EmailValidator(
                 validatedAt,
                 MxTopologyFingerprint: effectiveProvider.TopologyFingerprint)
         };
-        var subStatus = ValidationSubStatusMapper.Map(result);
+        var evidenceQuality = ValidationEvidenceAssessment.Quality(
+            result.Status, activeDomainData, mailbox, providerValidation);
+        var catchAllClassification = ValidationEvidenceAssessment.CatchAllType(
+            result.Status, activeDomainData, providerValidation, history);
+        var subStatus = catchAllClassification switch
+        {
+            CatchAllClassification.Confirmed => DetailedStatus.CatchAllConfirmed,
+            CatchAllClassification.GatewayAmbiguous => DetailedStatus.CatchAllGatewayAmbiguous,
+            CatchAllClassification.Historical => DetailedStatus.CatchAllHistorical,
+            _ => ValidationSubStatusMapper.Map(result)
+        };
         result = result with
         {
+            EvidenceQuality = evidenceQuality,
+            CatchAllClassification = catchAllClassification,
             SubStatus = subStatus,
             SubStatuses = result.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
@@ -444,6 +466,7 @@ public sealed class EmailValidator(
         SmtpResponseCategory.TemporaryFailure or SmtpResponseCategory.Greylisted or SmtpResponseCategory.RateLimited =>
             SmtpMailboxStatus.TemporaryFailure,
         SmtpResponseCategory.VerificationBlocked => SmtpMailboxStatus.Blocked,
+        SmtpResponseCategory.LocalCooldown => SmtpMailboxStatus.NotAttempted,
         SmtpResponseCategory.ConnectionRejected => SmtpMailboxStatus.ConnectionFailure,
         SmtpResponseCategory.Timeout => SmtpMailboxStatus.Timeout,
         SmtpResponseCategory.NotAttempted => SmtpMailboxStatus.NotAttempted,
@@ -462,6 +485,8 @@ public sealed class EmailValidator(
             Confidence = 0.99,
             ConfidenceType = ConfidenceType.Heuristic,
             ConfidenceReason = "High confidence because the address failed deterministic syntax validation.",
+            EvidenceQuality = EvidenceQuality.Conclusive,
+            ProbeDisposition = SmtpProbeDisposition.NotAttempted,
             Checks = new EmailValidationChecks
             {
                 Mailbox = SmtpMailboxStatus.NotAttempted,

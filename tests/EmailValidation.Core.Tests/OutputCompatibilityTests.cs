@@ -24,14 +24,16 @@ public sealed class OutputCompatibilityTests
     }
 
     [Fact]
-    public void CsvOutput_PreservesExistingColumnsAndAddsEvidenceAtEnd()
+    public void CsvOutput_UsesOneClassificationConfidenceColumnAndAddsProbeEvidence()
     {
         var csv = ResultFormatter.Format([Result()], OutputFormat.Csv, single: false);
         var header = csv.Split('\n')[0];
 
-        Assert.StartsWith("email,normalizedEmail,status,confidence,syntaxValid,domainExists,mxPresent", header, StringComparison.Ordinal);
+        Assert.StartsWith("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent", header, StringComparison.Ordinal);
         Assert.Contains("providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus", header, StringComparison.Ordinal);
-        Assert.EndsWith("classificationConfidence,deliverabilityProbability", header, StringComparison.Ordinal);
+        Assert.Equal(1, header.Split(',').Count(column => column == "classificationConfidence"));
+        Assert.EndsWith("evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter", header, StringComparison.Ordinal);
+        Assert.Equal(header.Split(',').Length, csv.Split('\n')[1].Split(',').Length);
     }
 
     [Fact]

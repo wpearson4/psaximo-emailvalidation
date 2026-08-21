@@ -335,7 +335,12 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             connectionDuration,
             attempt,
             evidence,
-            session);
+            session)
+        {
+            Disposition = evidence.Category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.RateLimited
+                ? SmtpProbeDisposition.RemoteBlocked
+                : SmtpProbeDisposition.Completed
+        };
     }
 
     private SmtpProbeResult ExceptionalResult(
@@ -359,14 +364,19 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var session = new SmtpSessionEvidence(
             command, stages.ToArray(), mxHost, elapsed, probeSender,
             SanitizeSessionText(banner), ehloHost, tlsAdvertised, false);
-        return new(
+        return new SmtpProbeResult(
             SmtpResponseClassifier.ToMailboxStatus(category),
             null,
             evidence.SanitizedResponse,
             connectionDuration,
             attempt,
             evidence,
-            session);
+            session)
+        {
+            Disposition = category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.RateLimited
+                ? SmtpProbeDisposition.RemoteBlocked
+                : SmtpProbeDisposition.Completed
+        };
     }
 
     private static SmtpStageResult ToStageResult(SmtpEvidence evidence, TimeSpan duration) => new(
@@ -399,15 +409,19 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var evidence = _responseClassifier.Classify(
             SmtpCommand.Connect, null, detail, TimeSpan.Zero, provider, mxHost, attempts) with
         {
-            Category = SmtpResponseCategory.VerificationBlocked,
+            Category = SmtpResponseCategory.LocalCooldown,
             TextClassification = SmtpResponseTextClassification.VerificationUnavailable
         };
         _logger.LogDebug(
             "SMTP probe skipped for {Provider}; provider cooldown remains active until {RetryAfter}",
             provider, availability.RetryAfter);
         return new SmtpProbeResult(
-            SmtpMailboxStatus.Blocked, null, evidence.SanitizedResponse, TimeSpan.Zero,
-            attempts, evidence);
+            SmtpMailboxStatus.NotAttempted, null, evidence.SanitizedResponse, TimeSpan.Zero,
+            attempts, evidence)
+        {
+            Disposition = SmtpProbeDisposition.LocalCooldown,
+            RetryAfter = availability.RetryAfter
+        };
     }
 
     private SmtpProbeResult BudgetExhausted(string mxHost, MailProvider provider)
@@ -418,7 +432,10 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         {
             Category = SmtpResponseCategory.Unknown
         };
-        return new(SmtpMailboxStatus.Unknown, null, evidence.SanitizedResponse, TimeSpan.Zero, 0, evidence);
+        return new(SmtpMailboxStatus.Unknown, null, evidence.SanitizedResponse, TimeSpan.Zero, 0, evidence)
+        {
+            Disposition = SmtpProbeDisposition.SessionBudgetExhausted
+        };
     }
 
     private sealed record SmtpResponse(int Code, string Text);

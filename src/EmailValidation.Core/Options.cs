@@ -31,10 +31,10 @@ public sealed class ResultReuseOptions
 
 public sealed class ValidationPolicyOptions
 {
-    public string ValidationEngineVersion { get; set; } = "1.0.0";
-    public string ClassificationPolicyVersion { get; set; } = "2.1.0";
-    public string ConfidenceModelVersion { get; set; } = "3.0.0";
-    public string ProviderStrategyVersion { get; set; } = "1.0.0";
+    public string ValidationEngineVersion { get; set; } = "1.1.0";
+    public string ClassificationPolicyVersion { get; set; } = "2.2.0";
+    public string ConfidenceModelVersion { get; set; } = "3.1.0";
+    public string ProviderStrategyVersion { get; set; } = "1.1.0";
 
     public ValidationPolicyVersions ToVersions() => new(
         ValidationEngineVersion,

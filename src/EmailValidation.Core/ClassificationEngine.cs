@@ -157,6 +157,11 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
                 return Result(EmailValidationStatus.Unknown, 0.87, reasons, contributions,
                     "Provider verification unavailable", 0.22);
+            case SmtpResponseCategory.LocalCooldown:
+                reasons.Add(ReasonCode.LocalCooldown);
+                reasons.Add(ReasonCode.RetryRecommended);
+                return Result(EmailValidationStatus.Unknown, 0.72, reasons, contributions,
+                    "SMTP probe deferred by local cooldown", 0.07);
             case SmtpResponseCategory.Timeout:
                 reasons.Add(ReasonCode.SmtpTimeout);
                 return Result(EmailValidationStatus.Unknown, 0.88, reasons, contributions,
@@ -187,11 +192,20 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         var historicalCatchAll = evidence.History.LikelyCatchAllCount >= 2 ||
             (domain.Provider.Provider != MailProvider.GoogleWorkspace && evidence.History.RandomRecipientAcceptedCount >= 2);
         var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
-        if (catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll)
+        // Gateway acceptance is catch-all-related only while randomized-recipient evidence remains unresolved.
+        // Explicit randomized rejection still supports LikelyValid rather than over-labeling the domain.
+        var gatewayAmbiguous = category == SmtpResponseCategory.GatewayAccepted &&
+            catchAll.Status is CatchAllStatus.Unknown or CatchAllStatus.NotAttempted;
+        if (catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll || gatewayAmbiguous)
         {
+            if (gatewayAmbiguous)
+            {
+                reasons.Add(ReasonCode.CatchAllUncertain);
+                reasons.Add(ReasonCode.CatchAllGatewayAmbiguous);
+            }
             var catchAllConfidence = catchAll.Status == CatchAllStatus.LikelyCatchAll
                 ? catchAll.Confidence
-                : 0.80;
+                : historicalCatchAll ? 0.80 : 0.65;
             return FinalizeResult(
                 EmailValidationStatus.CatchAll,
                 Math.Max(score, catchAllConfidence),

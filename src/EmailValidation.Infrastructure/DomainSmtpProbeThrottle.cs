@@ -32,7 +32,10 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     private readonly Counter<long> _retryExhaustionMetric;
     private readonly SemaphoreSlim _globalGate;
     private readonly ConcurrentDictionary<string, DomainEntry> _domains = new(StringComparer.OrdinalIgnoreCase);
+    // Provider entries enforce provider-wide concurrency and pacing. Circuits are narrower so one tenant MX
+    // cannot suppress unrelated tenants hosted by the same provider.
     private readonly ConcurrentDictionary<string, ProviderEntry> _providers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ProviderCircuitEntry> _providerCircuits = new(StringComparer.OrdinalIgnoreCase);
     private long _domainCooldownEvents;
     private long _providerCooldownEvents;
     private long _pacingWaitMilliseconds;
@@ -90,9 +93,10 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
 
     public ProviderThrottleAvailability GetAvailability(SmtpThrottleContext context)
     {
-        var key = _policyResolver.Resolve(context.Provider).ProviderKey;
-        return _providers.TryGetValue(key, out var provider)
-            ? Availability(provider)
+        var policy = _policyResolver.Resolve(context.Provider);
+        var key = CircuitKey(policy.ProviderKey, context);
+        return _providerCircuits.TryGetValue(key, out var circuit)
+            ? Availability(circuit)
             : ProviderThrottleAvailability.Available;
     }
 
@@ -105,7 +109,10 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             key, Math.Max(1, policy.PerDomainConcurrency ?? EffectivePerDomainConcurrency())));
         var provider = _providers.GetOrAdd(policy.ProviderKey, key => new ProviderEntry(
             key, policy.PerProviderConcurrency));
-        var initialAvailability = Availability(provider);
+        var circuit = _providerCircuits.GetOrAdd(
+            CircuitKey(policy.ProviderKey, context),
+            key => new ProviderCircuitEntry(key, policy.ProviderKey));
+        var initialAvailability = Availability(circuit);
         if (!initialAvailability.CanProbe)
             return new UnavailableLease(initialAvailability.RetryAfter, initialAvailability.Reason);
 
@@ -130,7 +137,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             domainPacingAcquired = true;
             await provider.PacingGate.WaitAsync(cancellationToken);
             providerPacingAcquired = true;
-            var readiness = await WaitUntilReadyAsync(domain, provider, policy, cancellationToken);
+            var readiness = await WaitUntilReadyAsync(domain, provider, circuit, policy, cancellationToken);
             if (!readiness.CanProbe)
             {
                 provider.PacingGate.Release();
@@ -171,11 +178,11 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             }
             domain.PacingGate.Release();
             domainPacingAcquired = false;
-            return new Lease(this, domain, provider, halfOpen, policy.PolicyBlockCooldownMinutes);
+            return new Lease(this, domain, provider, circuit, halfOpen, policy.PolicyBlockCooldownMinutes);
         }
         catch
         {
-            if (halfOpen) AbandonHalfOpen(provider, policy.PolicyBlockCooldownMinutes);
+            if (halfOpen) AbandonHalfOpen(circuit, policy.PolicyBlockCooldownMinutes);
             if (providerActive)
                 lock (provider.Sync) provider.ActiveCount--;
             lock (domain.Sync) domain.State.ActiveCount--;
@@ -213,61 +220,61 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             }
         }
 
-        var provider = _providers.GetOrAdd(policy.ProviderKey, key => new ProviderEntry(
+        _providers.GetOrAdd(policy.ProviderKey, key => new ProviderEntry(
             key, policy.PerProviderConcurrency));
+        var circuit = _providerCircuits.GetOrAdd(
+            CircuitKey(policy.ProviderKey, context),
+            key => new ProviderCircuitEntry(key, policy.ProviderKey));
         var opened = false;
         var resumed = false;
-        lock (provider.Sync)
+        lock (circuit.Sync)
         {
             if (IsPolicyBlock(result))
             {
                 var cooldown = TimeSpan.FromMinutes(policy.PolicyBlockCooldownMinutes);
-                provider.CircuitState = ProviderCircuitState.Open;
-                provider.CooldownUntil = now.Add(cooldown);
-                provider.NextAllowedAttemptAt = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
-                provider.CooldownReason = result.Evidence?.Category.ToString() ?? result.Status.ToString();
-                provider.ConsecutiveTemporaryFailures++;
+                circuit.CircuitState = ProviderCircuitState.Open;
+                circuit.CooldownUntil = now.Add(cooldown);
+                circuit.CooldownReason = result.Evidence?.Category.ToString() ?? result.Status.ToString();
+                circuit.ConsecutiveTemporaryFailures++;
                 Interlocked.Increment(ref _providerCooldownEvents);
                 _policyBlockMetric.Add(1, ProviderTag(policy.ProviderKey));
                 _cooldownActivationMetric.Add(1, ProviderTag(policy.ProviderKey));
                 _cooldownDurationMetric.Record(cooldown.TotalSeconds, ProviderTag(policy.ProviderKey));
                 opened = true;
             }
-            else if (provider.CircuitState == ProviderCircuitState.HalfOpen && IsConclusive(category))
+            else if (circuit.CircuitState == ProviderCircuitState.HalfOpen && IsConclusive(category))
             {
-                provider.CircuitState = ProviderCircuitState.Closed;
-                provider.ConsecutiveTemporaryFailures = 0;
-                provider.CooldownUntil = null;
-                provider.CooldownReason = null;
+                circuit.CircuitState = ProviderCircuitState.Closed;
+                circuit.ConsecutiveTemporaryFailures = 0;
+                circuit.CooldownUntil = null;
+                circuit.CooldownReason = null;
                 Interlocked.Increment(ref _providerResumptions);
                 _resumptionMetric.Add(1, ProviderTag(policy.ProviderKey));
                 resumed = true;
             }
-            else if (provider.CircuitState == ProviderCircuitState.HalfOpen)
+            else if (circuit.CircuitState == ProviderCircuitState.HalfOpen)
             {
-                provider.ConsecutiveTemporaryFailures++;
+                circuit.ConsecutiveTemporaryFailures++;
                 var decision = _backoff.Evaluate(
                     context.Provider, SmtpResponseCategory.TemporaryFailure,
-                    provider.ConsecutiveTemporaryFailures, now);
-                provider.CircuitState = ProviderCircuitState.Open;
-                provider.CooldownUntil = decision.NextAllowedAttemptAt;
-                provider.NextAllowedAttemptAt = Max(provider.NextAllowedAttemptAt, decision.NextAllowedAttemptAt);
-                provider.CooldownReason = category.ToString();
+                    circuit.ConsecutiveTemporaryFailures, now);
+                circuit.CircuitState = ProviderCircuitState.Open;
+                circuit.CooldownUntil = decision.NextAllowedAttemptAt;
+                circuit.CooldownReason = category.ToString();
                 _cooldownActivationMetric.Add(1, ProviderTag(policy.ProviderKey));
                 _cooldownDurationMetric.Record(decision.Cooldown.TotalSeconds, ProviderTag(policy.ProviderKey));
             }
             else if (IsConclusive(category))
             {
-                provider.ConsecutiveTemporaryFailures = 0;
-                provider.CooldownUntil = null;
+                circuit.ConsecutiveTemporaryFailures = 0;
+                circuit.CooldownUntil = null;
             }
             else if (IsProviderPressure(category))
             {
-                provider.ConsecutiveTemporaryFailures++;
+                circuit.ConsecutiveTemporaryFailures++;
                 var decision = _backoff.Evaluate(
-                    context.Provider, category, provider.ConsecutiveTemporaryFailures, now);
-                provider.CooldownUntil = Max(provider.CooldownUntil, decision.NextAllowedAttemptAt);
-                provider.NextAllowedAttemptAt = Max(provider.NextAllowedAttemptAt, decision.NextAllowedAttemptAt);
+                    context.Provider, category, circuit.ConsecutiveTemporaryFailures, now);
+                circuit.CooldownUntil = Max(circuit.CooldownUntil, decision.NextAllowedAttemptAt);
                 Interlocked.Increment(ref _providerCooldownEvents);
                 _cooldownActivationMetric.Add(1, ProviderTag(policy.ProviderKey));
                 _cooldownDurationMetric.Record(decision.Cooldown.TotalSeconds, ProviderTag(policy.ProviderKey));
@@ -303,9 +310,31 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     {
         var key = _policyResolver.Resolve(provider).ProviderKey;
         if (!_providers.TryGetValue(key, out var entry)) return null;
+        var circuits = _providerCircuits.Values
+            .Where(circuit => string.Equals(circuit.Provider, key, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        DateTimeOffset? cooldownUntil = null;
+        string? cooldownReason = null;
+        var circuitState = ProviderCircuitState.Closed;
+        foreach (var circuit in circuits)
+        {
+            lock (circuit.Sync)
+            {
+                if (circuit.CooldownUntil is not null &&
+                    (cooldownUntil is null || circuit.CooldownUntil > cooldownUntil))
+                {
+                    cooldownUntil = circuit.CooldownUntil;
+                    cooldownReason = circuit.CooldownReason;
+                }
+                if (circuit.CircuitState == ProviderCircuitState.Open)
+                    circuitState = ProviderCircuitState.Open;
+                else if (circuit.CircuitState == ProviderCircuitState.HalfOpen && circuitState == ProviderCircuitState.Closed)
+                    circuitState = ProviderCircuitState.HalfOpen;
+            }
+        }
         lock (entry.Sync)
             return new(entry.Provider, entry.ActiveCount, entry.LastAttemptAt,
-                entry.NextAllowedAttemptAt, entry.CooldownUntil, entry.CircuitState, entry.CooldownReason);
+                Max(entry.NextAllowedAttemptAt, cooldownUntil), cooldownUntil, circuitState, cooldownReason);
     }
 
     public SmtpSchedulingSnapshot GetSnapshot()
@@ -316,7 +345,11 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             _domains.Values.Count(entry => entry.State.ActiveCount > 0),
             _domains.Values.Count(entry => entry.State.CooldownUntil > now),
             _providers.Count,
-            _providers.Values.Count(entry => entry.CooldownUntil > now),
+            _providerCircuits.Values
+                .Where(entry => entry.CooldownUntil > now)
+                .Select(entry => entry.Provider)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count(),
             Interlocked.Read(ref _domainCooldownEvents),
             Interlocked.Read(ref _providerCooldownEvents),
             Interlocked.Read(ref _pacingWaitMilliseconds),
@@ -331,6 +364,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     private async Task<ProviderReadiness> WaitUntilReadyAsync(
         DomainEntry domain,
         ProviderEntry provider,
+        ProviderCircuitEntry circuit,
         ProviderPolicy policy,
         CancellationToken cancellationToken)
     {
@@ -341,17 +375,22 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             lock (domain.Sync)
                 domainNext = Max(domain.State.NextAllowedAttemptAt, domain.State.CooldownUntil) ?? DateTimeOffset.MinValue;
             DateTimeOffset providerNext;
+            DateTimeOffset circuitNext;
             var becameHalfOpen = false;
             lock (provider.Sync)
             {
+                providerNext = provider.NextAllowedAttemptAt ?? DateTimeOffset.MinValue;
+            }
+            lock (circuit.Sync)
+            {
                 var now = _timeProvider.GetUtcNow();
-                providerNext = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil) ?? DateTimeOffset.MinValue;
-                if (provider.CircuitState == ProviderCircuitState.Open && providerNext > now)
-                    return new(false, false, providerNext, provider.CooldownReason ?? "ProviderPolicyCooldown");
-                if (provider.CircuitState == ProviderCircuitState.Open &&
-                    providerNext <= now && domainNext <= now)
+                circuitNext = circuit.CooldownUntil ?? DateTimeOffset.MinValue;
+                if (circuit.CircuitState == ProviderCircuitState.Open && circuitNext > now)
+                    return new(false, false, circuitNext, circuit.CooldownReason ?? "ProviderPolicyCooldown");
+                if (circuit.CircuitState == ProviderCircuitState.Open &&
+                    circuitNext <= now && domainNext <= now && providerNext <= now)
                 {
-                    provider.CircuitState = ProviderCircuitState.HalfOpen;
+                    circuit.CircuitState = ProviderCircuitState.HalfOpen;
                     ownsHalfOpen = true;
                     becameHalfOpen = true;
                     Interlocked.Increment(ref _halfOpenAttempts);
@@ -361,7 +400,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             if (becameHalfOpen)
                 _logger.LogInformation(
                     "Provider circuit half-open for {Provider}; allowing one validation attempt", policy.ProviderKey);
-            var next = Max(domainNext, providerNext);
+            var next = Max(Max(domainNext, providerNext), circuitNext);
             var delay = next - _timeProvider.GetUtcNow();
             if (delay <= TimeSpan.Zero) return new(true, ownsHalfOpen);
             Interlocked.Add(ref _pacingWaitMilliseconds, (long)Math.Ceiling(delay.TotalMilliseconds));
@@ -400,16 +439,26 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left > right ? left : right;
     private static KeyValuePair<string, object?> ProviderTag(string provider) => new("provider", provider);
 
-    private ProviderThrottleAvailability Availability(ProviderEntry provider)
+    private ProviderThrottleAvailability Availability(ProviderCircuitEntry circuit)
     {
-        lock (provider.Sync)
+        lock (circuit.Sync)
         {
             var now = _timeProvider.GetUtcNow();
-            var retryAfter = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
-            return provider.CircuitState == ProviderCircuitState.Open && retryAfter > now
-                ? new(false, retryAfter, provider.CooldownReason ?? "ProviderPolicyCooldown")
+            var retryAfter = circuit.CooldownUntil;
+            return circuit.CircuitState == ProviderCircuitState.Open && retryAfter > now
+                ? new(false, retryAfter, circuit.CooldownReason ?? "ProviderPolicyCooldown")
                 : ProviderThrottleAvailability.Available;
         }
+    }
+
+    private static string CircuitKey(string providerKey, SmtpThrottleContext context)
+    {
+        // Preserve optional source/tenant dimensions for deployments that supply them; current callers at
+        // minimum isolate provider policy blocks by normalized MX host.
+        var mxHost = context.MxHost.Trim().TrimEnd('.').ToLowerInvariant();
+        var outboundIp = string.IsNullOrWhiteSpace(context.OutboundIp) ? "default-ip" : context.OutboundIp.Trim();
+        var tenant = string.IsNullOrWhiteSpace(context.Tenant) ? "default-tenant" : context.Tenant.Trim();
+        return $"{providerKey}|{mxHost}|{outboundIp}|{tenant}";
     }
 
     private sealed class DomainEntry(string domain, int concurrency)
@@ -430,6 +479,14 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         public DateTimeOffset? CooldownUntil { get; set; }
         public DateTimeOffset? LastAttemptAt { get; set; }
         public int ActiveCount { get; set; }
+    }
+
+    private sealed class ProviderCircuitEntry(string key, string provider)
+    {
+        public string Key { get; } = key;
+        public string Provider { get; } = provider;
+        public object Sync { get; } = new();
+        public DateTimeOffset? CooldownUntil { get; set; }
         public int ConsecutiveTemporaryFailures { get; set; }
         public ProviderCircuitState CircuitState { get; set; }
         public string? CooldownReason { get; set; }
@@ -439,6 +496,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         DomainSmtpProbeThrottle owner,
         DomainEntry domain,
         ProviderEntry provider,
+        ProviderCircuitEntry circuit,
         bool ownsHalfOpen,
         int policyBlockCooldownMinutes) : ISmtpThrottleLease
     {
@@ -452,7 +510,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
             {
                 if (ownsHalfOpen)
                 {
-                    owner.AbandonHalfOpen(provider, policyBlockCooldownMinutes);
+                    owner.AbandonHalfOpen(circuit, policyBlockCooldownMinutes);
                     provider.PacingGate.Release();
                 }
                 lock (provider.Sync) provider.ActiveCount--;
@@ -479,15 +537,14 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         DateTimeOffset? RetryAfter = null,
         string? Reason = null);
 
-    private void AbandonHalfOpen(ProviderEntry provider, int cooldownMinutes)
+    private void AbandonHalfOpen(ProviderCircuitEntry circuit, int cooldownMinutes)
     {
-        lock (provider.Sync)
+        lock (circuit.Sync)
         {
-            if (provider.CircuitState != ProviderCircuitState.HalfOpen) return;
-            provider.CircuitState = ProviderCircuitState.Open;
-            provider.CooldownUntil = _timeProvider.GetUtcNow().AddMinutes(cooldownMinutes);
-            provider.NextAllowedAttemptAt = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
-            provider.CooldownReason = "HalfOpenAttemptAbandoned";
+            if (circuit.CircuitState != ProviderCircuitState.HalfOpen) return;
+            circuit.CircuitState = ProviderCircuitState.Open;
+            circuit.CooldownUntil = _timeProvider.GetUtcNow().AddMinutes(cooldownMinutes);
+            circuit.CooldownReason = "HalfOpenAttemptAbandoned";
         }
     }
 

@@ -17,7 +17,8 @@ public enum SmtpResponseCategory
     Timeout,
     ProtocolFailure,
     Unknown,
-    MailboxFull
+    MailboxFull,
+    LocalCooldown
 }
 
 public enum SmtpResponseTextClassification
