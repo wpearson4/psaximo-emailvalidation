@@ -10,6 +10,8 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 - `tests/EmailValidation.Core.Tests` — offline unit tests using fakes.
 - `tests/EmailValidation.IntegrationTests` — opt-in live network tests.
 
+User-visible changes and migration notes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 The console is only a host. A future API or worker can call `IEmailValidator` after registering `AddEmailValidation()`.
 
 ## Run
