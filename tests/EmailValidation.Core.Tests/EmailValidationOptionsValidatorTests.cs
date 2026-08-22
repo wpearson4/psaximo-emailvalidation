@@ -105,5 +105,11 @@ public sealed class EmailValidationOptionsValidatorTests
             "Endpoint=https://example.azconfig.io;Id=read-only;Secret=local-bootstrap",
             EmailValidationAzureConfiguration.ResolveConnectionString(configuration));
         Assert.Equal("Development", EmailValidationAzureConfiguration.ResolveLabel(configuration, "Development"));
+        Assert.True(EmailValidationAzureConfiguration.MatchesSecret(
+            new Uri("https://example.vault.azure.net/secrets/Mongo/version"),
+            "https://example.vault.azure.net/secrets/Mongo"));
+        Assert.False(EmailValidationAzureConfiguration.MatchesSecret(
+            new Uri("https://example.vault.azure.net/secrets/Other"),
+            "https://example.vault.azure.net/secrets/Mongo"));
     }
 }
