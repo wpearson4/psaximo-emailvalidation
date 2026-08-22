@@ -358,7 +358,20 @@ public interface IValidationPersistenceMetrics
     void RecordCacheInvalidation();
     void RecordStaleMailboxRefresh();
     void RecordDomainReuse();
+    void RecordCatchAllDiscovered();
+    void RecordCatchAllReuse(bool catchAllProbeAvoided, bool mailboxProbeAvoided);
+    void RecordCatchAllRefreshed(bool expired, bool classificationChanged);
     ValidationPersistenceSnapshot GetSnapshot();
+}
+
+public interface IValidationPlanBuilder
+{
+    ValidationPlan Build(
+        DomainIntelligence? intelligence,
+        bool smtpEnabled,
+        bool domainIntelligenceReused,
+        ValidationPolicyVersions currentPolicy,
+        DateTimeOffset now);
 }
 
 public interface IValidationResultCache

@@ -22,6 +22,8 @@ public sealed class EmailValidator(
     IHistoricalSignalAggregator historicalAggregator,
     IResultEvaluator resultEvaluator,
     ISmtpSessionBudget smtpSessionBudget,
+    IValidationPlanBuilder planBuilder,
+    IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
     ILogger<EmailValidator> logger) : IEmailValidator, IEmailValidationExecutor
 {
@@ -59,7 +61,7 @@ public sealed class EmailValidator(
             logger.LogWarning("Live SMTP validation disabled: {ProbeSenderHealth}", probeSenderHealth.Detail);
         var addressTask = EvaluateAddressIntelligenceAsync(
             normalized.NormalizedEmail!, localPart, domain, cancellationToken);
-        var (domainData, cacheHit, catchAllProbes, domainIntelligenceDurationMs) =
+        var (domainData, cacheHit, catchAllProbes, domainIntelligenceDurationMs, validationPlan) =
             await GetDomainDataAsync(domain, smtpEnabled, cancellationToken);
         var (addressIntelligence, addressIntelligenceDurationMs) = await addressTask;
         var selectedMx = domainData.Dns.MxRecords.OrderBy(record => record.Preference).FirstOrDefault()?.Host;
@@ -96,12 +98,21 @@ public sealed class EmailValidator(
             Disposition = SmtpProbeDisposition.NotAttempted
         };
         var mxValidation = new MxValidationEvidence([], [], MxConsensus.Unknown);
-        if (smtpEnabled && domainData.Dns.Status == DnsStatus.Success && selectedMx is not null)
+        if (validationPlan.PerformMailboxProbe && domainData.Dns.Status == DnsStatus.Success && selectedMx is not null)
         {
             (mailbox, mxValidation) = await ProbeMailboxAcrossMxAsync(
                 domainData, normalized.NormalizedEmail!, cancellationToken);
             selectedMx = mailbox.SessionEvidence?.MxHost ?? mailbox.Evidence?.MxHost ?? selectedMx;
             logger.LogInformation("SMTP probe for {Domain} returned {Outcome}", domain, mailbox.Status);
+        }
+        else if (validationPlan.UsePersistedCatchAll)
+        {
+            persistenceMetrics.RecordCatchAllReuse(
+                catchAllProbeAvoided: smtpEnabled && _options.CatchAll.Enabled,
+                mailboxProbeAvoided: smtpEnabled);
+            logger.LogDebug(
+                "Catch-all intelligence reused for {Domain}; randomized-recipient and mailbox SMTP probes skipped",
+                domain);
         }
 
         var strategy = providerStrategyResolver.Resolve(domainData.Provider);
@@ -220,6 +231,9 @@ public sealed class EmailValidator(
                 CatchAllRejected = domainData.CatchAll.Rejected,
                 CatchAllAmbiguous = domainData.CatchAll.Ambiguous,
                 CatchAllDetail = domainData.CatchAll.Detail,
+                UsedPersistedCatchAll = validationPlan.UsePersistedCatchAll,
+                MailboxProbeSkippedDueToCatchAll = validationPlan.UsePersistedCatchAll,
+                CatchAllObservedAt = domainData.CatchAll.ObservedAt ?? domainData.ObservedAt,
                 IntelligenceLookupDurationMs = domainIntelligenceDurationMs + addressIntelligenceDurationMs,
                 MailInfrastructureDurationMs = domainData.MailInfrastructure.DurationMs,
                 ProbeAttempted = mailbox.ProbeAttempted,
@@ -231,7 +245,10 @@ public sealed class EmailValidator(
             Metadata = new ValidationResultMetadata(
                 _options.Policy.ToVersions(),
                 validatedAt,
-                MxTopologyFingerprint: effectiveProvider.TopologyFingerprint)
+                MxTopologyFingerprint: effectiveProvider.TopologyFingerprint,
+                ResultSource: validationPlan.UsePersistedCatchAll
+                    ? ValidationResultSource.PersistentDomainIntelligence
+                    : ValidationResultSource.LiveValidation)
         };
         var evidenceQuality = ValidationEvidenceAssessment.Quality(
             result.Status, activeDomainData, mailbox, providerValidation);
@@ -338,15 +355,17 @@ public sealed class EmailValidator(
         return (intelligence, watch.ElapsedMilliseconds);
     }
 
-    private async Task<(DomainIntelligence Data, bool CacheHit, int CatchAllProbes, long IntelligenceDurationMs)> GetDomainDataAsync(
+    private async Task<(DomainIntelligence Data, bool CacheHit, int CatchAllProbes, long IntelligenceDurationMs, ValidationPlan Plan)> GetDomainDataAsync(
         string domain,
         bool smtpEnabled,
         CancellationToken cancellationToken)
     {
+        var policy = _options.Policy.ToVersions();
+        var now = DateTimeOffset.UtcNow;
         var cached = await cache.GetAsync(domain, cancellationToken);
-        if (cached is not null &&
-            (!smtpEnabled || cached.CatchAll.Status != CatchAllStatus.NotAttempted || !_options.CatchAll.Enabled))
-            return (cached, true, 0, 0);
+        var cachedPlan = planBuilder.Build(cached, smtpEnabled, cached is not null, policy, now);
+        if (cached is not null && !cachedPlan.RefreshDomainIntelligence && !cachedPlan.PerformCatchAllProbe)
+            return (cached, true, 0, 0, cachedPlan);
 
         var gate = _domainLocks.GetOrAdd(domain, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
@@ -354,13 +373,22 @@ public sealed class EmailValidator(
         {
             cached = await cache.GetAsync(domain, cancellationToken);
             var wasCached = cached is not null;
+            now = DateTimeOffset.UtcNow;
+            var plan = planBuilder.Build(cached, smtpEnabled, wasCached, policy, now);
+            if (cached is not null && !plan.RefreshDomainIntelligence && !plan.PerformCatchAllProbe)
+                return (cached, true, 0, 0, plan);
+
+            var previous = cached;
             var data = cached;
             var intelligenceDurationMs = 0L;
-            if (data is null)
+            var catchAllCarriedForward = false;
+            if (plan.RefreshDomainIntelligence)
             {
                 var dns = await dnsResolver.ResolveAsync(domain, cancellationToken);
                 var supplemental = await domainIntelligenceEvaluator.EvaluateAsync(domain, dns, cancellationToken);
                 logger.LogInformation("DNS for {Domain} returned {Status} and {MxCount} MX records", domain, dns.Status, dns.MxRecords.Count);
+                var provider = providerDetector.DetectWithConfidence(dns.MxRecords);
+                catchAllCarriedForward = CanCarryCatchAllForward(previous, provider, policy, now);
                 data = new DomainIntelligence
                 {
                     Domain = domain,
@@ -373,39 +401,122 @@ public sealed class EmailValidator(
                     MxForward = supplemental.MxForward,
                     DomainAge = supplemental.DomainAge,
                     MailInfrastructure = supplemental.MailInfrastructure,
-                    Provider = providerDetector.DetectWithConfidence(dns.MxRecords),
-                    CatchAll = new CatchAllDetectionResult(CatchAllStatus.NotAttempted, 0, 0, 0, 0),
-                    ObservedAt = DateTimeOffset.UtcNow,
-                    StrategyVersion = _options.Policy.ProviderStrategyVersion
+                    Provider = provider,
+                    CatchAll = catchAllCarriedForward
+                        ? previous!.CatchAll
+                        : new CatchAllDetectionResult(CatchAllStatus.NotAttempted, 0, 0, 0, 0),
+                    ObservedAt = now,
+                    StrategyVersion = policy.ProviderStrategyVersion
                 };
                 intelligenceDurationMs = supplemental.LookupDurationMs;
             }
 
             var probes = 0;
-            var selectedMx = data.Dns.MxRecords.OrderBy(record => record.Preference).FirstOrDefault()?.Host;
-            if (smtpEnabled && _options.CatchAll.Enabled && data.CatchAll.Status == CatchAllStatus.NotAttempted && selectedMx is not null)
+            var performedCatchAllProbe = false;
+            var lifetime = TimeSpan.FromMinutes(Math.Max(0, _options.Dns.CacheMinutes));
+            data = data! with { EvidenceExpiresAt = now.Add(lifetime) };
+            var selectedMx = data!.Dns.MxRecords.OrderBy(record => record.Preference).FirstOrDefault()?.Host;
+            plan = planBuilder.Build(
+                data,
+                smtpEnabled,
+                catchAllCarriedForward || (!plan.RefreshDomainIntelligence && wasCached),
+                policy,
+                now);
+            if (plan.PerformCatchAllProbe && selectedMx is not null)
             {
+                performedCatchAllProbe = true;
                 var detection = await catchAllDetector.DetectAsync(domain, selectedMx, data.Provider.Provider, cancellationToken);
-                data = data with
+                var refreshProbeCount = detection.Probes;
+                detection = detection with
                 {
-                    CatchAll = detection,
-                    ObservedAt = DateTimeOffset.UtcNow
+                    ObservedAt = detection.ObservedAt ?? now,
+                    StrategyVersion = string.IsNullOrWhiteSpace(detection.StrategyVersion)
+                        ? policy.ProviderStrategyVersion
+                        : detection.StrategyVersion,
+                    RefreshAttemptedAt = detection.RefreshAttemptedAt ?? now
                 };
-                probes = detection.Probes;
-                logger.LogInformation("Catch-all probe for {Domain} returned {Outcome}", domain, detection.Status);
+                var previousStatus = previous?.CatchAll.Status ?? CatchAllStatus.NotAttempted;
+                if (detection.Status == CatchAllStatus.Unknown &&
+                    CanPreserveAfterInconclusiveRefresh(previous, data.Provider, policy))
+                {
+                    detection = previous!.CatchAll with
+                    {
+                        Detail = $"{previous.CatchAll.Detail} The latest refresh was inconclusive; historical evidence was preserved.",
+                        RefreshAttemptedAt = now,
+                        RefreshInconclusive = true
+                    };
+                }
+                data = data with { CatchAll = detection, ObservedAt = now };
+                probes = refreshProbeCount;
+                var discovered = detection.Status == CatchAllStatus.LikelyCatchAll &&
+                    previousStatus != CatchAllStatus.LikelyCatchAll;
+                if (discovered)
+                    persistenceMetrics.RecordCatchAllDiscovered();
+                if (previousStatus != CatchAllStatus.NotAttempted)
+                    persistenceMetrics.RecordCatchAllRefreshed(
+                        expired: previous is not null && !IsCatchAllFresh(previous, now),
+                        classificationChanged: previousStatus != detection.Status);
+                if (discovered)
+                    logger.LogInformation(
+                        "Domain {Domain} marked LikelyCatchAll with confidence {Confidence:P0} ({ReasonCode})",
+                        domain,
+                        detection.Confidence,
+                        detection.ReasonCode);
+                else if (previousStatus != CatchAllStatus.NotAttempted && previousStatus != detection.Status)
+                    logger.LogInformation(
+                        "Catch-all classification for {Domain} changed from {PreviousStatus} to {CurrentStatus} with confidence {Confidence:P0}",
+                        domain,
+                        previousStatus,
+                        detection.Status,
+                        detection.Confidence);
+                else
+                    logger.LogDebug(
+                        "Catch-all probe for {Domain} returned {Outcome} with confidence {Confidence:P0} ({ReasonCode})",
+                        domain,
+                        detection.Status,
+                        detection.Confidence,
+                        detection.ReasonCode);
             }
 
-            var lifetime = TimeSpan.FromMinutes(data.CatchAll.Status == CatchAllStatus.NotAttempted
-                ? _options.Dns.CacheMinutes
-                : Math.Min(_options.Dns.CacheMinutes, _options.CatchAll.CacheMinutes));
-            data = data with { EvidenceExpiresAt = DateTimeOffset.UtcNow.Add(lifetime) };
+            data = data with { EvidenceExpiresAt = now.Add(lifetime) };
             await cache.StoreAsync(data, lifetime, cancellationToken);
-            return (data, wasCached, probes, intelligenceDurationMs);
+            plan = planBuilder.Build(
+                data,
+                smtpEnabled,
+                catchAllCarriedForward || (wasCached && probes == 0),
+                policy,
+                now);
+            return (data, wasCached, performedCatchAllProbe ? probes : 0, intelligenceDurationMs, plan);
         }
         finally
         {
             gate.Release();
         }
+    }
+
+    private bool CanCarryCatchAllForward(
+        DomainIntelligence? previous,
+        ProviderDetectionResult currentProvider,
+        ValidationPolicyVersions policy,
+        DateTimeOffset now) =>
+        previous is not null &&
+        IsCatchAllFresh(previous, now) &&
+        string.Equals(previous.StrategyVersion, policy.ProviderStrategyVersion, StringComparison.Ordinal) &&
+        string.Equals(previous.Provider.TopologyFingerprint, currentProvider.TopologyFingerprint, StringComparison.Ordinal);
+
+    private static bool CanPreserveAfterInconclusiveRefresh(
+        DomainIntelligence? previous,
+        ProviderDetectionResult currentProvider,
+        ValidationPolicyVersions policy) =>
+        previous?.CatchAll.Status == CatchAllStatus.LikelyCatchAll &&
+        string.Equals(previous.StrategyVersion, policy.ProviderStrategyVersion, StringComparison.Ordinal) &&
+        string.Equals(previous.Provider.TopologyFingerprint, currentProvider.TopologyFingerprint, StringComparison.Ordinal);
+
+    private bool IsCatchAllFresh(DomainIntelligence intelligence, DateTimeOffset now)
+    {
+        var observedAt = intelligence.CatchAll.ObservedAt ?? intelligence.ObservedAt;
+        return observedAt != default &&
+            observedAt.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes)) > now;
     }
 
     private async Task RecordObservationsAsync(
@@ -418,12 +529,14 @@ public sealed class EmailValidator(
     {
         if (catchAllProbes > 0)
         {
-            var catchAllCategory = domain.CatchAll.Status switch
-            {
-                CatchAllStatus.LikelyCatchAll => SmtpResponseCategory.Accepted,
-                CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll => SmtpResponseCategory.RecipientRejected,
-                _ => SmtpResponseCategory.Unknown
-            };
+            var catchAllCategory = domain.CatchAll.RefreshInconclusive
+                ? SmtpResponseCategory.Unknown
+                : domain.CatchAll.Status switch
+                {
+                    CatchAllStatus.LikelyCatchAll => SmtpResponseCategory.Accepted,
+                    CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll => SmtpResponseCategory.RecipientRejected,
+                    _ => SmtpResponseCategory.Unknown
+                };
             await observationStore.RecordAsync(new ValidationObservation(
                 domain.Domain,
                 ValidationObservationType.CatchAllProbe,
@@ -434,9 +547,9 @@ public sealed class EmailValidator(
                 catchAllCategory,
                 DateTimeOffset.UtcNow,
                 0,
-                domain.CatchAll.Accepted,
-                domain.CatchAll.Probes,
-                domain.CatchAll.Rejected,
+                domain.CatchAll.RefreshInconclusive ? 0 : domain.CatchAll.Accepted,
+                domain.CatchAll.RefreshInconclusive ? catchAllProbes : domain.CatchAll.Probes,
+                domain.CatchAll.RefreshInconclusive ? 0 : domain.CatchAll.Rejected,
                 domain.Provider.GatewayProvider,
                 domain.Provider.TopologyFingerprint), cancellationToken);
         }

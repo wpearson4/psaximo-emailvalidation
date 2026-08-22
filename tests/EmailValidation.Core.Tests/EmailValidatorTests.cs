@@ -7,6 +7,9 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class EmailValidatorTests
 {
+    private static readonly string[] SameDomainEmails =
+        ["a@example.com", "b@example.com", "c@example.com"];
+
     [Fact]
     public async Task InvalidSyntax_ShortCircuitsNetworkAndReturnsSpecificReason()
     {
@@ -98,6 +101,188 @@ public sealed class EmailValidatorTests
     }
 
     [Fact]
+    public async Task FreshHighConfidenceCatchAll_IsReusedForSubsequentMailboxWithoutSmtpProbes()
+    {
+        var catchAll = new HighConfidenceCatchAll();
+        var smtp = new CountingSmtp();
+        var metrics = new ValidationPersistenceMetrics();
+        var settings = LiveSettings();
+        var validator = CreateValidator(
+            new FakeDns(), settings, catchAll: catchAll, smtp: smtp, metrics: metrics);
+
+        var first = await validator.ValidateAsync(
+            "one@example.com", new EmailValidationRequest(EnableSmtp: true));
+        var second = await validator.ValidateAsync(
+            "two@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(1, catchAll.Calls);
+        Assert.Equal(1, smtp.Calls);
+        Assert.Equal(EmailValidationStatus.CatchAll, second.Status);
+        Assert.NotEqual(EmailValidationStatus.Valid, second.Status);
+        Assert.Equal(SmtpMailboxStatus.NotAttempted, second.Checks.Mailbox);
+        Assert.Equal(ValidationResultSource.PersistentDomainIntelligence, second.Metadata!.ResultSource);
+        Assert.True(second.Diagnostics?.UsedPersistedCatchAll);
+        Assert.True(second.Diagnostics?.MailboxProbeSkippedDueToCatchAll);
+        Assert.Equal(first.CatchAllEvidence!.ObservedAt, second.CatchAllEvidence!.ObservedAt);
+        Assert.Contains("Persisted domain evidence", second.ConfidenceReason, StringComparison.Ordinal);
+        Assert.Equal(1, metrics.GetSnapshot().CatchAllLiveProbesAvoided);
+        Assert.Equal(1, metrics.GetSnapshot().MailboxProbesAvoidedDueToCatchAll);
+    }
+
+    [Fact]
+    public async Task SameDomainBatch_DiscoversCatchAllOnceAndReusesItImmediately()
+    {
+        var catchAll = new HighConfidenceCatchAll();
+        var smtp = new CountingSmtp();
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: catchAll, smtp: smtp);
+
+        var results = new List<EmailValidationResult>();
+        foreach (var email in new[] { "a@example.com", "b@example.com", "c@example.com" })
+            results.Add(await validator.ValidateAsync(email, new EmailValidationRequest(EnableSmtp: true)));
+
+        Assert.Equal(1, catchAll.Calls);
+        Assert.Equal(1, smtp.Calls);
+        Assert.Equal(ValidationResultSource.LiveValidation, results[0].Metadata!.ResultSource);
+        Assert.All(results.Skip(1), result =>
+            Assert.Equal(ValidationResultSource.PersistentDomainIntelligence, result.Metadata!.ResultSource));
+    }
+
+    [Fact]
+    public async Task WeakCatchAllEvidence_DoesNotSuppressLiveMailboxValidation()
+    {
+        var catchAll = new WeakCatchAll();
+        var smtp = new CountingSmtp();
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: catchAll, smtp: smtp);
+
+        await validator.ValidateAsync("one@example.com", new EmailValidationRequest(EnableSmtp: true));
+        var second = await validator.ValidateAsync(
+            "two@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(2, catchAll.Calls);
+        Assert.Equal(2, smtp.Calls);
+        Assert.True(second.ProbeAttempted);
+        Assert.False(second.Diagnostics?.UsedPersistedCatchAll);
+    }
+
+    [Fact]
+    public async Task PersistedCatchAllLoadedByNewCacheInstance_SkipsDnsCatchAllAndMailboxProbes()
+    {
+        var dns = new FakeDns();
+        var catchAll = new HighConfidenceCatchAll();
+        var smtp = new CountingSmtp();
+        var cache = new HistoricalDomainCache(CachedCatchAllDomain());
+        var validator = CreateValidator(
+            dns, LiveSettings(), catchAll: catchAll, smtp: smtp, cache: cache);
+
+        var result = await validator.ValidateAsync(
+            "after-restart@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(0, dns.Calls);
+        Assert.Equal(0, catchAll.Calls);
+        Assert.Equal(0, smtp.Calls);
+        Assert.Equal(ValidationResultSource.PersistentDomainIntelligence, result.Metadata!.ResultSource);
+        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, result.CatchAllEvidence!.ReasonCode);
+    }
+
+    [Fact]
+    public async Task MxTopologyChange_InvalidatesPersistedCatchAllAndRevalidatesDomain()
+    {
+        var dns = new FakeDns();
+        var catchAll = new HighConfidenceCatchAll();
+        var smtp = new CountingSmtp();
+        var stale = CachedCatchAllDomain() with
+        {
+            Provider = CachedCatchAllDomain().Provider with { TopologyFingerprint = "0:old-mx.example.com" },
+            EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var validator = CreateValidator(
+            dns, LiveSettings(), catchAll: catchAll, smtp: smtp, cache: new HistoricalDomainCache(stale));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(1, dns.Calls);
+        Assert.Equal(1, catchAll.Calls);
+        Assert.Equal(1, smtp.Calls);
+        Assert.Equal("10:mx.example.com", result.Provider!.TopologyFingerprint);
+        Assert.Equal(ValidationResultSource.LiveValidation, result.Metadata!.ResultSource);
+    }
+
+    [Fact]
+    public async Task InconclusiveCatchAllRefresh_PreservesHistoryAndBacksOffFurtherRandomProbes()
+    {
+        var catchAll = new InconclusiveCatchAll();
+        var smtp = new CountingSmtp();
+        var stale = CachedCatchAllDomain() with
+        {
+            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var cache = new HistoricalDomainCache(stale);
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: catchAll, smtp: smtp, cache: cache);
+
+        var first = await validator.ValidateAsync(
+            "one@example.com", new EmailValidationRequest(EnableSmtp: true));
+        await validator.ValidateAsync("two@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(1, catchAll.Calls);
+        Assert.Equal(2, smtp.Calls);
+        Assert.Equal(CatchAllStatus.LikelyCatchAll, first.CatchAllEvidence!.Status);
+        Assert.True(first.CatchAllEvidence.RefreshInconclusive);
+        Assert.Contains("refresh was inconclusive", first.CatchAllEvidence.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ContradictoryRandomRejections_ReplaceOldCatchAllClassification()
+    {
+        var stale = CachedCatchAllDomain() with
+        {
+            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: new CountingCatchAll(),
+            smtp: new CountingSmtp(), cache: new HistoricalDomainCache(stale));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(CatchAllStatus.LikelyNotCatchAll, result.CatchAllEvidence!.Status);
+        Assert.Equal(CatchAllReasonCode.None, result.CatchAllEvidence.ReasonCode);
+    }
+
+    [Fact]
+    public async Task ConcurrentStaleDomainRequests_ShareOneCatchAllRefresh()
+    {
+        var catchAll = new BlockingCatchAll();
+        var smtp = new CountingSmtp();
+        var stale = CachedCatchAllDomain() with
+        {
+            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: catchAll, smtp: smtp,
+            cache: new HistoricalDomainCache(stale));
+
+        var validations = SameDomainEmails
+            .Select(email => validator.ValidateAsync(email, new EmailValidationRequest(EnableSmtp: true)))
+            .ToArray();
+        await catchAll.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        catchAll.Release.SetResult();
+        var results = await Task.WhenAll(validations);
+
+        Assert.Equal(1, catchAll.Calls);
+        Assert.Equal(1, smtp.Calls);
+        Assert.Single(results, result => result.Metadata!.ResultSource == ValidationResultSource.LiveValidation);
+        Assert.Equal(2, results.Count(result =>
+            result.Metadata!.ResultSource == ValidationResultSource.PersistentDomainIntelligence));
+    }
+
+    [Fact]
     public async Task AmbiguousPreferredMx_EscalatesAndUsesRecipientSpecificRejection()
     {
         var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
@@ -144,7 +329,9 @@ public sealed class EmailValidatorTests
         EmailValidationOptions? settings = null,
         IValidationObservationStore? observationStore = null,
         ICatchAllDetector? catchAll = null,
-        ISmtpMailboxProbe? smtp = null)
+        ISmtpMailboxProbe? smtp = null,
+        IDomainValidationCache? cache = null,
+        IValidationPersistenceMetrics? metrics = null)
     {
         settings ??= new EmailValidationOptions();
         var options = Microsoft.Extensions.Options.Options.Create(settings);
@@ -155,10 +342,11 @@ public sealed class EmailValidatorTests
         ];
         return new EmailValidator(
             new EmailNormalizer(), dns, new FakeDomainIntelligence(), new FakeEmailIntelligence(), new RoleAccountDetector(options),
-            new MailProviderDetector(), smtp ?? new FakeSmtp(), new HealthyProbeSender(), catchAll ?? new FakeCatchAll(), new InMemoryDomainValidationCache(),
+            new MailProviderDetector(), smtp ?? new FakeSmtp(), new HealthyProbeSender(), catchAll ?? new FakeCatchAll(), cache ?? new InMemoryDomainValidationCache(),
             new EmailClassificationEngine(), new MailProviderStrategyResolver(strategies),
             observationStore ?? new InMemoryValidationObservationStore(), new HistoricalSignalAggregator(),
-            new ResultEvaluator(), new SmtpSessionBudget(), options, NullLogger<EmailValidator>.Instance);
+            new ResultEvaluator(), new SmtpSessionBudget(), new ValidationPlanBuilder(options),
+            metrics ?? new ValidationPersistenceMetrics(), options, NullLogger<EmailValidator>.Instance);
     }
 
     private sealed class FakeDomainIntelligence : IDomainIntelligenceEvaluator
@@ -221,6 +409,21 @@ public sealed class EmailValidatorTests
             Task.FromResult(new SmtpProbeResult(SmtpMailboxStatus.Accepted, 250, "ok", TimeSpan.Zero));
     }
 
+    private sealed class CountingSmtp : ISmtpMailboxProbe
+    {
+        public int Calls { get; private set; }
+
+        public Task<SmtpProbeResult> ProbeAsync(
+            string mxHost,
+            string recipient,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new SmtpProbeResult(
+                SmtpMailboxStatus.Accepted, 250, "ok", TimeSpan.Zero, Attempts: 1));
+        }
+    }
+
     private sealed class MxSequenceSmtp(IReadOnlyDictionary<string, SmtpProbeResult> results) : ISmtpMailboxProbe
     {
         public Task<SmtpProbeResult> ProbeAsync(
@@ -273,6 +476,132 @@ public sealed class EmailValidatorTests
             CancellationToken cancellationToken = default) => Task.FromResult(
                 new CatchAllDetectionResult(status, 1, 0, 0, 1, Confidence: 0.2));
     }
+
+    private sealed class HighConfidenceCatchAll : ICatchAllDetector
+    {
+        public int Calls { get; private set; }
+
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain, string mxHost, MailProvider provider,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new CatchAllDetectionResult(
+                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+                "The domain consistently accepted randomized recipients.", 0.96)
+            {
+                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+            });
+        }
+    }
+
+    private sealed class WeakCatchAll : ICatchAllDetector
+    {
+        public int Calls { get; private set; }
+
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain, string mxHost, MailProvider provider,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new CatchAllDetectionResult(
+                CatchAllStatus.LikelyCatchAll, 1, 1, 0, 0,
+                "Weak catch-all evidence.", 0.70)
+            {
+                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+            });
+        }
+    }
+
+    private sealed class InconclusiveCatchAll : ICatchAllDetector
+    {
+        public int Calls { get; private set; }
+
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain, string mxHost, MailProvider provider,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 1, 0, 0, 1,
+                "The provider timed out during refresh.", 0.20)
+            {
+                ReasonCode = CatchAllReasonCode.MixedOrInconclusive,
+                RefreshInconclusive = true
+            });
+        }
+    }
+
+    private sealed class BlockingCatchAll : ICatchAllDetector
+    {
+        public int Calls;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<CatchAllDetectionResult> DetectAsync(
+            string domain, string mxHost, MailProvider provider,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Calls);
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return new CatchAllDetectionResult(
+                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+                "The domain consistently accepted randomized recipients.", 0.96)
+            {
+                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+            };
+        }
+    }
+
+    private sealed class HistoricalDomainCache(DomainIntelligence initial) : IDomainValidationCache
+    {
+        private DomainIntelligence _domain = initial;
+
+        public int Count => 1;
+
+        public bool TryGet(string domain, out DomainIntelligence? data)
+        {
+            data = _domain;
+            return true;
+        }
+
+        public void Store(DomainIntelligence data, TimeSpan lifetime) => _domain = data;
+
+        public Task<DomainIntelligence?> GetAsync(
+            string domain,
+            CancellationToken cancellationToken = default) => Task.FromResult<DomainIntelligence?>(_domain);
+
+        public Task StoreAsync(
+            DomainIntelligence data,
+            TimeSpan lifetime,
+            CancellationToken cancellationToken = default)
+        {
+            _domain = data;
+            return Task.CompletedTask;
+        }
+    }
+
+    private static DomainIntelligence CachedCatchAllDomain() => new()
+    {
+        Domain = "example.com",
+        DomainExists = true,
+        Dns = new DnsLookupResult(
+            DnsStatus.Success, true, [new MxRecord(10, "mx.example.com")], false, TimeSpan.Zero),
+        Provider = new ProviderDetectionResult(
+            MailProvider.GenericSmtp, 0.8, TopologyFingerprint: "10:mx.example.com"),
+        CatchAll = new CatchAllDetectionResult(
+            CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+            "The domain consistently accepted randomized recipients.", 0.96)
+        {
+            ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted,
+            ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            StrategyVersion = "1.1.0"
+        },
+        ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+        EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(50),
+        StrategyVersion = "1.1.0"
+    };
 
     private static EmailValidationOptions LiveSettings() => new()
     {

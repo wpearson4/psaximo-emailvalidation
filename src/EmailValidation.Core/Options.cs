@@ -140,6 +140,7 @@ public sealed class CatchAllOptions
     public int MinimumAcceptedProbes { get; set; } = 2;
     public int MaxProbeCount { get; set; } = 3;
     public int CacheMinutes { get; set; } = 1440;
+    public double MinimumReusableConfidence { get; set; } = 0.90;
 }
 
 public sealed class DnsOptions

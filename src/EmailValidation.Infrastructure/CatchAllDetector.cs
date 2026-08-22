@@ -9,6 +9,7 @@ public sealed class CatchAllDetector(
     IOptions<EmailValidationOptions> options) : ICatchAllDetector
 {
     private readonly CatchAllOptions _options = options.Value.CatchAll;
+    private readonly string _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
 
     public async Task<CatchAllDetectionResult> DetectAsync(
         string domain,
@@ -43,34 +44,54 @@ public sealed class CatchAllDetector(
             return WithResults(new(attempted > 1 ? CatchAllStatus.NotCatchAll : CatchAllStatus.LikelyNotCatchAll,
                 attempted, accepted, rejected, ambiguous,
                 "Every randomized recipient was explicitly rejected.",
-                attempted > 1 ? 0.95 : 0.82), results);
+                attempted > 1 ? 0.95 : 0.82)
+            {
+                ReasonCode = CatchAllReasonCode.RandomRecipientsRejected
+            }, results);
 
         if (accepted == attempted)
         {
             if (provider == MailProvider.GoogleWorkspace)
                 return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
                     "Google Workspace accepted randomized recipients; RCPT acceptance alone is not treated as catch-all proof.",
-                    0.35), results);
+                    0.35)
+                {
+                    ReasonCode = CatchAllReasonCode.ProviderCatchAllBehavior
+                }, results);
 
             if (provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer)
                 return WithResults(new(CatchAllStatus.LikelyCatchAll, attempted, accepted, rejected, ambiguous,
                     "Exchange Online Protection accepted every randomized recipient; this indicates gateway or catch-all acceptance, not mailbox existence.",
-                    attempted > 1 ? 0.90 : 0.72), results);
+                    attempted > 1 ? 0.90 : 0.72)
+                {
+                    ReasonCode = CatchAllReasonCode.GatewayAcceptsArbitraryRecipients
+                }, results);
 
             var minimum = Math.Clamp(_options.MinimumAcceptedProbes, 2, 3);
             if (accepted >= minimum)
                 return WithResults(new(CatchAllStatus.LikelyCatchAll, attempted, accepted, rejected, ambiguous,
                     $"{accepted} independent randomized recipients were accepted.",
-                    Math.Min(0.95, 0.80 + (accepted * 0.05))), results);
+                    Math.Min(0.95, 0.80 + (accepted * 0.05)))
+                {
+                    ReasonCode = accepted > 2
+                        ? CatchAllReasonCode.ConsistentCatchAllBehavior
+                        : CatchAllReasonCode.RandomRecipientsAccepted
+                }, results);
 
             return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
                 $"A randomized recipient was accepted, but {minimum} accepted probes are required for a likely catch-all classification.",
-                0.45), results);
+                0.45)
+            {
+                ReasonCode = CatchAllReasonCode.MixedOrInconclusive
+            }, results);
         }
 
         return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
             "Randomized recipient responses were mixed or ambiguous.",
-            0.20), results);
+            0.20)
+        {
+            ReasonCode = CatchAllReasonCode.MixedOrInconclusive
+        }, results);
     }
 
     private static bool WouldAdditionalProbeMatter(
@@ -87,7 +108,18 @@ public sealed class CatchAllDetector(
         return accepted > 0 && rejected > 0 && attempted < 3;
     }
 
-    private static CatchAllDetectionResult WithResults(
+    private CatchAllDetectionResult WithResults(
         CatchAllDetectionResult result,
-        IReadOnlyList<SmtpProbeResult> results) => result with { ProbeResults = results };
+        IReadOnlyList<SmtpProbeResult> results)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return result with
+        {
+            ProbeResults = results,
+            ObservedAt = now,
+            StrategyVersion = _strategyVersion,
+            RefreshAttemptedAt = now,
+            RefreshInconclusive = result.Status == CatchAllStatus.Unknown
+        };
+    }
 }

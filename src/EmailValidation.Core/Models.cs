@@ -285,6 +285,23 @@ public sealed record CatchAllDetectionResult(
 {
     public bool RandomRecipientAccepted => Accepted > 0;
     public IReadOnlyList<SmtpProbeResult> ProbeResults { get; init; } = [];
+    public CatchAllReasonCode ReasonCode { get; init; }
+    public DateTimeOffset? ObservedAt { get; init; }
+    public string StrategyVersion { get; init; } = string.Empty;
+    public DateTimeOffset? RefreshAttemptedAt { get; init; }
+    public bool RefreshInconclusive { get; init; }
+}
+
+public enum CatchAllReasonCode
+{
+    None,
+    RandomRecipientsAccepted,
+    GatewayAcceptsArbitraryRecipients,
+    ConsistentCatchAllBehavior,
+    HistoricalRandomRecipientAcceptance,
+    ProviderCatchAllBehavior,
+    RandomRecipientsRejected,
+    MixedOrInconclusive
 }
 
 public sealed record DomainValidationData(
@@ -323,6 +340,9 @@ public sealed record ValidationDiagnostics
     public bool PersistentDomainFound { get; init; }
     public bool PersistentMailboxFresh { get; init; }
     public string? PersistentIntelligenceDecision { get; init; }
+    public bool UsedPersistedCatchAll { get; init; }
+    public bool MailboxProbeSkippedDueToCatchAll { get; init; }
+    public DateTimeOffset? CatchAllObservedAt { get; init; }
 }
 
 public sealed record EmailValidationChecks

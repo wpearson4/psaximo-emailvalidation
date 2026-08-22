@@ -28,6 +28,13 @@ public static class EvidenceConfidenceExplainer
                 : "Low confidence because MAIL FROM was rejected before recipient validation occurred.";
         if (mxValidation?.Consensus == MxConsensus.Conflicting)
             return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
+        if (domain.CatchAll.Status == CatchAllStatus.LikelyCatchAll && !probe.ProbeAttempted)
+        {
+            var reason = string.IsNullOrWhiteSpace(domain.CatchAll.Detail)
+                ? "the domain consistently accepts randomized recipients"
+                : domain.CatchAll.Detail.Trim().TrimEnd('.');
+            return $"Persisted domain evidence: {reason}. Individual mailbox existence cannot be confirmed, and no new mailbox SMTP check was performed.";
+        }
         var category = providerValidation?.EffectiveCategory ?? probe.Evidence?.Category ?? SmtpResponseCategory.Unknown;
         var inconclusiveReason = category switch
         {

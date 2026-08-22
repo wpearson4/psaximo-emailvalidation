@@ -13,6 +13,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var scheduling = options.Scheduling;
         var persistence = options.Persistence;
         var reuse = options.ResultReuse;
+        var catchAll = options.CatchAll;
         var policy = options.Policy;
         var failures = new List<string>();
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
@@ -95,6 +96,10 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add("EmailValidation:ResultReuse freshness windows cannot be negative.");
         if (reuse.MemoryCacheSizeLimit <= 0)
             failures.Add("EmailValidation:ResultReuse:MemoryCacheSizeLimit must be greater than zero.");
+        if (catchAll.MinimumReusableConfidence is < 0 or > 1)
+            failures.Add("EmailValidation:CatchAll:MinimumReusableConfidence must be between zero and one.");
+        if (catchAll.CacheMinutes < 0)
+            failures.Add("EmailValidation:CatchAll:CacheMinutes cannot be negative.");
         if (new[]
             {
                 policy.ValidationEngineVersion,

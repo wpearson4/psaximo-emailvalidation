@@ -6,6 +6,14 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Changed
 
+- Domain catch-all intelligence now persists its structured reason, evidence counts, observation time, confidence,
+  and strategy version in the existing domain document. Fresh, high-confidence evidence can skip redundant random
+  and non-discriminating mailbox SMTP probes without promoting an individual mailbox to `Valid`.
+- Catch-all reuse is freshness-, topology-, confidence-, and provider-strategy-aware. Inconclusive refreshes preserve
+  historical evidence with bounded retry backoff, while contradictory evidence updates the current classification.
+- Reused catch-all results expose `PersistentDomainIntelligence` provenance. Existing metrics now include discovery,
+  reuse, refresh, expiry, classification changes, `CatchAllLiveProbesAvoided`, and
+  `MailboxProbesAvoidedDueToCatchAll`.
 - Catch-all-related gateway acceptance now returns the public `CatchAll` status with a more specific
   `Confirmed`, `Likely`, `GatewayAmbiguous`, or `Historical` classification. Explicit randomized-recipient
   rejection still supports `LikelyValid` and is not over-labeled as catch-all.
@@ -53,5 +61,5 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Verification
 
-- The release is covered by 260 offline core tests and an integration-test assembly with opt-in live DNS and
+- The release is covered by 273 offline core tests and an integration-test assembly with opt-in live DNS and
   real-Mongo collection/index coverage.

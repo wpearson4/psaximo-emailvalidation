@@ -11,7 +11,8 @@ public enum ValidationResultSource
     LiveValidation,
     MemoryCache,
     PersistentReuse,
-    JoinedInFlightValidation
+    JoinedInFlightValidation,
+    PersistentDomainIntelligence
 }
 
 public sealed record ValidationResultMetadata(
@@ -55,6 +56,13 @@ public sealed record ValidationReuseDecision(
 {
     public bool CanReuse => Action == ValidationReuseAction.Reuse && RemainingLifetime > TimeSpan.Zero;
 }
+
+public sealed record ValidationPlan(
+    bool RefreshDomainIntelligence,
+    bool PerformCatchAllProbe,
+    bool PerformMailboxProbe,
+    bool UsePersistedCatchAll,
+    string Reason);
 
 public sealed record ValidationSingleFlightResult(
     EmailValidationResult Result,
@@ -244,7 +252,14 @@ public sealed record ValidationPersistenceSnapshot(
     long StaleMailboxRefreshes,
     long LiveSmtpValidationsAvoidedByPersistentReuse,
     long LiveValidationsAvoidedByMemoryCache,
-    long LiveValidationsAvoidedBySingleFlight)
+    long LiveValidationsAvoidedBySingleFlight,
+    long CatchAllDomainsDiscovered,
+    long CatchAllDomainReuseHits,
+    long CatchAllLiveProbesAvoided,
+    long MailboxProbesAvoidedDueToCatchAll,
+    long CatchAllIntelligenceRefreshed,
+    long CatchAllIntelligenceExpired,
+    long CatchAllClassificationChanged)
 {
     public long LiveValidationsAvoided =>
         LiveSmtpValidationsAvoidedByPersistentReuse +

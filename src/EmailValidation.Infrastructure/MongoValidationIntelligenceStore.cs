@@ -175,6 +175,13 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.ProviderConfidence, document.ProviderConfidence)
             .Set(x => x.CatchAllStatus, document.CatchAllStatus)
             .Set(x => x.CatchAllConfidence, document.CatchAllConfidence)
+            .Set(x => x.CatchAllReasonCode, document.CatchAllReasonCode)
+            .Set(x => x.CatchAllReason, document.CatchAllReason)
+            .Set(x => x.CatchAllObservedAt, document.CatchAllObservedAt)
+            .Set(x => x.CatchAllEvidenceCount, document.CatchAllEvidenceCount)
+            .Set(x => x.RandomProbeAcceptedCount, document.RandomProbeAcceptedCount)
+            .Set(x => x.RandomProbeRejectedCount, document.RandomProbeRejectedCount)
+            .Set(x => x.CatchAllStrategyVersion, document.CatchAllStrategyVersion)
             .Set(x => x.VerificationReliability, document.VerificationReliability)
             .Set(x => x.ResultStability, document.ResultStability)
             .Set(x => x.LastObservedAt, document.LastObservedAt)
@@ -364,6 +371,14 @@ public sealed class MongoValidationIntelligenceStore :
         [BsonRepresentation(BsonType.String)]
         public CatchAllStatus CatchAllStatus { get; set; }
         public double CatchAllConfidence { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public CatchAllReasonCode CatchAllReasonCode { get; set; }
+        public string? CatchAllReason { get; set; }
+        public DateTime? CatchAllObservedAt { get; set; }
+        public int CatchAllEvidenceCount { get; set; }
+        public int RandomProbeAcceptedCount { get; set; }
+        public int RandomProbeRejectedCount { get; set; }
+        public string CatchAllStrategyVersion { get; set; } = string.Empty;
         public double VerificationReliability { get; set; }
         public double ResultStability { get; set; }
         public int ObservationCount { get; set; }
@@ -396,6 +411,15 @@ public sealed class MongoValidationIntelligenceStore :
                 ProviderConfidence = model.Provider.Confidence,
                 CatchAllStatus = model.CatchAll.Status,
                 CatchAllConfidence = model.CatchAll.Confidence,
+                CatchAllReasonCode = model.CatchAll.ReasonCode,
+                CatchAllReason = model.CatchAll.Detail,
+                CatchAllObservedAt = model.CatchAll.ObservedAt?.UtcDateTime,
+                CatchAllEvidenceCount = model.CatchAll.Probes,
+                RandomProbeAcceptedCount = model.CatchAll.Accepted,
+                RandomProbeRejectedCount = model.CatchAll.Rejected,
+                CatchAllStrategyVersion = string.IsNullOrWhiteSpace(model.CatchAll.StrategyVersion)
+                    ? model.StrategyVersion
+                    : model.CatchAll.StrategyVersion,
                 VerificationReliability = model.Behavior?.VerificationReliability ?? 0,
                 ResultStability = model.Behavior?.VerificationReliability ?? 0,
                 ObservationCount = model.Behavior?.ObservationCount ?? 0,

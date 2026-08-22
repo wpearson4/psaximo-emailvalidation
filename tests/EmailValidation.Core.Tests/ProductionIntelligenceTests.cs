@@ -37,7 +37,7 @@ public sealed class ProductionIntelligenceTests
     }
 
     [Fact]
-    public async Task PersistentDomainCache_LoadsFreshAndRejectsStaleEvidence()
+    public async Task PersistentDomainCache_LoadsFreshAndReturnsStaleEvidenceForPlannerRefresh()
     {
         var store = new TestIntelligenceStore
         {
@@ -49,7 +49,9 @@ public sealed class ProductionIntelligenceTests
 
         store.Domain = Domain(DateTimeOffset.UtcNow.AddMinutes(-1));
         var newCache = new PersistentDomainValidationCache(store);
-        Assert.Null(await newCache.GetAsync("example.test"));
+        var stale = await newCache.GetAsync("example.test");
+        Assert.NotNull(stale);
+        Assert.True(stale!.EvidenceExpiresAt <= DateTimeOffset.UtcNow);
     }
 
     [Fact]

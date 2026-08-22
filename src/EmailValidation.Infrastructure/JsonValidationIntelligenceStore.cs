@@ -306,9 +306,11 @@ public sealed class PersistentDomainValidationCache(IValidationIntelligenceStore
     {
         if (TryGet(domain, out var cached)) return cached;
         var stored = await store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
-        if (stored is null || stored.EvidenceExpiresAt is not { } expiresAt || expiresAt <= DateTimeOffset.UtcNow)
-            return null;
-        _cache[domain] = new(stored, expiresAt);
+        if (stored is null) return null;
+        if (stored.EvidenceExpiresAt is { } expiresAt && expiresAt > DateTimeOffset.UtcNow)
+            _cache[domain] = new(stored, expiresAt);
+        // Return stale durable evidence to the planner as historical context. The
+        // planner must refresh it before allowing it to suppress live SMTP work.
         return stored;
     }
 

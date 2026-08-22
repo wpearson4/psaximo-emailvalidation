@@ -171,6 +171,13 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private readonly Counter<long> _cacheWrites;
     private readonly Counter<long> _cacheInvalidations;
     private readonly Counter<long> _liveValidationAvoided;
+    private readonly Counter<long> _catchAllDiscovered;
+    private readonly Counter<long> _catchAllReuseHits;
+    private readonly Counter<long> _catchAllProbesAvoided;
+    private readonly Counter<long> _mailboxProbesAvoidedDueToCatchAll;
+    private readonly Counter<long> _catchAllRefreshed;
+    private readonly Counter<long> _catchAllExpired;
+    private readonly Counter<long> _catchAllClassificationChanged;
     private readonly Histogram<double> _queryLatency;
     private long _readCount;
     private long _hitCount;
@@ -195,6 +202,13 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private long _mxTopologyRejectionCount;
     private long _memoryCacheAvoidedCount;
     private long _singleFlightAvoidedCount;
+    private long _catchAllDiscoveredCount;
+    private long _catchAllReuseHitCount;
+    private long _catchAllProbesAvoidedCount;
+    private long _mailboxProbesAvoidedDueToCatchAllCount;
+    private long _catchAllRefreshedCount;
+    private long _catchAllExpiredCount;
+    private long _catchAllClassificationChangedCount;
 
     public ValidationPersistenceMetrics()
     {
@@ -217,6 +231,13 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         _cacheWrites = _meter.CreateCounter<long>("email_validation.result_cache.writes");
         _cacheInvalidations = _meter.CreateCounter<long>("email_validation.result_cache.invalidations");
         _liveValidationAvoided = _meter.CreateCounter<long>("email_validation.live.avoided");
+        _catchAllDiscovered = _meter.CreateCounter<long>("email_validation.catch_all.domains_discovered");
+        _catchAllReuseHits = _meter.CreateCounter<long>("email_validation.catch_all.domain_reuse_hits");
+        _catchAllProbesAvoided = _meter.CreateCounter<long>("email_validation.catch_all.live_probes_avoided");
+        _mailboxProbesAvoidedDueToCatchAll = _meter.CreateCounter<long>("email_validation.catch_all.mailbox_probes_avoided");
+        _catchAllRefreshed = _meter.CreateCounter<long>("email_validation.catch_all.intelligence_refreshed");
+        _catchAllExpired = _meter.CreateCounter<long>("email_validation.catch_all.intelligence_expired");
+        _catchAllClassificationChanged = _meter.CreateCounter<long>("email_validation.catch_all.classification_changed");
         _queryLatency = _meter.CreateHistogram<double>("email_validation.persistence.query.duration", "ms");
     }
 
@@ -338,6 +359,44 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         Interlocked.Increment(ref _domainReuseCount);
     }
 
+    public void RecordCatchAllDiscovered()
+    {
+        _catchAllDiscovered.Add(1);
+        Interlocked.Increment(ref _catchAllDiscoveredCount);
+    }
+
+    public void RecordCatchAllReuse(bool catchAllProbeAvoided, bool mailboxProbeAvoided)
+    {
+        _catchAllReuseHits.Add(1);
+        Interlocked.Increment(ref _catchAllReuseHitCount);
+        if (catchAllProbeAvoided)
+        {
+            _catchAllProbesAvoided.Add(1);
+            Interlocked.Increment(ref _catchAllProbesAvoidedCount);
+        }
+        if (mailboxProbeAvoided)
+        {
+            _mailboxProbesAvoidedDueToCatchAll.Add(1);
+            Interlocked.Increment(ref _mailboxProbesAvoidedDueToCatchAllCount);
+        }
+    }
+
+    public void RecordCatchAllRefreshed(bool expired, bool classificationChanged)
+    {
+        _catchAllRefreshed.Add(1);
+        Interlocked.Increment(ref _catchAllRefreshedCount);
+        if (expired)
+        {
+            _catchAllExpired.Add(1);
+            Interlocked.Increment(ref _catchAllExpiredCount);
+        }
+        if (classificationChanged)
+        {
+            _catchAllClassificationChanged.Add(1);
+            Interlocked.Increment(ref _catchAllClassificationChangedCount);
+        }
+    }
+
     public ValidationPersistenceSnapshot GetSnapshot() => new(
         Interlocked.Read(ref _validationRequestCount),
         Interlocked.Read(ref _readCount),
@@ -361,7 +420,14 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         Interlocked.Read(ref _staleMailboxRefreshCount),
         Interlocked.Read(ref _liveSmtpAvoidedCount),
         Interlocked.Read(ref _memoryCacheAvoidedCount),
-        Interlocked.Read(ref _singleFlightAvoidedCount));
+        Interlocked.Read(ref _singleFlightAvoidedCount),
+        Interlocked.Read(ref _catchAllDiscoveredCount),
+        Interlocked.Read(ref _catchAllReuseHitCount),
+        Interlocked.Read(ref _catchAllProbesAvoidedCount),
+        Interlocked.Read(ref _mailboxProbesAvoidedDueToCatchAllCount),
+        Interlocked.Read(ref _catchAllRefreshedCount),
+        Interlocked.Read(ref _catchAllExpiredCount),
+        Interlocked.Read(ref _catchAllClassificationChangedCount));
 
     public void Dispose() => _meter.Dispose();
 }
@@ -698,7 +764,10 @@ public sealed class IntelligenceEmailValidator(
 
             persistenceMetrics.RecordLiveValidation();
             var live = await inner.ValidateAsync(email, request, operationToken).ConfigureAwait(false);
-            var enriched = await EnrichAsync(live, ValidationResultSource.LiveValidation, operationToken)
+            var liveSource = live.Metadata?.ResultSource == ValidationResultSource.PersistentDomainIntelligence
+                ? ValidationResultSource.PersistentDomainIntelligence
+                : ValidationResultSource.LiveValidation;
+            var enriched = await EnrichAsync(live, liveSource, operationToken)
                 .ConfigureAwait(false);
             var reusableDomain = lookup.Domain?.EvidenceExpiresAt is { } expiresAt &&
                 expiresAt > timeProvider.GetUtcNow();
@@ -711,7 +780,9 @@ public sealed class IntelligenceEmailValidator(
                         PersistentMailboxFound = lookup.Mailbox is not null,
                         PersistentDomainFound = lookup.Domain is not null,
                         PersistentMailboxFresh = false,
-                        PersistentIntelligenceDecision = reusableDomain
+                        PersistentIntelligenceDecision = liveSource == ValidationResultSource.PersistentDomainIntelligence
+                            ? "Reused catch-all domain intelligence; skipped catch-all and mailbox SMTP probes"
+                            : reusableDomain
                             ? "Reused domain intelligence; performed mailbox validation"
                             : "Performed live validation"
                     }
@@ -719,7 +790,9 @@ public sealed class IntelligenceEmailValidator(
             }
             if (enriched.NormalizedEmail is not null)
             {
-                var mailbox = ToMailboxIntelligence(enriched, request.EnableSmtp);
+                var mailbox = ToMailboxIntelligence(
+                    enriched,
+                    request.EnableSmtp && enriched.Checks.Mailbox != SmtpMailboxStatus.NotAttempted);
                 if (enriched.DomainIntelligence is not null)
                     await store.SaveDomainAsync(enriched.DomainIntelligence, operationToken).ConfigureAwait(false);
                 await store.SaveMailboxAsync(mailbox, operationToken).ConfigureAwait(false);
@@ -736,7 +809,9 @@ public sealed class IntelligenceEmailValidator(
                 "Persistent intelligence decision: mailbox {MailboxState}, domain {DomainState}, decision {Decision}",
                 lookup.Mailbox is null ? "missing" : "stale",
                 reusableDomain ? "reused" : lookup.Domain is null ? "missing" : "stale",
-                reusableDomain ? "domain reuse with live mailbox validation" : "live validation");
+                liveSource == ValidationResultSource.PersistentDomainIntelligence
+                    ? "catch-all domain reuse without mailbox validation"
+                    : reusableDomain ? "domain reuse with live mailbox validation" : "live validation");
             return enriched;
         }
 
@@ -758,7 +833,8 @@ public sealed class IntelligenceEmailValidator(
     {
         var now = timeProvider.GetUtcNow();
         var validatedAt = result.Metadata?.ValidatedAt ?? now;
-        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse;
+        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse or
+            ValidationResultSource.PersistentDomainIntelligence;
         EmailRiskResult? risk = result.MailingRisk;
         if (result.NormalizedEmail is not null)
         {
@@ -916,7 +992,8 @@ public sealed class IntelligenceEmailValidator(
         var now = timeProvider.GetUtcNow();
         var metadata = result.Metadata;
         var validatedAt = metadata?.ValidatedAt ?? now;
-        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse ||
+        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse or
+            ValidationResultSource.PersistentDomainIntelligence ||
             metadata?.Reused == true;
         var returned = result with
         {

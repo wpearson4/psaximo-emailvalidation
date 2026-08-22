@@ -15,9 +15,13 @@ public sealed class MongoDocumentMappingTests
         var domain = Domain() with
         {
             CatchAll = new CatchAllDetectionResult(
-                CatchAllStatus.LikelyCatchAll, 1, 1, 0, 0, Confidence: 0.8)
+                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+                "Random recipients accepted.", 0.96)
             {
-                ProbeResults = [probe]
+                ProbeResults = [probe],
+                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted,
+                ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
+                StrategyVersion = "1.1.0"
             }
         };
 
@@ -28,8 +32,17 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(MailProvider.GenericSmtp, document.Provider);
         Assert.Equal("topology-1", document.MxTopologyFingerprint);
         Assert.Equal(CatchAllStatus.LikelyCatchAll, document.CatchAllStatus);
+        Assert.Equal(0.96, document.CatchAllConfidence);
+        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, document.CatchAllReasonCode);
+        Assert.Equal("Random recipients accepted.", document.CatchAllReason);
+        Assert.Equal(2, document.CatchAllEvidenceCount);
+        Assert.Equal(2, document.RandomProbeAcceptedCount);
+        Assert.Equal(0, document.RandomProbeRejectedCount);
+        Assert.Equal("1.1.0", document.CatchAllStrategyVersion);
+        Assert.NotNull(document.CatchAllObservedAt);
         Assert.NotNull(restored);
         Assert.Empty(restored!.CatchAll.ProbeResults);
+        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, restored.CatchAll.ReasonCode);
     }
 
     [Fact]

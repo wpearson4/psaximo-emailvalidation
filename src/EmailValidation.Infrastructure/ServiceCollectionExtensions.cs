@@ -97,6 +97,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IValidationResultCache, InMemoryValidationResultCache>();
         services.AddSingleton<IValidationSingleFlight, ValidationSingleFlight>();
         services.AddSingleton<IValidationResultReusePolicy, ValidationResultReusePolicy>();
+        services.AddSingleton<IValidationPlanBuilder, ValidationPlanBuilder>();
         services.AddSingleton<IConfidenceCalibrationService, ConfidenceCalibrationService>();
         services.AddSingleton<IRiskDataSource, ExistingIntelligenceRiskDataSource>();
         services.AddSingleton<IRiskDataSource, PersistentSuppressionRiskDataSource>();

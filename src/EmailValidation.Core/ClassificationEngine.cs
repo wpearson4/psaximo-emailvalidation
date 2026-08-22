@@ -116,6 +116,18 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
 
         reasons.AddRange(providerResult.ReasonCodes);
         var category = providerResult.EffectiveCategory;
+        if (category == SmtpResponseCategory.NotAttempted && catchAll.Status == CatchAllStatus.LikelyCatchAll)
+        {
+            Add(contributions, "Persisted catch-all evidence", 0,
+                catchAll.Detail ?? "The domain accepts arbitrary recipients.");
+            // This is confidence in the domain behavior classification, not in the
+            // existence of this individual mailbox.
+            return FinalizeResult(
+                EmailValidationStatus.CatchAll,
+                Math.Clamp(catchAll.Confidence, 0, 1),
+                reasons,
+                contributions);
+        }
         switch (category)
         {
             case SmtpResponseCategory.RecipientRejected:
