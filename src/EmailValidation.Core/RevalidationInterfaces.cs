@@ -72,6 +72,17 @@ public interface IRevalidationOutboxDispatcher
 
 public interface IValidationLifecycleCoordinator
 {
+    Task<ValidationLifecycleStartResult> BeginAsync(
+        string email,
+        EmailValidationRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ValidationLifecycleStartResult(
+            request.ValidationId ?? Guid.NewGuid().ToString("N"), null, false));
+
+    Task FailAsync(
+        string validationId,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
     Task<ValidationLifecycleResult> ProcessInitialResultAsync(
         EmailValidationResult result,
         EmailValidationRequest request,
@@ -81,6 +92,45 @@ public interface IValidationLifecycleCoordinator
         long expectedVersion,
         int expectedAttemptNumber,
         EmailValidationResult result,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationStatusPublisher
+{
+    Task PublishAsync(ValidationStatusChanged status, CancellationToken cancellationToken = default);
+}
+
+public interface IValidationProgressReporter
+{
+    Task ReportAsync(
+        string validationId,
+        ValidationProgressStage stage,
+        string message,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationStatusSubscription
+{
+    IAsyncEnumerable<ValidationStatusChanged> SubscribeAsync(
+        string validationId,
+        long afterSequence = 0,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationStatusQueryService
+{
+    Task<ValidationStatusSnapshot?> GetAsync(
+        string validationId,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record ValidationAccessContext(string? Subject, string? TenantId);
+
+public interface IValidationAccessPolicy
+{
+    Task<bool> CanAccessAsync(
+        string validationId,
+        ValidationAccessContext context,
         CancellationToken cancellationToken = default);
 }
 

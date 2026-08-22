@@ -48,7 +48,13 @@ public sealed class MongoValidationLifecycleStoreTests
             Assert.NotNull(claimed);
             Assert.Equal($"{initial.ValidationId}:2", claimed.Message.MessageId);
 
+            var marked = await store.MarkScheduledAsync(initial.ValidationId, claimed.Message.MessageId,
+                new(true, claimed.Message.MessageId, claimed.ScheduledAt));
+
             var current = await store.GetAsync(initial.ValidationId);
+            Assert.True(current!.RetryScheduled);
+            Assert.Equal(ValidationLifecycleState.RetryWaiting, current.LifecycleState);
+            Assert.Equal(4, current.Sequence);
             var final = current! with
             {
                 ResultState = ValidationResultState.Final,
@@ -67,6 +73,7 @@ public sealed class MongoValidationLifecycleStoreTests
             var persisted = await store.GetAsync(initial.ValidationId);
 
             Assert.True(finalized.Applied);
+            Assert.True(marked);
             Assert.False(stale.Applied);
             Assert.Equal(ValidationResultState.Final, persisted!.ResultState);
             Assert.Equal(EmailValidationStatus.Valid, persisted.CurrentResult.Status);
@@ -121,6 +128,8 @@ public sealed class MongoValidationLifecycleStoreTests
             LastValidatedAt = now,
             NextRetryAt = message.ScheduledRetryAt,
             PendingRevalidation = new(message, now, message.ScheduledRetryAt),
+            LifecycleState = ValidationLifecycleState.Provisional,
+            Sequence = 3,
             Version = 1
         };
     }

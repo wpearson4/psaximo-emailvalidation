@@ -82,8 +82,22 @@ public sealed record ValidationLifecycle
     public DateTimeOffset? NextRetryAt { get; init; }
     public bool RetryScheduled { get; init; }
     public PendingRevalidation? PendingRevalidation { get; init; }
+    public ValidationLifecycleState LifecycleState { get; init; }
+    public ValidationProgressStage CurrentStage { get; init; }
+    public long Sequence { get; init; }
+    public DateTimeOffset? RequestedAt { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? LastUpdatedAt { get; init; }
+    public bool ResultReused { get; init; }
+    public string? RetryReason { get; init; }
+    public string? StatusMessage { get; init; }
     public long Version { get; init; }
 }
+
+public sealed record ValidationLifecycleStartResult(
+    string ValidationId,
+    ValidationLifecycle? Lifecycle,
+    bool Applied);
 
 public sealed record LifecycleWriteResult(
     bool Applied,

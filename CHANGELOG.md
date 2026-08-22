@@ -6,6 +6,15 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Added
 
+- A versioned `emailvalidation.status.v1` gRPC host now exposes authoritative current-status queries and
+  server-streaming lifecycle watches with initial snapshots, sequence-based reconnect/deduplication, cancellation,
+  access-policy, stream-limit, structured logging, and telemetry boundaries.
+- Canonical lifecycle documents now distinguish lifecycle state, progress stage, mailbox status, and result finality;
+  they record requested/started/update timestamps, reuse/running flags, retry reason/time, and a monotonic status
+  sequence. Coarse domain, provider, SMTP, and persisted-intelligence progress is reported without exposing protocol
+  diagnostics.
+- Mongo change streams project lifecycle updates from validation and worker processes to gRPC hosts. Non-Mongo local
+  runs use an in-memory dispatcher behind the same publish/subscription contracts.
 - Durable, bounded revalidation now converts retryable `Unknown` outcomes into a provisional lifecycle with a stable
   validation ID, compact immutable attempt history, optimistic concurrency, and one canonical current result.
 - Azure Service Bus scheduled enqueue is isolated behind `IRevalidationScheduler`; the new worker maps explicit

@@ -25,7 +25,8 @@ public sealed class EmailValidator(
     IValidationPlanBuilder planBuilder,
     IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
-    ILogger<EmailValidator> logger) : IEmailValidator, IEmailValidationExecutor
+    ILogger<EmailValidator> logger,
+    IValidationProgressReporter? progressReporter = null) : IEmailValidator, IEmailValidationExecutor
 {
     private readonly EmailValidationOptions _options = options.Value;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _domainLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -63,8 +64,12 @@ public sealed class EmailValidator(
             normalized.NormalizedEmail!, localPart, domain, cancellationToken);
         var (domainData, cacheHit, catchAllProbes, domainIntelligenceDurationMs, validationPlan) =
             await GetDomainDataAsync(domain, smtpEnabled, cancellationToken);
+        await ReportProgressAsync(request.ValidationId, ValidationProgressStage.DomainChecks,
+            "Domain and MX validation completed.", cancellationToken).ConfigureAwait(false);
         var (addressIntelligence, addressIntelligenceDurationMs) = await addressTask;
         var selectedMx = domainData.Dns.MxRecords.OrderBy(record => record.Preference).FirstOrDefault()?.Host;
+        await ReportProgressAsync(request.ValidationId, ValidationProgressStage.ProviderChecks,
+            $"Provider identified as {domainData.Provider.Provider}.", cancellationToken).ConfigureAwait(false);
         var priorObservations = await observationStore.GetDomainObservationsAsync(domain, cancellationToken);
         // Preserve old observations in storage, but only active intelligence from the
         // current published MX topology may influence a validation decision.
@@ -100,6 +105,8 @@ public sealed class EmailValidator(
         var mxValidation = new MxValidationEvidence([], [], MxConsensus.Unknown);
         if (validationPlan.PerformMailboxProbe && domainData.Dns.Status == DnsStatus.Success && selectedMx is not null)
         {
+            await ReportProgressAsync(request.ValidationId, ValidationProgressStage.SmtpValidation,
+                "Mailbox SMTP validation started.", cancellationToken).ConfigureAwait(false);
             (mailbox, mxValidation) = await ProbeMailboxAcrossMxAsync(
                 domainData, normalized.NormalizedEmail!, cancellationToken);
             selectedMx = mailbox.SessionEvidence?.MxHost ?? mailbox.Evidence?.MxHost ?? selectedMx;
@@ -107,6 +114,9 @@ public sealed class EmailValidator(
         }
         else if (validationPlan.UsePersistedCatchAll)
         {
+            await ReportProgressAsync(request.ValidationId, ValidationProgressStage.PersistedIntelligence,
+                "Using persisted domain intelligence; mailbox SMTP validation was not required.", cancellationToken)
+                .ConfigureAwait(false);
             persistenceMetrics.RecordCatchAllReuse(
                 catchAllProbeAvoided: smtpEnabled && _options.CatchAll.Enabled,
                 mailboxProbeAvoided: smtpEnabled);
@@ -273,6 +283,24 @@ public sealed class EmailValidator(
             "Validation ended with {Status}, confidence {Confidence}, in {DurationMs} ms",
             result.Status, result.Confidence, result.DurationMs);
         return result;
+    }
+
+    private async Task ReportProgressAsync(
+        string? validationId,
+        ValidationProgressStage stage,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        if (progressReporter is null || string.IsNullOrWhiteSpace(validationId)) return;
+        try
+        {
+            await progressReporter.ReportAsync(validationId, stage, message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception,
+                "Validation progress {Stage} could not be reported for {ValidationId}", stage, validationId);
+        }
     }
 
     private async Task<(SmtpProbeResult Result, MxValidationEvidence Evidence)> ProbeMailboxAcrossMxAsync(

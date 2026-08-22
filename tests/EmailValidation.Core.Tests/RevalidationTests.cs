@@ -65,6 +65,62 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public async Task Lifecycle_PersistsBeforePublishingRequestedValidatingAndFinal()
+    {
+        var store = new MemoryLifecycleStore();
+        var publisher = new RecordingPublisher(store);
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics, publisher);
+        var request = new EmailValidationRequest(true, ValidationId: "validation-live-123");
+
+        var started = await coordinator.BeginAsync("person@example.com", request);
+        var completed = await coordinator.ProcessInitialResultAsync(
+            Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted),
+            request with { ValidationId = started.ValidationId });
+
+        Assert.True(completed.Applied);
+        Assert.Equal("validation-live-123", completed.Result.ValidationId);
+        Assert.Equal(
+            [ValidationLifecycleState.Requested, ValidationLifecycleState.Validating, ValidationLifecycleState.Final],
+            publisher.Events.Select(item => item.LifecycleState));
+        Assert.Equal([1L, 2L, 3L], publisher.Events.Select(item => item.Sequence));
+        Assert.True(publisher.EveryEventWasAlreadyPersisted);
+    }
+
+    [Fact]
+    public async Task PublisherFailure_DoesNotRollBackCanonicalResult()
+    {
+        var store = new MemoryLifecycleStore();
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics, new ThrowingPublisher());
+
+        var completed = await coordinator.ProcessInitialResultAsync(
+            Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted), new(true));
+
+        Assert.True(completed.Applied);
+        Assert.Equal(ValidationResultState.Final, store.Value!.ResultState);
+        Assert.Equal(ValidationLifecycleState.Final, store.Value.LifecycleState);
+    }
+
+    [Fact]
+    public async Task ValidationFailure_PersistsSafeFailedLifecycle()
+    {
+        var store = new MemoryLifecycleStore();
+        var publisher = new RecordingPublisher(store);
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics, publisher);
+        var validator = new LifecycleEmailValidator(new ThrowingValidationService(), coordinator);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => validator.ValidateAsync(
+            "person@example.com", new(true, ValidationId: "validation-failed-123")));
+
+        Assert.Equal(ValidationLifecycleState.Failed, store.Value!.LifecycleState);
+        Assert.Equal(ValidationResultState.Final, store.Value.ResultState);
+        Assert.Equal("Validation failed.", store.Value.StatusMessage);
+        Assert.DoesNotContain("internal failure", store.Value.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Coordinator_PreservesValidationIdAndFinalizesSecondAttempt()
     {
         var store = new MemoryLifecycleStore();
@@ -252,7 +308,8 @@ public sealed class RevalidationTests
     private static ValidationLifecycleCoordinator Coordinator(
         IValidationLifecycleStore store,
         IRevalidationOutboxDispatcher dispatcher,
-        IRevalidationMetrics metrics) => new(
+        IRevalidationMetrics metrics,
+        IValidationStatusPublisher? publisher = null) => new(
             store,
             new RevalidationPolicy(
                 new StubProviderPolicies(new("Microsoft365", 1, 0, 60, 1)), Options(true)),
@@ -262,7 +319,8 @@ public sealed class RevalidationTests
             metrics,
             new FixedTimeProvider(Now),
             Options(true),
-            NullLogger<ValidationLifecycleCoordinator>.Instance);
+            NullLogger<ValidationLifecycleCoordinator>.Instance,
+            publisher);
 
     private static IOptions<EmailValidationOptions> Options(bool enabled)
     {
@@ -363,6 +421,34 @@ public sealed class RevalidationTests
             Calls++;
             return Task.FromResult(result);
         }
+    }
+
+    private sealed class ThrowingValidationService : IEmailValidationService
+    {
+        public Task<EmailValidationResult> ValidateAsync(
+            string email,
+            EmailValidationRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("internal failure that must not be exposed");
+    }
+
+    private sealed class RecordingPublisher(MemoryLifecycleStore store) : IValidationStatusPublisher
+    {
+        public List<ValidationStatusChanged> Events { get; } = [];
+        public bool EveryEventWasAlreadyPersisted { get; private set; } = true;
+
+        public Task PublishAsync(ValidationStatusChanged status, CancellationToken cancellationToken = default)
+        {
+            Events.Add(status);
+            EveryEventWasAlreadyPersisted &= store.Value?.Sequence >= status.Sequence;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingPublisher : IValidationStatusPublisher
+    {
+        public Task PublishAsync(ValidationStatusChanged status, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("status transport unavailable");
     }
 
     private sealed class StubCoordinator : IValidationLifecycleCoordinator

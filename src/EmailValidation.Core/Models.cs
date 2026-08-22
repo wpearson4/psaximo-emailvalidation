@@ -437,7 +437,10 @@ public sealed record ClassificationResult(
     IReadOnlyList<ReasonCode> ReasonCodes,
     IReadOnlyList<ConfidenceContribution>? ConfidenceEvidence = null);
 
-public sealed record EmailValidationRequest(bool EnableSmtp = false, bool Verbose = false);
+public sealed record EmailValidationRequest(
+    bool EnableSmtp = false,
+    bool Verbose = false,
+    string? ValidationId = null);
 
 public sealed record SmtpThrottleContext(
     string Domain,

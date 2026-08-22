@@ -8,7 +8,9 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 - `src/EmailValidation.Infrastructure` — MX/DNS, SMTP, catch-all probing, throttling, caching, provider detection, and domain intelligence.
 - `src/EmailValidation.Console` — command parsing, configuration, batch ingestion, output, diagnostics, and logging bootstrap.
 - `src/EmailValidation.Worker` — Azure Service Bus receive adapter and durable revalidation outbox publisher.
+- `src/EmailValidation.Grpc` — versioned current-status and server-streaming lifecycle adapter.
 - `tests/EmailValidation.Core.Tests` — offline unit tests using fakes.
+- `tests/EmailValidation.Grpc.Tests` — protobuf contract mapping tests.
 - `tests/EmailValidation.IntegrationTests` — opt-in live network tests.
 
 User-visible changes and migration notes are recorded in [CHANGELOG.md](CHANGELOG.md).
@@ -17,6 +19,8 @@ The console is only a host. A future API or worker can call `IEmailValidator` af
 
 Durable automatic revalidation is documented in [docs/automatic-revalidation.md](docs/automatic-revalidation.md),
 including its architecture gap analysis, configuration, lifecycle semantics, and operations.
+Real-time lifecycle status, gRPC reconnect semantics, authorization boundaries, and distributed delivery are
+documented in [docs/realtime-status-gap-analysis.md](docs/realtime-status-gap-analysis.md).
 
 ## Run
 
@@ -40,6 +44,7 @@ dotnet run --project src/EmailValidation.Console -- file emails.csv
 dotnet run --project src/EmailValidation.Console -- file emails.csv --column BUSINESS_EMAIL
 dotnet run --project src/EmailValidation.Console -- interactive
 dotnet run --project src/EmailValidation.Console -- diagnostics smtp
+dotnet run --project src/EmailValidation.Grpc
 ```
 
 DNS/MX lookup is part of normal validation. SMTP mailbox and catch-all probing require the explicit `--live` switch:

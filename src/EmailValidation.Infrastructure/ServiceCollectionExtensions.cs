@@ -109,16 +109,27 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRevalidationSchedulePolicy, RevalidationSchedulePolicy>();
         services.AddSingleton<IRevalidationMessageSerializer, JsonRevalidationMessageSerializer>();
         services.AddSingleton<MongoValidationLifecycleStore>();
+        services.AddSingleton<InMemoryValidationLifecycleStore>();
         services.AddSingleton<NoOpValidationLifecycleStore>();
-        services.AddSingleton<IValidationLifecycleStore>(provider => IsRevalidationEnabled(provider)
+        services.AddSingleton<IValidationLifecycleStore>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationLifecycleStore>()
-            : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+            : provider.GetRequiredService<InMemoryValidationLifecycleStore>());
         services.AddSingleton<IRevalidationOutbox>(provider => IsRevalidationEnabled(provider)
             ? provider.GetRequiredService<MongoValidationLifecycleStore>()
             : provider.GetRequiredService<NoOpValidationLifecycleStore>());
-        services.AddSingleton<IRevalidationPersistenceInitializer>(provider => IsRevalidationEnabled(provider)
+        services.AddSingleton<IRevalidationPersistenceInitializer>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationLifecycleStore>()
             : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+        services.AddSingleton<IValidationStatusQueryService, ValidationStatusQueryService>();
+        services.AddSingleton<InMemoryValidationStatusDispatcher>();
+        services.AddSingleton<MongoValidationStatusSubscription>();
+        services.AddSingleton<IValidationStatusPublisher>(provider =>
+            provider.GetRequiredService<InMemoryValidationStatusDispatcher>());
+        services.AddSingleton<IValidationProgressReporter, ValidationLifecycleProgressReporter>();
+        services.AddSingleton<IValidationStatusSubscription>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationStatusSubscription>()
+            : provider.GetRequiredService<InMemoryValidationStatusDispatcher>());
+        services.AddSingleton<IValidationAccessPolicy, UnrestrictedValidationAccessPolicy>();
         services.AddSingleton<AzureServiceBusRevalidationScheduler>();
         services.AddSingleton<DisabledRevalidationScheduler>();
         services.AddSingleton<IRevalidationScheduler>(provider => IsRevalidationEnabled(provider)

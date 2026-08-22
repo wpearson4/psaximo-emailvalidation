@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package emailvalidation.status.v1;
+option csharp_namespace = "EmailValidation.Status.V1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service EmailValidationStatus {
+  rpc GetValidationStatus(GetValidationStatusRequest) returns (ValidationStatusResponse);
+  rpc WatchValidationStatus(WatchValidationStatusRequest) returns (stream ValidationStatusResponse);
+}
+
+message GetValidationStatusRequest {
+  string validation_id = 1;
+}
+
+message WatchValidationStatusRequest {
+  string validation_id = 1;
+  int64 after_sequence = 2;
+}
+
+enum ValidationLifecycleState {
+  VALIDATION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  VALIDATION_LIFECYCLE_STATE_REQUESTED = 1;
+  VALIDATION_LIFECYCLE_STATE_VALIDATING = 2;
+  VALIDATION_LIFECYCLE_STATE_PROVISIONAL = 3;
+  VALIDATION_LIFECYCLE_STATE_RETRY_WAITING = 4;
+  VALIDATION_LIFECYCLE_STATE_REVALIDATING = 5;
+  VALIDATION_LIFECYCLE_STATE_FINAL = 6;
+  VALIDATION_LIFECYCLE_STATE_FAILED = 7;
+}
+
+enum ValidationResultState {
+  VALIDATION_RESULT_STATE_UNSPECIFIED = 0;
+  VALIDATION_RESULT_STATE_PROVISIONAL = 1;
+  VALIDATION_RESULT_STATE_FINAL = 2;
+}
+
+enum ValidationProgressStage {
+  VALIDATION_PROGRESS_STAGE_UNSPECIFIED = 0;
+  VALIDATION_PROGRESS_STAGE_REQUESTED = 1;
+  VALIDATION_PROGRESS_STAGE_STARTED = 2;
+  VALIDATION_PROGRESS_STAGE_DOMAIN_CHECKS = 3;
+  VALIDATION_PROGRESS_STAGE_PROVIDER_CHECKS = 4;
+  VALIDATION_PROGRESS_STAGE_SMTP_VALIDATION = 5;
+  VALIDATION_PROGRESS_STAGE_PERSISTED_INTELLIGENCE = 6;
+  VALIDATION_PROGRESS_STAGE_PROVISIONAL = 7;
+  VALIDATION_PROGRESS_STAGE_RETRY_WAITING = 8;
+  VALIDATION_PROGRESS_STAGE_REVALIDATING = 9;
+  VALIDATION_PROGRESS_STAGE_FINAL = 10;
+  VALIDATION_PROGRESS_STAGE_FAILED = 11;
+}
+
+message ValidationStatusResponse {
+  string validation_id = 1;
+  int64 sequence = 2;
+  ValidationLifecycleState lifecycle_state = 3;
+  optional string status = 4;
+  optional string sub_status = 5;
+  ValidationResultState result_state = 6;
+  optional double confidence = 7;
+  optional string confidence_reason = 8;
+  int32 attempt_number = 9;
+  int32 maximum_attempts = 10;
+  bool retry_scheduled = 11;
+  google.protobuf.Timestamp retry_at = 12;
+  google.protobuf.Duration estimated_retry_in = 13;
+  optional string provider = 14;
+  optional string message = 15;
+  google.protobuf.Timestamp occurred_at = 16;
+  bool is_running = 17;
+  bool result_reused = 18;
+  optional string retry_reason = 19;
+  google.protobuf.Timestamp cooldown_until = 20;
+  google.protobuf.Timestamp requested_at = 21;
+  google.protobuf.Timestamp started_at = 22;
+  google.protobuf.Timestamp first_validated_at = 23;
+  google.protobuf.Timestamp last_updated_at = 24;
+  google.protobuf.Timestamp finalized_at = 25;
+  ValidationProgressStage current_stage = 26;
+}

@@ -171,6 +171,11 @@ public sealed class MongoValidationLifecycleStore :
             RetryScheduled = true,
             CurrentResult = lifecycle.CurrentResult with { RetryScheduled = true },
             PendingRevalidation = null,
+            LifecycleState = ValidationLifecycleState.RetryWaiting,
+            CurrentStage = ValidationProgressStage.RetryWaiting,
+            LastUpdatedAt = _timeProvider.GetUtcNow(),
+            StatusMessage = "Validation is queued for automatic revalidation.",
+            Sequence = lifecycle.Sequence + 1,
             Version = lifecycle.Version + 1
         };
         return (await TrySaveAsync(updated, lifecycle.Version, cancellationToken).ConfigureAwait(false)).Applied;
@@ -245,7 +250,7 @@ public sealed class MongoValidationLifecycleStore :
                 DispatchAttempts = lifecycle.PendingRevalidation?.DispatchAttempts ?? 0,
                 LastDispatchErrorCode = lifecycle.PendingRevalidation?.LastErrorCode,
                 PayloadJson = JsonSerializer.Serialize(sanitized, JsonOptions),
-                CreatedAt = lifecycle.FirstValidatedAt,
+                CreatedAt = lifecycle.RequestedAt ?? lifecycle.FirstValidatedAt,
                 UpdatedAt = now
             };
         }
