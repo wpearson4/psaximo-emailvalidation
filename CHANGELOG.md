@@ -28,6 +28,12 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Operational notes
 
+- Domain, provider, catch-all, structured observation, and mailbox intelligence now persist in two dedicated
+  MongoDB collections behind the existing host-neutral store contracts. Startup creates missing indexes
+  idempotently; temporary runtime Mongo failures degrade to live validation without changing classification.
+- The console loads `EmailValidation:*` settings from Azure App Configuration with the configured environment
+  label and resolves the Mongo connection through an existing Key Vault secret using `DefaultAzureCredential`.
+  No connection string or credential is stored in the repository or written to logs.
 - Validation, classification, confidence-model, and provider-strategy versions were advanced so persisted
   results created under the previous policy are not incorrectly reused.
 - A `LocalCooldown` result is provisional and should be retried at or after `Retry After`; it is not evidence
@@ -37,4 +43,5 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Verification
 
-- The release is covered by 237 offline core tests and one opt-in integration-test assembly.
+- The release is covered by 244 offline core tests and an integration-test assembly with opt-in live DNS and
+  real-Mongo collection/index coverage.

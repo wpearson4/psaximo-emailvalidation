@@ -339,6 +339,21 @@ public interface IValidationIntelligenceStore
     Task SaveMailboxAsync(MailboxIntelligence intelligence, CancellationToken cancellationToken = default);
 }
 
+public interface IEmailValidationPersistenceInitializer
+{
+    Task InitializeAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IValidationPersistenceMetrics
+{
+    void RecordRead(string recordType, bool found, TimeSpan elapsed);
+    void RecordWrite(string recordType, bool succeeded);
+    void RecordMailboxReuse(bool liveSmtpAvoided);
+    void RecordStaleMailboxRefresh();
+    void RecordDomainReuse();
+    ValidationPersistenceSnapshot GetSnapshot();
+}
+
 public interface IValidationSingleFlight
 {
     Task<EmailValidationResult> ExecuteAsync(

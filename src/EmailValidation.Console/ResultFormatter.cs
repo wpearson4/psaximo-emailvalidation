@@ -82,6 +82,11 @@ internal static class ResultFormatter
         Add(builder, "Duration:", $"{result.DurationMs} ms");
         if (result.Diagnostics is not null)
         {
+            Add(builder, "Persistent Mailbox:", result.Diagnostics.PersistentMailboxFound ? "Found" : "Not found");
+            Add(builder, "Persistent Domain:", result.Diagnostics.PersistentDomainFound ? "Found" : "Not found");
+            Add(builder, "Persistent Freshness:", result.Diagnostics.PersistentMailboxFresh ? "Fresh" : "Not reusable");
+            if (result.Diagnostics.PersistentIntelligenceDecision is not null)
+                Add(builder, "Persistence Decision:", result.Diagnostics.PersistentIntelligenceDecision);
             Add(builder, "Provider Confidence:", (result.Provider?.Confidence ?? 0).ToString("P0", CultureInfo.InvariantCulture));
             Add(builder, "Evidence Confidence:", result.EvidenceConfidence.ToString("P0", CultureInfo.InvariantCulture));
             Add(builder, "Detailed Statuses:", result.DetailedStatuses.Count == 0 ? "None" : string.Join(", ", result.DetailedStatuses));

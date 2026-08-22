@@ -1,5 +1,6 @@
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Core.Tests;
@@ -142,8 +143,10 @@ public sealed class ProductionIntelligenceTests
             new ValidationResultReusePolicy(options),
             new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]),
             new ValidationQualityMetrics(),
+            new ValidationPersistenceMetrics(),
             options,
-            TimeProvider.System);
+            TimeProvider.System,
+            NullLogger<IntelligenceEmailValidator>.Instance);
 
         var first = await validator.ValidateAsync("Person@Example.Test", new EmailValidationRequest(true));
         var second = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
@@ -152,6 +155,39 @@ public sealed class ProductionIntelligenceTests
         Assert.False(first.Metadata!.Reused);
         Assert.True(second.Metadata!.Reused);
         Assert.Equal(first.Status, second.Status);
+    }
+
+    [Fact]
+    public async Task IntelligenceValidator_RefreshesStaleMailboxWhileReusingFreshDomain()
+    {
+        var options = Options.Create(new EmailValidationOptions());
+        var executor = new CountingExecutor();
+        var store = new TestIntelligenceStore
+        {
+            Domain = Domain(DateTimeOffset.UtcNow.AddHours(1)),
+            Mailbox = Mailbox(Result(), DateTimeOffset.UtcNow.AddDays(-1))
+        };
+        var metrics = new ValidationPersistenceMetrics();
+        var validator = new IntelligenceEmailValidator(
+            executor,
+            new EmailNormalizer(),
+            store,
+            new ValidationSingleFlight(),
+            new ValidationResultReusePolicy(options),
+            new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]),
+            new ValidationQualityMetrics(),
+            metrics,
+            options,
+            TimeProvider.System,
+            NullLogger<IntelligenceEmailValidator>.Instance);
+
+        var result = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
+        var snapshot = metrics.GetSnapshot();
+
+        Assert.Equal(1, executor.Calls);
+        Assert.False(result.Metadata!.Reused);
+        Assert.Equal(1, snapshot.StaleMailboxRefreshes);
+        Assert.Equal(1, snapshot.DomainReuses);
     }
 
     [Fact]

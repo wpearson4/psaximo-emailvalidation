@@ -173,3 +173,14 @@ public sealed record ValidationQualitySnapshot(
     double TypoRate,
     double KnownSuppressionRate,
     IReadOnlyList<ProviderQualitySnapshot> Providers);
+
+public sealed record ValidationPersistenceSnapshot(
+    long Reads,
+    long Hits,
+    long Misses,
+    long WriteSuccesses,
+    long WriteFailures,
+    long MailboxReuses,
+    long DomainReuses,
+    long StaleMailboxRefreshes,
+    long LiveSmtpValidationsAvoided);

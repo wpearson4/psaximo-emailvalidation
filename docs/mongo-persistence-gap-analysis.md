@@ -1,0 +1,25 @@
+# Mongo validation-intelligence gap analysis
+
+This analysis was completed before adding Mongo persistence. It records which existing behavior was reused and which genuine gaps were filled.
+
+| Requirement | Initial classification | Existing implementation / implemented change |
+|---|---|---|
+| `IValidationObservationStore` | Already implemented correctly | Core contract plus bounded JSON implementation already separated structured domain observations from mailbox results. Mongo now implements the same contract with a bounded embedded observation history in the domain collection. |
+| `IValidationIntelligenceStore` | Already implemented correctly | The existing host-neutral contract already had domain/mailbox get and save operations. It was reused unchanged. |
+| `IDomainIntelligenceCache` | Implemented under another abstraction | `IDomainValidationCache` and `PersistentDomainValidationCache` already implement memory-first, durable-store fallback and evidence-expiration checks. No duplicate cache abstraction was added. |
+| Mailbox history | Already implemented correctly | `MailboxIntelligence` already contains the prior classification, confidence, strong-evidence timestamps, policy versions, topology fingerprint, SMTP strength, and a sanitized reusable result. Mongo maps it to a dedicated typed document. |
+| Domain history | Already implemented correctly | `DomainIntelligence`, `ValidationObservation`, `HistoricalSignalAggregator`, topology fingerprints, and active-topology filtering already existed. Mongo persists both the current domain snapshot and bounded structured observations. |
+| Result cache/reuse | Already implemented correctly | `IntelligenceEmailValidator`, `IValidationResultReusePolicy`, freshness windows, policy-version checks, topology checks, single-flight, and the persistent-domain cache already implement the target read path. Only persistence diagnostics/metrics were added. |
+| MX topology invalidation | Already implemented correctly | The validator already preserves old observations but excludes observations whose topology fingerprint differs from the current MX topology. Mongo atomic updates preserve the old bounded history while storing the new topology. |
+| Write orchestration | Implemented but incomplete for shared hosts | The validator already awaited domain and mailbox saves after live validation. The JSON store was process/host-local; Mongo now supplies shared durability and preserves accumulated observation/strong-evidence fields through atomic upserts. |
+| Graceful persistence degradation | Implemented but incomplete | The core could operate without historical data, but JSON failures were not representative of a remote store. Mongo read/write/observation failures now log a secret-safe warning and become misses/no-op writes without altering classification. Startup initialization remains fail-fast. |
+| Mongo integration | Missing | Added a singleton client, typed documents/mappers, deterministic IDs, two dedicated collections, atomic upserts, bounded observations, and idempotent indexes in Infrastructure. |
+| Azure App Configuration integration | Missing in this solution; established in adjacent OpenMeta hosts | Added the established endpoint + label + `DefaultAzureCredential` provider pattern and selected only `EmailValidation:*` keys. |
+| Key Vault integration | Missing in this solution; established in adjacent OpenMeta hosts | Added App Configuration Key Vault reference resolution with the same credential chain. The production connection setting is a Key Vault reference to the pre-existing Mongo secret. |
+| Mongo configuration binding | Missing | Extended `PersistenceOptions` with provider, connection, database, and collection settings plus fail-fast validation. Tests bind the App Configuration key shape without live Azure. |
+| Collection/index initialization | Missing | Added `IEmailValidationPersistenceInitializer`; the console awaits ping and idempotent index creation before command execution. No collection is dropped or recreated. |
+| Persistence observability | Implemented but incomplete | Existing quality metrics did not measure durable reuse. Added persistence reads/hits/misses, latency, writes, reuse/stale refresh, domain reuse, and the live-SMTP-avoided KPI, plus verbose per-result decisions. |
+| Batch CSV integration | Already implemented correctly | CSV uses the same `IEmailValidator` pipeline, so Mongo reuse applies without a separate path. Bulk reads/writes were intentionally deferred until profiling shows per-row access is the bottleneck. |
+| Delivery outcomes/suppressions | Already implemented correctly; outside the required collection scope | Existing contracts and JSON persistence remain intact. No optional Mongo outcome collection or unrelated migration was introduced. |
+
+The resulting dependency direction remains Core contracts/models → Infrastructure implementations → Console composition. Core has no MongoDB, BSON, Azure App Configuration, or Key Vault dependency.

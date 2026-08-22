@@ -16,6 +16,15 @@ The console is only a host. A future API or worker can call `IEmailValidator` af
 
 ## Run
 
+The console loads `EmailValidation:*` settings from Azure App Configuration and resolves Key Vault references with `DefaultAzureCredential`. Local development uses the current Azure CLI identity:
+
+```bash
+az login
+az account set --subscription "Visual Studio Professional"
+```
+
+The configured bootstrap endpoint is `https://appcs-p-ometa-dsi-scus.azconfig.io`; `AZURE_APPCONFIG_ENDPOINT` can override it for another deployment. The configured label is `Production`, matching the existing OpenMeta environment convention. Use a different label when a development App Configuration/Mongo environment is provisioned—do not point an ad hoc development run at production.
+
 From this directory:
 
 ```bash
@@ -163,13 +172,15 @@ Catch-all inference is deliberately conservative. One accepted randomized recipi
 
 Provider detection returns both a provider and confidence from centralized MX signatures. Microsoft consumer and Microsoft 365 infrastructure have separate pacing policies; Google Workspace, Yahoo, Apple/iCloud, Comcast, Proton, Zoho, Fastmail, Proofpoint, and Mimecast are also recognized. AOL, AT&T-hosted, and Verizon legacy MX routes normalize to the shared Yahoo infrastructure policy so they cannot probe the same provider concurrently under different labels. The existing provider strategies remain responsible for interpreting SMTP evidence. Provider policies add process-wide concurrency, minimum intervals, bounded retries, and policy-block cooldowns without replacing domain pacing. After a policy cooldown, one half-open probe decides whether the provider resumes or returns to cooldown. Google `421`/`451` responses with `4.7.x` enhanced codes are treated as rate-limited, inconclusive evidence rather than mailbox rejection. Gateway acceptance is recorded separately from strong mailbox evidence. SMTP results include a complete command-stage session, basic and enhanced status codes, normalized category, text classification, failed stage, MX, provider, attempt, timing, banner/EHLO/TLS diagnostics, and sanitized response excerpts. A recipient rejection is definitive only when session evidence proves that `MAIL FROM` succeeded and `RCPT TO` returned a recipient-specific permanent rejection.
 
-The default local store persists non-sensitive domain/provider observations, structured domain intelligence, mailbox prediction history, delivery-outcome snapshots, and suppression records beneath the configured `Persistence:StoragePath`. Domain and mailbox records are physically separate and keyed with SHA-256 filenames. Persisted mailbox results omit SMTP sessions, sanitized server responses, and diagnostic server text. `IValidationIntelligenceStore`, `IValidationObservationStore`, `IDeliveryOutcomeStore`, and `IGlobalSuppressionStore` keep the engine replaceable by SQL or another durable host implementation.
+MongoDB is the configured durable intelligence provider. It uses the existing `IValidationIntelligenceStore` and `IValidationObservationStore` abstractions, a shared `MongoClient`, and two service-owned collections: `EmailValidationDomainIntelligence` and `EmailValidationMailboxIntelligence`. Domain IDs are normalized domains; mailbox IDs are SHA-256 hashes of normalized addresses. Domain observations are bounded and embedded in the domain document so topology-specific history survives process restarts without creating another collection. Startup creates missing collections/indexes idempotently and never drops or recreates data.
+
+The Mongo connection string is an Azure App Configuration Key Vault reference (`EmailValidation:Persistence:ConnectionString`, label `Production`) to the existing Key Vault secret. It is not present in source, local settings, command arguments, or logs. Persisted mailbox/domain payloads omit SMTP sessions, response text, diagnostic server text, and catch-all probe payloads. Existing delivery-outcome and suppression abstractions retain their current JSON implementation; they were not migrated because this change only adds the two reusable validation-intelligence collections. The contracts keep the engine replaceable by another durable host implementation.
 
 Fresh conclusive mailbox results are reused only when their classification, confidence, engine, and provider-strategy versions match current policy, their evidence is inside the configured status-specific freshness window, their SMTP strength satisfies the new request, and the latest known MX topology has not changed. Concurrent requests for the same normalized address and request mode use a process-local single-flight operation, so one live validation serves all callers. Distributed locking is deliberately outside the console phase.
 
 Authorized downstream systems can record `DeliveryOutcomeRecord` values containing an immutable `ValidationPredictionSnapshot` and an actual `Delivered`, `HardBounce`, `SoftBounce`, `Suppressed`, or `Unknown` outcome. `IConfidenceCalibrationService` reports cohort counts, delivery/bounce rates, false-valid/false-invalid rates, precision, recall, Brier score, calibration error, and confidence bands. It explicitly reports aggregate-only results until a sufficient calibrated-probability sample exists. Hard-bounce outcomes also create a source-attributed persistent suppression entry.
 
-`IValidationQualityMetrics` provides host-neutral validation and provider summaries, including status/unknown rates, verification blocks, catch-all, disposable, typo, suppression, reliability, and latency. No dashboard framework or console dependency is embedded in the engine.
+`IValidationQualityMetrics` provides host-neutral validation and provider summaries, including status/unknown rates, verification blocks, catch-all, disposable, typo, suppression, reliability, and latency. `IValidationPersistenceMetrics` separately records persistence reads/hits/misses, query latency, write success/failure, mailbox/domain reuse, stale refreshes, and live SMTP validations avoided. No dashboard framework or console dependency is embedded in the engine.
 
 Address intelligence is intentionally separate from domain intelligence. Conservative typo suggestions and free-provider detection work locally. Toxic-domain, known spam-trap, abuse-risk, suppression, and MX-forward results require explicitly configured application-owned intelligence. Alias, alternate-address, and domain-age contracts are available, but the default providers return `Unknown` because SMTP and DNS cannot establish those facts reliably.
 
@@ -194,7 +205,7 @@ Defaults are in `src/EmailValidation.Console/appsettings.json` and can be overri
 - catch-all enablement, probe count (clamped to 1–3), minimum accepted probes, and cache lifetime;
 - configurable role names, disposable/free domains, and safe typo mappings;
 - application-owned toxic-domain, known-trap, abuse-risk, suppression, and MX-forward intelligence;
-- local persistence path, result-freshness windows, and explicit engine/classification/confidence/provider policy versions;
+- persistence provider/database/collection names, result-freshness windows, and explicit engine/classification/confidence/provider policy versions;
 - standard structured logging levels.
 
 ## Tests
@@ -207,6 +218,14 @@ Normal tests require no public network. To enable the separate live DNS test:
 
 ```bash
 EMAIL_VALIDATION_RUN_LIVE_TESTS=1 dotnet test tests/EmailValidation.IntegrationTests
+```
+
+Mongo integration coverage is opt-in and uses unique temporary collection names that are removed after the test:
+
+```bash
+EMAIL_VALIDATION_TEST_MONGO='mongodb://test-host/test-database' \
+EMAIL_VALIDATION_TEST_MONGO_DATABASE='email-validation-integration-tests' \
+dotnet test tests/EmailValidation.IntegrationTests --filter Category=MongoIntegration
 ```
 
 ## Prototype limitations

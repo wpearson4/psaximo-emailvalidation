@@ -17,8 +17,13 @@ public sealed class EmailValidationOptions
 public sealed class PersistenceOptions
 {
     public bool Enabled { get; set; } = true;
+    public string Provider { get; set; } = "Json";
     public string StoragePath { get; set; } = "data/email-validation-intelligence";
     public int MaximumObservationsPerDomain { get; set; } = 200;
+    public string ConnectionString { get; set; } = string.Empty;
+    public string DatabaseName { get; set; } = string.Empty;
+    public string DomainCollection { get; set; } = "EmailValidationDomainIntelligence";
+    public string MailboxCollection { get; set; } = "EmailValidationMailboxIntelligence";
 }
 
 public sealed class ResultReuseOptions

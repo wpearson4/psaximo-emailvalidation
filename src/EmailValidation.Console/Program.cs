@@ -11,6 +11,15 @@ using System.Text.Json.Nodes;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
+try
+{
+    builder.Configuration.AddEmailValidationAzureAppConfiguration(builder.Environment);
+}
+catch (EmailValidationConfigurationException exception)
+{
+    await System.Console.Error.WriteLineAsync($"Configuration error: {exception.Message}");
+    return 2;
+}
 // The explicit output-directory JSON file is added after the host defaults, so add
 // environment variables again to preserve the standard .NET override precedence.
 builder.Configuration.AddEnvironmentVariables();
@@ -35,11 +44,19 @@ System.Console.CancelKeyPress += (_, eventArgs) =>
 
 try
 {
+    await host.Services.GetRequiredService<IEmailValidationPersistenceInitializer>()
+        .InitializeAsync(cancellation.Token);
     return await host.Services.GetRequiredService<ConsoleApplication>().RunAsync(args, cancellation.Token);
 }
 catch (OptionsValidationException exception)
 {
     await System.Console.Error.WriteLineAsync($"Configuration error: {string.Join(" ", exception.Failures)}");
+    return 2;
+}
+catch (EmailValidationPersistenceException exception)
+{
+    await System.Console.Error.WriteLineAsync(
+        $"Persistence error: {exception.Message} ({exception.InnerException?.GetType().Name ?? "Unknown"})");
     return 2;
 }
 

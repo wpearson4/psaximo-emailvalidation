@@ -72,8 +72,22 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 failures.Add("EmailValidation:Scheduling:ProviderPolicies keys cannot be empty.");
             ValidateProviderPolicy($"EmailValidation:Scheduling:ProviderPolicies:{entry.Key}", entry.Value, failures);
         }
-        if (persistence.Enabled && string.IsNullOrWhiteSpace(persistence.StoragePath))
-            failures.Add("EmailValidation:Persistence:StoragePath is required when persistence is enabled.");
+        if (!new[] { "Json", "MongoDB" }.Contains(persistence.Provider, StringComparer.OrdinalIgnoreCase))
+            failures.Add("EmailValidation:Persistence:Provider must be Json or MongoDB.");
+        if (persistence.Enabled && string.Equals(persistence.Provider, "Json", StringComparison.OrdinalIgnoreCase) &&
+            string.IsNullOrWhiteSpace(persistence.StoragePath))
+            failures.Add("EmailValidation:Persistence:StoragePath is required when JSON persistence is enabled.");
+        if (persistence.Enabled && string.Equals(persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(persistence.ConnectionString))
+                failures.Add("EmailValidation:Persistence:ConnectionString is required for MongoDB and must be resolved through App Configuration/Key Vault.");
+            if (string.IsNullOrWhiteSpace(persistence.DatabaseName))
+                failures.Add("EmailValidation:Persistence:DatabaseName is required for MongoDB.");
+            if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection))
+                failures.Add("EmailValidation MongoDB collection names are required.");
+            if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
+                failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
+        }
         if (persistence.MaximumObservationsPerDomain <= 0)
             failures.Add("EmailValidation:Persistence:MaximumObservationsPerDomain must be greater than zero.");
         if (reuse.StrongPositiveMinutes < 0 || reuse.StrongNegativeMinutes < 0 || reuse.RiskyMinutes < 0)

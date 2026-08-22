@@ -3,6 +3,7 @@ using Elastic.Transport;
 using EmailValidation.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using MongoDB.Driver;
 
 namespace EmailValidation.Infrastructure;
 
@@ -57,11 +58,26 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISmtpSessionBudget, SmtpSessionBudget>();
         services.AddSingleton<ISmtpMailboxProbe, SmtpMailboxProbe>();
         services.AddSingleton<ICatchAllDetector, CatchAllDetector>();
+        services.AddSingleton<IValidationPersistenceMetrics, ValidationPersistenceMetrics>();
         services.AddSingleton<JsonValidationIntelligenceStore>();
-        services.AddSingleton<IValidationIntelligenceStore>(provider =>
-            provider.GetRequiredService<JsonValidationIntelligenceStore>());
-        services.AddSingleton<IValidationObservationStore>(provider =>
-            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IMongoClient>(provider =>
+        {
+            var persistence = provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Persistence;
+            var settings = MongoClientSettings.FromConnectionString(persistence.ConnectionString);
+            settings.ApplicationName = "EmailValidation";
+            return new MongoClient(settings);
+        });
+        services.AddSingleton<MongoValidationIntelligenceStore>();
+        services.AddSingleton<NoOpEmailValidationPersistenceInitializer>();
+        services.AddSingleton<IValidationIntelligenceStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
+            : provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IValidationObservationStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
+            : provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<IEmailValidationPersistenceInitializer>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
+            : provider.GetRequiredService<NoOpEmailValidationPersistenceInitializer>());
         services.AddSingleton<IDeliveryOutcomeStore>(provider =>
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDeliveryOutcomeRecorder>(provider =>
@@ -90,5 +106,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEmailValidator, IntelligenceEmailValidator>();
         services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;
+    }
+
+    private static bool IsMongo(IServiceProvider provider)
+    {
+        var persistence = provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Persistence;
+        return persistence.Enabled && string.Equals(
+            persistence.Provider,
+            "MongoDB",
+            StringComparison.OrdinalIgnoreCase);
     }
 }

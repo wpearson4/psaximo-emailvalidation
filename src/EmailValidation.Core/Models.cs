@@ -319,6 +319,10 @@ public sealed record ValidationDiagnostics
     public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;
     public SmtpResponseCategory SmtpResponseCategory { get; init; } = SmtpResponseCategory.NotAttempted;
     public DateTimeOffset? RetryAfter { get; init; }
+    public bool PersistentMailboxFound { get; init; }
+    public bool PersistentDomainFound { get; init; }
+    public bool PersistentMailboxFresh { get; init; }
+    public string? PersistentIntelligenceDecision { get; init; }
 }
 
 public sealed record EmailValidationChecks

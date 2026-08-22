@@ -1,5 +1,6 @@
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
+using Microsoft.Extensions.Configuration;
 
 namespace EmailValidation.Core.Tests;
 
@@ -46,5 +47,58 @@ public sealed class EmailValidationOptionsValidatorTests
         var result = new EmailValidationOptionsValidator().Validate(null, options);
 
         Assert.False(result.Failed);
+    }
+
+    [Fact]
+    public void AppConfigurationKeys_BindMongoPersistenceWithoutAzureConnectivity()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["EmailValidation:Persistence:Enabled"] = "true",
+            ["EmailValidation:Persistence:Provider"] = "MongoDB",
+            ["EmailValidation:Persistence:ConnectionString"] = "mongodb://configured-by-key-vault.invalid/psaximo",
+            ["EmailValidation:Persistence:DatabaseName"] = "psaximo",
+            ["EmailValidation:Persistence:DomainCollection"] = "EmailValidationDomainIntelligence",
+            ["EmailValidation:Persistence:MailboxCollection"] = "EmailValidationMailboxIntelligence"
+        }).Build();
+
+        var options = configuration.GetSection("EmailValidation").Get<EmailValidationOptions>();
+
+        Assert.NotNull(options);
+        Assert.Equal("MongoDB", options.Persistence.Provider);
+        Assert.Equal("psaximo", options.Persistence.DatabaseName);
+        Assert.Equal("EmailValidationDomainIntelligence", options.Persistence.DomainCollection);
+        Assert.Equal("EmailValidationMailboxIntelligence", options.Persistence.MailboxCollection);
+    }
+
+    [Fact]
+    public void MongoConfiguration_MissingSecretReferenceFailsClearly()
+    {
+        var options = new EmailValidationOptions
+        {
+            Persistence = new PersistenceOptions
+            {
+                Enabled = true,
+                Provider = "MongoDB",
+                DatabaseName = "psaximo"
+            }
+        };
+
+        var result = new EmailValidationOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, failure => failure.Contains("App Configuration/Key Vault", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AzureBootstrap_UsesConfiguredEndpointAndEnvironmentLabel()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [EmailValidationAzureConfiguration.EndpointKey] = "https://example.azconfig.io"
+        }).Build();
+
+        Assert.Equal("https://example.azconfig.io", EmailValidationAzureConfiguration.ResolveEndpoint(configuration));
+        Assert.Equal("Development", EmailValidationAzureConfiguration.ResolveLabel(configuration, "Development"));
     }
 }

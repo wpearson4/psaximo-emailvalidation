@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Core;
@@ -88,6 +91,111 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
         };
         return lifetime > TimeSpan.Zero && now - intelligence.LastValidatedAt <= lifetime;
     }
+}
+
+public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics, IDisposable
+{
+    private readonly Meter _meter = new("EmailValidation.Persistence", "1.0.0");
+    private readonly Counter<long> _reads;
+    private readonly Counter<long> _hits;
+    private readonly Counter<long> _misses;
+    private readonly Counter<long> _writeSuccesses;
+    private readonly Counter<long> _writeFailures;
+    private readonly Counter<long> _mailboxReuses;
+    private readonly Counter<long> _domainReuses;
+    private readonly Counter<long> _staleMailboxRefreshes;
+    private readonly Counter<long> _liveSmtpAvoided;
+    private readonly Histogram<double> _queryLatency;
+    private long _readCount;
+    private long _hitCount;
+    private long _missCount;
+    private long _writeSuccessCount;
+    private long _writeFailureCount;
+    private long _mailboxReuseCount;
+    private long _domainReuseCount;
+    private long _staleMailboxRefreshCount;
+    private long _liveSmtpAvoidedCount;
+
+    public ValidationPersistenceMetrics()
+    {
+        _reads = _meter.CreateCounter<long>("email_validation.persistence.reads");
+        _hits = _meter.CreateCounter<long>("email_validation.persistence.hits");
+        _misses = _meter.CreateCounter<long>("email_validation.persistence.misses");
+        _writeSuccesses = _meter.CreateCounter<long>("email_validation.persistence.write.success");
+        _writeFailures = _meter.CreateCounter<long>("email_validation.persistence.write.failure");
+        _mailboxReuses = _meter.CreateCounter<long>("email_validation.persistence.mailbox_reuse");
+        _domainReuses = _meter.CreateCounter<long>("email_validation.persistence.domain_reuse");
+        _staleMailboxRefreshes = _meter.CreateCounter<long>("email_validation.persistence.stale_mailbox_refresh");
+        _liveSmtpAvoided = _meter.CreateCounter<long>("email_validation.live_smtp.avoided");
+        _queryLatency = _meter.CreateHistogram<double>("email_validation.persistence.query.duration", "ms");
+    }
+
+    public void RecordRead(string recordType, bool found, TimeSpan elapsed)
+    {
+        var tags = new TagList { { "record.type", recordType } };
+        _reads.Add(1, tags);
+        _queryLatency.Record(elapsed.TotalMilliseconds, tags);
+        Interlocked.Increment(ref _readCount);
+        if (found)
+        {
+            _hits.Add(1, tags);
+            Interlocked.Increment(ref _hitCount);
+        }
+        else
+        {
+            _misses.Add(1, tags);
+            Interlocked.Increment(ref _missCount);
+        }
+    }
+
+    public void RecordWrite(string recordType, bool succeeded)
+    {
+        var tags = new TagList { { "record.type", recordType } };
+        if (succeeded)
+        {
+            _writeSuccesses.Add(1, tags);
+            Interlocked.Increment(ref _writeSuccessCount);
+        }
+        else
+        {
+            _writeFailures.Add(1, tags);
+            Interlocked.Increment(ref _writeFailureCount);
+        }
+    }
+
+    public void RecordMailboxReuse(bool liveSmtpAvoided)
+    {
+        _mailboxReuses.Add(1);
+        Interlocked.Increment(ref _mailboxReuseCount);
+        if (!liveSmtpAvoided) return;
+        _liveSmtpAvoided.Add(1);
+        Interlocked.Increment(ref _liveSmtpAvoidedCount);
+    }
+
+    public void RecordStaleMailboxRefresh()
+    {
+        _staleMailboxRefreshes.Add(1);
+        Interlocked.Increment(ref _staleMailboxRefreshCount);
+    }
+
+    public void RecordDomainReuse()
+    {
+        _domainReuses.Add(1);
+        Interlocked.Increment(ref _domainReuseCount);
+    }
+
+    public ValidationPersistenceSnapshot GetSnapshot() => new(
+        Interlocked.Read(ref _readCount),
+        Interlocked.Read(ref _hitCount),
+        Interlocked.Read(ref _missCount),
+        Interlocked.Read(ref _writeSuccessCount),
+        Interlocked.Read(ref _writeFailureCount),
+        Interlocked.Read(ref _mailboxReuseCount),
+        Interlocked.Read(ref _domainReuseCount),
+        Interlocked.Read(ref _staleMailboxRefreshCount),
+        Interlocked.Read(ref _liveSmtpAvoidedCount));
+
+    public void Dispose() => _meter.Dispose();
 }
 
 public sealed class ConfidenceCalibrationService(IDeliveryOutcomeStore outcomes) : IConfidenceCalibrationService
@@ -377,8 +485,10 @@ public sealed class IntelligenceEmailValidator(
     IValidationResultReusePolicy reusePolicy,
     IEmailRiskIntelligence riskIntelligence,
     IValidationQualityMetrics qualityMetrics,
+    IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
-    TimeProvider timeProvider) : IEmailValidator
+    TimeProvider timeProvider,
+    ILogger<IntelligenceEmailValidator> logger) : IEmailValidator
 {
     private readonly ValidationPolicyVersions _policy = options.Value.Policy.ToVersions();
 
@@ -405,12 +515,43 @@ public sealed class IntelligenceEmailValidator(
             var domain = await domainTask.ConfigureAwait(false);
             if (existing is not null && reusePolicy.CanReuse(existing, domain, request, _policy, now))
             {
-                var reused = existing.LastResult with { Email = email, DurationMs = 0 };
+                persistenceMetrics.RecordMailboxReuse(request.EnableSmtp);
+                var reused = existing.LastResult with
+                {
+                    Email = email,
+                    DurationMs = 0,
+                    Diagnostics = existing.LastResult.Diagnostics is null ? null : existing.LastResult.Diagnostics with
+                    {
+                        PersistentMailboxFound = true,
+                        PersistentDomainFound = domain is not null,
+                        PersistentMailboxFresh = true,
+                        PersistentIntelligenceDecision = "Reused previous mailbox result"
+                    }
+                };
                 return await EnrichAsync(reused, reused: true, operationToken).ConfigureAwait(false);
             }
 
+            if (existing is not null) persistenceMetrics.RecordStaleMailboxRefresh();
+            var reusableDomain = domain?.EvidenceExpiresAt is { } expiresAt && expiresAt > now;
+            if (reusableDomain) persistenceMetrics.RecordDomainReuse();
+
             var live = await inner.ValidateAsync(email, request, operationToken).ConfigureAwait(false);
             var enriched = await EnrichAsync(live, reused: false, operationToken).ConfigureAwait(false);
+            if (enriched.Diagnostics is not null)
+            {
+                enriched = enriched with
+                {
+                    Diagnostics = enriched.Diagnostics with
+                    {
+                        PersistentMailboxFound = existing is not null,
+                        PersistentDomainFound = domain is not null,
+                        PersistentMailboxFresh = false,
+                        PersistentIntelligenceDecision = reusableDomain
+                            ? "Reused domain intelligence; performed mailbox validation"
+                            : "Performed live validation"
+                    }
+                };
+            }
             if (enriched.NormalizedEmail is not null)
             {
                 if (enriched.DomainIntelligence is not null)
@@ -418,6 +559,11 @@ public sealed class IntelligenceEmailValidator(
                 await store.SaveMailboxAsync(ToMailboxIntelligence(enriched, request.EnableSmtp), operationToken)
                     .ConfigureAwait(false);
             }
+            logger.LogDebug(
+                "Persistent intelligence decision: mailbox {MailboxState}, domain {DomainState}, decision {Decision}",
+                existing is null ? "missing" : "stale",
+                reusableDomain ? "reused" : domain is null ? "missing" : "stale",
+                reusableDomain ? "domain reuse with live mailbox validation" : "live validation");
             return enriched;
         }, cancellationToken).ConfigureAwait(false);
     }
