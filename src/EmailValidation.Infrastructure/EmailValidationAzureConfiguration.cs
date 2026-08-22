@@ -12,6 +12,7 @@ public sealed class EmailValidationConfigurationException(string message, Except
 public static class EmailValidationAzureConfiguration
 {
     public const string EndpointKey = "Azure:AppConfigurationEndpoint";
+    public const string ConnectionStringKey = "Azure:AppConfigurationConnectionString";
     public const string LabelKey = "Azure:AppConfigurationLabel";
     public const string EndpointEnvironmentVariable = "AZURE_APPCONFIG_ENDPOINT";
 
@@ -21,19 +22,26 @@ public static class EmailValidationAzureConfiguration
     {
         var bootstrap = builder.Build();
         var endpoint = ResolveEndpoint(bootstrap);
-        if (string.IsNullOrWhiteSpace(endpoint))
+        var connectionString = ResolveConnectionString(bootstrap);
+        if (string.IsNullOrWhiteSpace(endpoint) && string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException(
-                $"Azure App Configuration endpoint is missing. Configure {EndpointKey} or {EndpointEnvironmentVariable}.");
+                $"Azure App Configuration bootstrap is missing. Configure {ConnectionStringKey}, {EndpointKey}, or {EndpointEnvironmentVariable}.");
 
         var label = ResolveLabel(bootstrap, environment.EnvironmentName);
         var credential = new DefaultAzureCredential();
         try
         {
-            builder.AddAzureAppConfiguration(options => options
-                .Connect(new Uri(endpoint), credential)
-                .Select("EmailValidation:*", LabelFilter.Null)
-                .Select("EmailValidation:*", label)
-                .ConfigureKeyVault(keyVault => keyVault.SetCredential(credential)));
+            builder.AddAzureAppConfiguration(options =>
+            {
+                if (string.IsNullOrWhiteSpace(connectionString))
+                    options.Connect(new Uri(endpoint), credential);
+                else
+                    options.Connect(connectionString);
+                options
+                    .Select("EmailValidation:*", LabelFilter.Null)
+                    .Select("EmailValidation:*", label)
+                    .ConfigureKeyVault(keyVault => keyVault.SetCredential(credential));
+            });
             return builder;
         }
         catch (RequestFailedException exception)
@@ -57,6 +65,9 @@ public static class EmailValidationAzureConfiguration
             ? Environment.GetEnvironmentVariable(EndpointEnvironmentVariable) ?? string.Empty
             : configured.Trim();
     }
+
+    public static string ResolveConnectionString(IConfiguration configuration) =>
+        configuration[ConnectionStringKey]?.Trim() ?? string.Empty;
 
     public static string ResolveLabel(IConfiguration configuration, string environmentName)
     {

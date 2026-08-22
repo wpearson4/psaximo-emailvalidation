@@ -95,10 +95,15 @@ public sealed class EmailValidationOptionsValidatorTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            [EmailValidationAzureConfiguration.EndpointKey] = "https://example.azconfig.io"
+            [EmailValidationAzureConfiguration.EndpointKey] = "https://example.azconfig.io",
+            [EmailValidationAzureConfiguration.ConnectionStringKey] =
+                "Endpoint=https://example.azconfig.io;Id=read-only;Secret=local-bootstrap"
         }).Build();
 
         Assert.Equal("https://example.azconfig.io", EmailValidationAzureConfiguration.ResolveEndpoint(configuration));
+        Assert.Equal(
+            "Endpoint=https://example.azconfig.io;Id=read-only;Secret=local-bootstrap",
+            EmailValidationAzureConfiguration.ResolveConnectionString(configuration));
         Assert.Equal("Development", EmailValidationAzureConfiguration.ResolveLabel(configuration, "Development"));
     }
 }

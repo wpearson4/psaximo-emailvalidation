@@ -28,6 +28,9 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Operational notes
 
+- Azure App Configuration bootstrap now accepts a local read-only connection string when Azure CLI, managed
+  identity, or developer credentials are unavailable. The access key remains a local secret and is not committed;
+  endpoint-plus-credential authentication remains the default fallback.
 - Fresh reusable results now follow memory cache → persistent mailbox/domain policy → single-flight → live
   validation. Persistent hits warm a bounded cache, live results replace stale entries, and temporary/provider-block
   outcomes use a short configurable reuse window.

@@ -23,7 +23,7 @@ az login
 az account set --subscription "Visual Studio Professional"
 ```
 
-The configured bootstrap endpoint is `https://appcs-p-ometa-dsi-scus.azconfig.io`; `AZURE_APPCONFIG_ENDPOINT` can override it for another deployment. The configured label is `Production`, matching the existing OpenMeta environment convention. Use a different label when a development App Configuration/Mongo environment is provisioned—do not point an ad hoc development run at production.
+The configured bootstrap endpoint is `https://appcs-p-ometa-dsi-scus.azconfig.io`; `AZURE_APPCONFIG_ENDPOINT` can override it for another deployment. When Azure identity is unavailable, a local `Azure:AppConfigurationConnectionString` value can bootstrap App Configuration with a read-only access key. Treat that value as a secret and never commit it. The configured label is `Production`, matching the existing OpenMeta environment convention. Use a different label when a development App Configuration/Mongo environment is provisioned—do not point an ad hoc development run at production.
 
 From this directory:
 
