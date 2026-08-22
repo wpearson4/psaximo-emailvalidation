@@ -6,12 +6,59 @@ public sealed record ValidationPolicyVersions(
     string ConfidenceModelVersion,
     string ProviderStrategyVersion);
 
+public enum ValidationResultSource
+{
+    LiveValidation,
+    MemoryCache,
+    PersistentReuse,
+    JoinedInFlightValidation
+}
+
 public sealed record ValidationResultMetadata(
     ValidationPolicyVersions Policy,
     DateTimeOffset ValidatedAt,
     bool Reused = false,
     DateTimeOffset? ReusedAt = null,
-    string? MxTopologyFingerprint = null);
+    string? MxTopologyFingerprint = null,
+    ValidationResultSource ResultSource = ValidationResultSource.LiveValidation,
+    DateTimeOffset? ReturnedAt = null,
+    TimeSpan? ReuseAge = null)
+{
+    public DateTimeOffset OriginalValidatedAt => ValidatedAt;
+}
+
+public enum ValidationReuseAction
+{
+    Reuse,
+    RevalidateMailboxOnly,
+    RevalidateDomainAndMailbox,
+    CannotReuse
+}
+
+public enum ValidationReuseRejectionReason
+{
+    None,
+    Disabled,
+    SmtpEvidenceRequired,
+    VerboseDiagnosticsUnavailable,
+    PolicyVersion,
+    DomainStale,
+    MxTopology,
+    ResultNotReusable,
+    Stale
+}
+
+public sealed record ValidationReuseDecision(
+    ValidationReuseAction Action,
+    ValidationReuseRejectionReason RejectionReason,
+    TimeSpan RemainingLifetime)
+{
+    public bool CanReuse => Action == ValidationReuseAction.Reuse && RemainingLifetime > TimeSpan.Zero;
+}
+
+public sealed record ValidationSingleFlightResult(
+    EmailValidationResult Result,
+    bool JoinedExistingOperation);
 
 public sealed record MailboxIntelligence
 {
@@ -175,12 +222,36 @@ public sealed record ValidationQualitySnapshot(
     IReadOnlyList<ProviderQualitySnapshot> Providers);
 
 public sealed record ValidationPersistenceSnapshot(
+    long ValidationRequests,
     long Reads,
     long Hits,
     long Misses,
+    long MemoryCacheHits,
+    long PersistentReuseHits,
+    long ReuseMisses,
+    long LiveValidations,
+    long SingleFlightLeaders,
+    long SingleFlightJoiners,
+    long CacheWrites,
+    long CacheInvalidations,
+    long StaleRejections,
+    long PolicyVersionRejections,
+    long MxTopologyRejections,
     long WriteSuccesses,
     long WriteFailures,
     long MailboxReuses,
     long DomainReuses,
     long StaleMailboxRefreshes,
-    long LiveSmtpValidationsAvoided);
+    long LiveSmtpValidationsAvoidedByPersistentReuse,
+    long LiveValidationsAvoidedByMemoryCache,
+    long LiveValidationsAvoidedBySingleFlight)
+{
+    public long LiveValidationsAvoided =>
+        LiveSmtpValidationsAvoidedByPersistentReuse +
+        LiveValidationsAvoidedByMemoryCache +
+        LiveValidationsAvoidedBySingleFlight;
+
+    public double SingleFlightCollapseRatio => ValidationRequests == 0
+        ? 0
+        : Math.Max(0, (ValidationRequests - LiveValidations) / (double)ValidationRequests);
+}

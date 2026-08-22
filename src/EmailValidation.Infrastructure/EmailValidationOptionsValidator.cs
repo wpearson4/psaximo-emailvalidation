@@ -90,8 +90,11 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         }
         if (persistence.MaximumObservationsPerDomain <= 0)
             failures.Add("EmailValidation:Persistence:MaximumObservationsPerDomain must be greater than zero.");
-        if (reuse.StrongPositiveMinutes < 0 || reuse.StrongNegativeMinutes < 0 || reuse.RiskyMinutes < 0)
+        if (reuse.StrongPositiveMinutes < 0 || reuse.StrongNegativeMinutes < 0 || reuse.RiskyMinutes < 0 ||
+            reuse.TransientMinutes < 0)
             failures.Add("EmailValidation:ResultReuse freshness windows cannot be negative.");
+        if (reuse.MemoryCacheSizeLimit <= 0)
+            failures.Add("EmailValidation:ResultReuse:MemoryCacheSizeLimit must be greater than zero.");
         if (new[]
             {
                 policy.ValidationEngineVersion,

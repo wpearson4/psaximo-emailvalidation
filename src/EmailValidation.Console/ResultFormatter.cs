@@ -82,6 +82,16 @@ internal static class ResultFormatter
         Add(builder, "Duration:", $"{result.DurationMs} ms");
         if (result.Diagnostics is not null)
         {
+            Add(builder, "Validation Source:", result.Metadata?.ResultSource.ToString() ?? ValidationResultSource.LiveValidation.ToString());
+            Add(builder, "Original Validation:", result.Metadata?.OriginalValidatedAt.ToString("O", CultureInfo.InvariantCulture) ?? "—");
+            Add(builder, "Returned At:", result.Metadata?.ReturnedAt?.ToString("O", CultureInfo.InvariantCulture) ?? "—");
+            Add(builder, "Reuse Age:", result.Metadata?.ReuseAge is { } reuseAge ? FormatAge(reuseAge) : "—");
+            Add(builder, "SMTP Execution:", result.Metadata?.ResultSource switch
+            {
+                ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse => "Not executed",
+                ValidationResultSource.JoinedInFlightValidation => "Shared leader operation",
+                _ => result.ProbeAttempted ? "Executed" : "Not executed"
+            });
             Add(builder, "Persistent Mailbox:", result.Diagnostics.PersistentMailboxFound ? "Found" : "Not found");
             Add(builder, "Persistent Domain:", result.Diagnostics.PersistentDomainFound ? "Found" : "Not found");
             Add(builder, "Persistent Freshness:", result.Diagnostics.PersistentMailboxFresh ? "Fresh" : "Not reusable");
@@ -225,6 +235,12 @@ internal static class ResultFormatter
 
     private static string Escape(string value) =>
         value.IndexOfAny([',', '"', '\r', '\n']) < 0 ? value : $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+
+    private static string FormatAge(TimeSpan age) => age.TotalHours >= 1
+        ? $"{(int)age.TotalHours}h {age.Minutes}m {age.Seconds}s"
+        : age.TotalMinutes >= 1
+            ? $"{age.Minutes}m {age.Seconds}s"
+            : $"{Math.Max(0, age.Seconds)}s";
 
     private static void Add(StringBuilder builder, string label, string value) =>
         builder.AppendLine(label.Length >= 22 ? $"{label} {value}" : $"{label,-22}{value}");

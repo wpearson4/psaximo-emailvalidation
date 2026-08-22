@@ -126,6 +126,20 @@ public sealed class CsvFileProcessorTests
     }
 
     [Fact]
+    public async Task ReusedResult_WritesOriginalValidationTimestamp()
+    {
+        var originalValidationTime = new DateTimeOffset(2026, 7, 20, 10, 30, 0, TimeSpan.Zero);
+        await using var fixture = await CsvFixture.CreateAsync(
+            "Email\nperson@example.com\n",
+            new TimestampedValidator(originalValidationTime));
+
+        await fixture.Processor.ProcessAsync(fixture.Path, null, false, false, TextWriter.Null, default);
+        var output = await File.ReadAllTextAsync(fixture.Path);
+
+        Assert.Contains("2026-07-20T10:30:00.000Z", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task OutputWriteFailure_LeavesOriginalFileUnchanged()
     {
         await using var fixture = await CsvFixture.CreateAsync("Email\njohn@example.com\n");
@@ -206,6 +220,24 @@ public sealed class CsvFileProcessorTests
         }
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class TimestampedValidator(DateTimeOffset validatedAt) : IEmailValidator
+    {
+        public Task<EmailValidationResult> ValidateAsync(
+            string email,
+            EmailValidationRequest request,
+            CancellationToken cancellationToken = default) => Task.FromResult(Result(email) with
+            {
+                Metadata = new ValidationResultMetadata(
+                    new ValidationPolicyVersions("1", "1", "1", "1"),
+                    validatedAt,
+                    Reused: true,
+                    ReusedAt: validatedAt.AddDays(1),
+                    ResultSource: ValidationResultSource.PersistentReuse,
+                    ReturnedAt: validatedAt.AddDays(1),
+                    ReuseAge: TimeSpan.FromDays(1))
+            });
     }
 
     private sealed class SignalingProgressWriter : StringWriter

@@ -260,7 +260,7 @@ internal sealed class CsvFileProcessor
             values[legacyConfidenceIndex] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Confidence Reason"]] =
             row.Result.ConfidenceReason ?? "No confidence explanation was available.";
-        values[resultIndexes["Validation Date/Time"]] = row.CompletedAt.UtcDateTime.ToString(
+        values[resultIndexes["Validation Date/Time"]] = (row.Result.Metadata?.ValidatedAt ?? row.CompletedAt).UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
         values[resultIndexes["Classification Confidence"]] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Evidence Quality"]] = row.Result.EvidenceQuality.ToString();

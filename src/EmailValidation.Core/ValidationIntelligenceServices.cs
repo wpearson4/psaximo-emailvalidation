@@ -16,7 +16,18 @@ public sealed class ValidationSingleFlight : IValidationSingleFlight
         Func<CancellationToken, Task<EmailValidationResult>> factory,
         CancellationToken cancellationToken = default)
     {
-        var operation = _operations.GetOrAdd(key, _ => new Flight(factory));
+        var execution = await ExecuteWithStatusAsync(key, factory, cancellationToken).ConfigureAwait(false);
+        return execution.Result;
+    }
+
+    public async Task<ValidationSingleFlightResult> ExecuteWithStatusAsync(
+        string key,
+        Func<CancellationToken, Task<EmailValidationResult>> factory,
+        CancellationToken cancellationToken = default)
+    {
+        var candidate = new Flight(factory);
+        var operation = _operations.GetOrAdd(key, candidate);
+        var joined = !ReferenceEquals(candidate, operation);
         Interlocked.Increment(ref operation.Waiters);
         var task = operation.Task.Value;
         _ = task.ContinueWith(
@@ -29,7 +40,8 @@ public sealed class ValidationSingleFlight : IValidationSingleFlight
             TaskScheduler.Default);
         try
         {
-            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var result = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return new ValidationSingleFlightResult(result, joined);
         }
         finally
         {
@@ -43,19 +55,26 @@ public sealed class ValidationSingleFlight : IValidationSingleFlight
         }
     }
 
+    public int ActiveCount => _operations.Count;
+
     private sealed class Flight
     {
         public Flight(Func<CancellationToken, Task<EmailValidationResult>> factory)
         {
             Cancellation = new CancellationTokenSource();
             Task = new Lazy<Task<EmailValidationResult>>(
-                () => factory(Cancellation.Token),
+                () => InvokeFactoryAsync(factory, Cancellation.Token),
                 LazyThreadSafetyMode.ExecutionAndPublication);
         }
 
         public CancellationTokenSource Cancellation { get; }
         public Lazy<Task<EmailValidationResult>> Task { get; }
         public int Waiters;
+
+        private static async Task<EmailValidationResult> InvokeFactoryAsync(
+            Func<CancellationToken, Task<EmailValidationResult>> factory,
+            CancellationToken cancellationToken) =>
+            await factory(cancellationToken).ConfigureAwait(false);
     }
 }
 
@@ -63,34 +82,71 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
 {
     private readonly ResultReuseOptions _options = options.Value.ResultReuse;
 
-    public bool CanReuse(
+    public ValidationReuseDecision Evaluate(
         MailboxIntelligence intelligence,
         DomainIntelligence? currentDomain,
         EmailValidationRequest request,
         ValidationPolicyVersions currentPolicy,
         DateTimeOffset now)
     {
-        if (!_options.Enabled || request.EnableSmtp && !intelligence.UsedLiveSmtp) return false;
-        if (request.Verbose && intelligence.LastResult.Diagnostics is null) return false;
-        if (intelligence.Policy != currentPolicy) return false;
+        if (!_options.Enabled)
+            return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.Disabled);
+        if (request.EnableSmtp && !intelligence.UsedLiveSmtp)
+            return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.SmtpEvidenceRequired);
+        if (request.Verbose && intelligence.LastResult.Diagnostics is null)
+            return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.VerboseDiagnosticsUnavailable);
+        if (intelligence.Policy != currentPolicy)
+            return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.PolicyVersion);
         if (currentDomain is null || currentDomain.EvidenceExpiresAt is not { } domainExpiresAt || domainExpiresAt <= now)
-            return false;
+            return Reject(ValidationReuseAction.RevalidateDomainAndMailbox, ValidationReuseRejectionReason.DomainStale);
         if (!string.Equals(currentDomain.Provider.TopologyFingerprint, intelligence.MxTopologyFingerprint, StringComparison.Ordinal))
-            return false;
+            return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.MxTopology);
 
-        var lifetime = intelligence.PreviousStatus switch
+        var (lifetime, evidenceAt) = intelligence.PreviousStatus switch
         {
-            EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll =>
-                TimeSpan.FromMinutes(Math.Max(0, _options.StrongPositiveMinutes)),
-            EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid =>
-                TimeSpan.FromMinutes(Math.Max(0, _options.StrongNegativeMinutes)),
+            EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll
+                when intelligence.PreviousMailboxResult == SmtpMailboxStatus.Accepted =>
+                (TimeSpan.FromMinutes(Math.Max(0, _options.StrongPositiveMinutes)),
+                    intelligence.LastStrongPositiveEvidenceAt ?? intelligence.LastValidatedAt),
+            EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid
+                when intelligence.PreviousMailboxResult == SmtpMailboxStatus.Rejected =>
+                (TimeSpan.FromMinutes(Math.Max(0, _options.StrongNegativeMinutes)),
+                    intelligence.LastStrongNegativeEvidenceAt ?? intelligence.LastValidatedAt),
             EmailValidationStatus.Risky when intelligence.PreviousMailboxResult is
                 SmtpMailboxStatus.Accepted or SmtpMailboxStatus.MailboxFull =>
-                TimeSpan.FromMinutes(Math.Max(0, _options.RiskyMinutes)),
-            _ => TimeSpan.Zero
+                (TimeSpan.FromMinutes(Math.Max(0, _options.RiskyMinutes)), intelligence.LastValidatedAt),
+            EmailValidationStatus.Unknown when IsTransient(intelligence) =>
+                (TimeSpan.FromMinutes(Math.Max(0, _options.TransientMinutes)), intelligence.LastValidatedAt),
+            _ => (TimeSpan.Zero, intelligence.LastValidatedAt)
         };
-        return lifetime > TimeSpan.Zero && now - intelligence.LastValidatedAt <= lifetime;
+        if (lifetime <= TimeSpan.Zero)
+            return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.ResultNotReusable);
+
+        var remaining = lifetime - (now - evidenceAt);
+        remaining = remaining < domainExpiresAt - now ? remaining : domainExpiresAt - now;
+        return remaining > TimeSpan.Zero
+            ? new ValidationReuseDecision(ValidationReuseAction.Reuse, ValidationReuseRejectionReason.None, remaining)
+            : Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.Stale);
     }
+
+    public bool CanReuse(
+        MailboxIntelligence intelligence,
+        DomainIntelligence? currentDomain,
+        EmailValidationRequest request,
+        ValidationPolicyVersions currentPolicy,
+        DateTimeOffset now) => Evaluate(intelligence, currentDomain, request, currentPolicy, now).CanReuse;
+
+    private static bool IsTransient(MailboxIntelligence intelligence) =>
+        intelligence.PreviousMailboxResult is SmtpMailboxStatus.Blocked or SmtpMailboxStatus.TemporaryFailure or
+            SmtpMailboxStatus.Timeout or SmtpMailboxStatus.ConnectionFailure ||
+        intelligence.ReasonCodes.Any(reason => reason is
+            ReasonCode.ProviderVerificationBlocked or ReasonCode.ProviderBlockedVerification or
+            ReasonCode.TemporarySmtpFailure or ReasonCode.TemporaryFailure or ReasonCode.SmtpTimeout or
+            ReasonCode.Timeout or ReasonCode.Greylisted or ReasonCode.RateLimited or ReasonCode.LocalCooldown);
+
+    private static ValidationReuseDecision Reject(
+        ValidationReuseAction action,
+        ValidationReuseRejectionReason reason) => new(action, reason, TimeSpan.Zero);
 }
 
 public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics, IDisposable
@@ -105,6 +161,16 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private readonly Counter<long> _domainReuses;
     private readonly Counter<long> _staleMailboxRefreshes;
     private readonly Counter<long> _liveSmtpAvoided;
+    private readonly Counter<long> _validationRequests;
+    private readonly Counter<long> _memoryCacheHits;
+    private readonly Counter<long> _persistentReuseHits;
+    private readonly Counter<long> _reuseMisses;
+    private readonly Counter<long> _liveValidations;
+    private readonly Counter<long> _singleFlightLeaders;
+    private readonly Counter<long> _singleFlightJoiners;
+    private readonly Counter<long> _cacheWrites;
+    private readonly Counter<long> _cacheInvalidations;
+    private readonly Counter<long> _liveValidationAvoided;
     private readonly Histogram<double> _queryLatency;
     private long _readCount;
     private long _hitCount;
@@ -115,6 +181,20 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private long _domainReuseCount;
     private long _staleMailboxRefreshCount;
     private long _liveSmtpAvoidedCount;
+    private long _validationRequestCount;
+    private long _memoryCacheHitCount;
+    private long _persistentReuseHitCount;
+    private long _reuseMissCount;
+    private long _liveValidationCount;
+    private long _singleFlightLeaderCount;
+    private long _singleFlightJoinerCount;
+    private long _cacheWriteCount;
+    private long _cacheInvalidationCount;
+    private long _staleRejectionCount;
+    private long _policyVersionRejectionCount;
+    private long _mxTopologyRejectionCount;
+    private long _memoryCacheAvoidedCount;
+    private long _singleFlightAvoidedCount;
 
     public ValidationPersistenceMetrics()
     {
@@ -127,7 +207,23 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         _domainReuses = _meter.CreateCounter<long>("email_validation.persistence.domain_reuse");
         _staleMailboxRefreshes = _meter.CreateCounter<long>("email_validation.persistence.stale_mailbox_refresh");
         _liveSmtpAvoided = _meter.CreateCounter<long>("email_validation.live_smtp.avoided");
+        _validationRequests = _meter.CreateCounter<long>("email_validation.requests");
+        _memoryCacheHits = _meter.CreateCounter<long>("email_validation.result_cache.hits");
+        _persistentReuseHits = _meter.CreateCounter<long>("email_validation.persistent_reuse.hits");
+        _reuseMisses = _meter.CreateCounter<long>("email_validation.reuse.misses");
+        _liveValidations = _meter.CreateCounter<long>("email_validation.live.executions");
+        _singleFlightLeaders = _meter.CreateCounter<long>("email_validation.single_flight.leaders");
+        _singleFlightJoiners = _meter.CreateCounter<long>("email_validation.single_flight.joiners");
+        _cacheWrites = _meter.CreateCounter<long>("email_validation.result_cache.writes");
+        _cacheInvalidations = _meter.CreateCounter<long>("email_validation.result_cache.invalidations");
+        _liveValidationAvoided = _meter.CreateCounter<long>("email_validation.live.avoided");
         _queryLatency = _meter.CreateHistogram<double>("email_validation.persistence.query.duration", "ms");
+    }
+
+    public void RecordValidationRequest()
+    {
+        _validationRequests.Add(1);
+        Interlocked.Increment(ref _validationRequestCount);
     }
 
     public void RecordRead(string recordType, bool found, TimeSpan elapsed)
@@ -166,10 +262,68 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     public void RecordMailboxReuse(bool liveSmtpAvoided)
     {
         _mailboxReuses.Add(1);
+        _persistentReuseHits.Add(1);
         Interlocked.Increment(ref _mailboxReuseCount);
+        Interlocked.Increment(ref _persistentReuseHitCount);
         if (!liveSmtpAvoided) return;
         _liveSmtpAvoided.Add(1);
+        _liveValidationAvoided.Add(1, new TagList { { "reason", "persistent_reuse" } });
         Interlocked.Increment(ref _liveSmtpAvoidedCount);
+    }
+
+    public void RecordMemoryCacheLookup(bool hit)
+    {
+        if (!hit) return;
+        _memoryCacheHits.Add(1);
+        _liveValidationAvoided.Add(1, new TagList { { "reason", "memory_cache" } });
+        Interlocked.Increment(ref _memoryCacheHitCount);
+        Interlocked.Increment(ref _memoryCacheAvoidedCount);
+    }
+
+    public void RecordReuseMiss(ValidationReuseRejectionReason reason)
+    {
+        _reuseMisses.Add(1, new TagList { { "reason", reason.ToString() } });
+        Interlocked.Increment(ref _reuseMissCount);
+        if (reason is ValidationReuseRejectionReason.Stale or ValidationReuseRejectionReason.DomainStale)
+            Interlocked.Increment(ref _staleRejectionCount);
+        if (reason == ValidationReuseRejectionReason.PolicyVersion)
+            Interlocked.Increment(ref _policyVersionRejectionCount);
+        if (reason == ValidationReuseRejectionReason.MxTopology)
+            Interlocked.Increment(ref _mxTopologyRejectionCount);
+    }
+
+    public void RecordLiveValidation()
+    {
+        _liveValidations.Add(1);
+        Interlocked.Increment(ref _liveValidationCount);
+    }
+
+    public void RecordSingleFlight(bool joinedExistingOperation)
+    {
+        if (joinedExistingOperation)
+        {
+            _singleFlightJoiners.Add(1);
+            _liveValidationAvoided.Add(1, new TagList { { "reason", "single_flight" } });
+            Interlocked.Increment(ref _singleFlightJoinerCount);
+            Interlocked.Increment(ref _singleFlightAvoidedCount);
+        }
+        else
+        {
+            _singleFlightLeaders.Add(1);
+            Interlocked.Increment(ref _singleFlightLeaderCount);
+        }
+    }
+
+    public void RecordCacheWrite()
+    {
+        _cacheWrites.Add(1);
+        Interlocked.Increment(ref _cacheWriteCount);
+    }
+
+    public void RecordCacheInvalidation()
+    {
+        _cacheInvalidations.Add(1);
+        Interlocked.Increment(ref _cacheInvalidationCount);
     }
 
     public void RecordStaleMailboxRefresh()
@@ -185,15 +339,29 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     }
 
     public ValidationPersistenceSnapshot GetSnapshot() => new(
+        Interlocked.Read(ref _validationRequestCount),
         Interlocked.Read(ref _readCount),
         Interlocked.Read(ref _hitCount),
         Interlocked.Read(ref _missCount),
+        Interlocked.Read(ref _memoryCacheHitCount),
+        Interlocked.Read(ref _persistentReuseHitCount),
+        Interlocked.Read(ref _reuseMissCount),
+        Interlocked.Read(ref _liveValidationCount),
+        Interlocked.Read(ref _singleFlightLeaderCount),
+        Interlocked.Read(ref _singleFlightJoinerCount),
+        Interlocked.Read(ref _cacheWriteCount),
+        Interlocked.Read(ref _cacheInvalidationCount),
+        Interlocked.Read(ref _staleRejectionCount),
+        Interlocked.Read(ref _policyVersionRejectionCount),
+        Interlocked.Read(ref _mxTopologyRejectionCount),
         Interlocked.Read(ref _writeSuccessCount),
         Interlocked.Read(ref _writeFailureCount),
         Interlocked.Read(ref _mailboxReuseCount),
         Interlocked.Read(ref _domainReuseCount),
         Interlocked.Read(ref _staleMailboxRefreshCount),
-        Interlocked.Read(ref _liveSmtpAvoidedCount));
+        Interlocked.Read(ref _liveSmtpAvoidedCount),
+        Interlocked.Read(ref _memoryCacheAvoidedCount),
+        Interlocked.Read(ref _singleFlightAvoidedCount));
 
     public void Dispose() => _meter.Dispose();
 }
@@ -481,6 +649,7 @@ public sealed class IntelligenceEmailValidator(
     IEmailValidationExecutor inner,
     IEmailNormalizer normalizer,
     IValidationIntelligenceStore store,
+    IValidationResultCache resultCache,
     IValidationSingleFlight singleFlight,
     IValidationResultReusePolicy reusePolicy,
     IEmailRiskIntelligence riskIntelligence,
@@ -491,60 +660,56 @@ public sealed class IntelligenceEmailValidator(
     ILogger<IntelligenceEmailValidator> logger) : IEmailValidator
 {
     private readonly ValidationPolicyVersions _policy = options.Value.Policy.ToVersions();
+    private readonly ResultReuseOptions _reuseOptions = options.Value.ResultReuse;
 
     public async Task<EmailValidationResult> ValidateAsync(
         string email,
         EmailValidationRequest request,
         CancellationToken cancellationToken = default)
     {
+        persistenceMetrics.RecordValidationRequest();
         var normalized = normalizer.Normalize(email);
         if (!normalized.IsValid)
         {
+            persistenceMetrics.RecordLiveValidation();
             var invalid = await inner.ValidateAsync(email, request, cancellationToken).ConfigureAwait(false);
-            return await EnrichAsync(invalid, reused: false, cancellationToken).ConfigureAwait(false);
+            return await EnrichAsync(invalid, ValidationResultSource.LiveValidation, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        var key = $"{normalized.NormalizedEmail}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|{_policy}";
-        return await singleFlight.ExecuteAsync(key, async operationToken =>
+        var key = CreateExecutionKey(normalized.NormalizedEmail!, request);
+        var cached = await GetCachedAsync(key, cancellationToken).ConfigureAwait(false);
+        if (cached is not null)
+            return ReturnFromSource(cached, email, ValidationResultSource.MemoryCache);
+
+        var lookup = await LookupPersistentAsync(
+            normalized.NormalizedEmail!, normalized.Domain!, request, cancellationToken).ConfigureAwait(false);
+        RecordLookupDecision(lookup);
+        if (lookup.Decision.CanReuse)
+            return await ReusePersistentAsync(email, key, lookup, cancellationToken).ConfigureAwait(false);
+
+        async Task<EmailValidationResult> ExecuteLeaderAsync(CancellationToken operationToken)
         {
-            var now = timeProvider.GetUtcNow();
-            var existingTask = store.GetMailboxAsync(normalized.NormalizedEmail!, operationToken);
-            var domainTask = store.GetDomainAsync(normalized.Domain!, operationToken);
-            await Task.WhenAll(existingTask, domainTask).ConfigureAwait(false);
-            var existing = await existingTask.ConfigureAwait(false);
-            var domain = await domainTask.ConfigureAwait(false);
-            if (existing is not null && reusePolicy.CanReuse(existing, domain, request, _policy, now))
-            {
-                persistenceMetrics.RecordMailboxReuse(request.EnableSmtp);
-                var reused = existing.LastResult with
-                {
-                    Email = email,
-                    DurationMs = 0,
-                    Diagnostics = existing.LastResult.Diagnostics is null ? null : existing.LastResult.Diagnostics with
-                    {
-                        PersistentMailboxFound = true,
-                        PersistentDomainFound = domain is not null,
-                        PersistentMailboxFresh = true,
-                        PersistentIntelligenceDecision = "Reused previous mailbox result"
-                    }
-                };
-                return await EnrichAsync(reused, reused: true, operationToken).ConfigureAwait(false);
-            }
+            // A previous flight can finish after this request's outer misses but before
+            // this request becomes the next leader. Recheck the hot cache before live work.
+            var leaderCached = await GetCachedAsync(key, operationToken).ConfigureAwait(false);
+            if (leaderCached is not null)
+                return ReturnFromSource(leaderCached, email, ValidationResultSource.MemoryCache);
 
-            if (existing is not null) persistenceMetrics.RecordStaleMailboxRefresh();
-            var reusableDomain = domain?.EvidenceExpiresAt is { } expiresAt && expiresAt > now;
-            if (reusableDomain) persistenceMetrics.RecordDomainReuse();
-
+            persistenceMetrics.RecordLiveValidation();
             var live = await inner.ValidateAsync(email, request, operationToken).ConfigureAwait(false);
-            var enriched = await EnrichAsync(live, reused: false, operationToken).ConfigureAwait(false);
+            var enriched = await EnrichAsync(live, ValidationResultSource.LiveValidation, operationToken)
+                .ConfigureAwait(false);
+            var reusableDomain = lookup.Domain?.EvidenceExpiresAt is { } expiresAt &&
+                expiresAt > timeProvider.GetUtcNow();
             if (enriched.Diagnostics is not null)
             {
                 enriched = enriched with
                 {
                     Diagnostics = enriched.Diagnostics with
                     {
-                        PersistentMailboxFound = existing is not null,
-                        PersistentDomainFound = domain is not null,
+                        PersistentMailboxFound = lookup.Mailbox is not null,
+                        PersistentDomainFound = lookup.Domain is not null,
                         PersistentMailboxFresh = false,
                         PersistentIntelligenceDecision = reusableDomain
                             ? "Reused domain intelligence; performed mailbox validation"
@@ -554,27 +719,46 @@ public sealed class IntelligenceEmailValidator(
             }
             if (enriched.NormalizedEmail is not null)
             {
+                var mailbox = ToMailboxIntelligence(enriched, request.EnableSmtp);
                 if (enriched.DomainIntelligence is not null)
                     await store.SaveDomainAsync(enriched.DomainIntelligence, operationToken).ConfigureAwait(false);
-                await store.SaveMailboxAsync(ToMailboxIntelligence(enriched, request.EnableSmtp), operationToken)
-                    .ConfigureAwait(false);
+                await store.SaveMailboxAsync(mailbox, operationToken).ConfigureAwait(false);
+                await TryRemoveCachedAsync(key, operationToken).ConfigureAwait(false);
+                var cacheDecision = reusePolicy.Evaluate(
+                    mailbox,
+                    enriched.DomainIntelligence,
+                    request,
+                    _policy,
+                    timeProvider.GetUtcNow());
+                await CacheIfReusableAsync(key, enriched, cacheDecision, operationToken).ConfigureAwait(false);
             }
             logger.LogDebug(
                 "Persistent intelligence decision: mailbox {MailboxState}, domain {DomainState}, decision {Decision}",
-                existing is null ? "missing" : "stale",
-                reusableDomain ? "reused" : domain is null ? "missing" : "stale",
+                lookup.Mailbox is null ? "missing" : "stale",
+                reusableDomain ? "reused" : lookup.Domain is null ? "missing" : "stale",
                 reusableDomain ? "domain reuse with live mailbox validation" : "live validation");
             return enriched;
-        }, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!_reuseOptions.SingleFlightEnabled)
+            return await ExecuteLeaderAsync(cancellationToken).ConfigureAwait(false);
+
+        var flight = await singleFlight.ExecuteWithStatusAsync(key, ExecuteLeaderAsync, cancellationToken)
+            .ConfigureAwait(false);
+        persistenceMetrics.RecordSingleFlight(flight.JoinedExistingOperation);
+        return flight.JoinedExistingOperation
+            ? ReturnFromSource(flight.Result, email, ValidationResultSource.JoinedInFlightValidation)
+            : flight.Result with { Email = email };
     }
 
     private async Task<EmailValidationResult> EnrichAsync(
         EmailValidationResult result,
-        bool reused,
+        ValidationResultSource source,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
         var validatedAt = result.Metadata?.ValidatedAt ?? now;
+        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse;
         EmailRiskResult? risk = result.MailingRisk;
         if (result.NormalizedEmail is not null)
         {
@@ -594,7 +778,11 @@ public sealed class IntelligenceEmailValidator(
                 validatedAt,
                 reused,
                 reused ? now : null,
-                result.Provider?.TopologyFingerprint ?? result.DomainIntelligence?.Provider.TopologyFingerprint)
+                result.Metadata?.MxTopologyFingerprint ?? result.Provider?.TopologyFingerprint ??
+                    result.DomainIntelligence?.Provider.TopologyFingerprint,
+                source,
+                now,
+                reused ? now - validatedAt : null)
         };
         var subStatus = ValidationSubStatusMapper.Map(staged);
         var enriched = staged with
@@ -605,6 +793,162 @@ public sealed class IntelligenceEmailValidator(
         qualityMetrics.Record(enriched);
         return enriched;
     }
+
+    private async Task<PersistenceLookup> LookupPersistentAsync(
+        string normalizedEmail,
+        string normalizedDomain,
+        EmailValidationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var mailboxTask = store.GetMailboxAsync(normalizedEmail, cancellationToken);
+        var domainTask = store.GetDomainAsync(normalizedDomain, cancellationToken);
+        await Task.WhenAll(mailboxTask, domainTask).ConfigureAwait(false);
+        var mailbox = await mailboxTask.ConfigureAwait(false);
+        var domain = await domainTask.ConfigureAwait(false);
+        var decision = mailbox is null
+            ? new ValidationReuseDecision(
+                ValidationReuseAction.CannotReuse,
+                ValidationReuseRejectionReason.ResultNotReusable,
+                TimeSpan.Zero)
+            : reusePolicy.Evaluate(mailbox, domain, request, _policy, timeProvider.GetUtcNow());
+        return new PersistenceLookup(mailbox, domain, decision);
+    }
+
+    private void RecordLookupDecision(PersistenceLookup lookup)
+    {
+        if (lookup.Decision.CanReuse) return;
+        persistenceMetrics.RecordReuseMiss(lookup.Decision.RejectionReason);
+        if (lookup.Mailbox is not null) persistenceMetrics.RecordStaleMailboxRefresh();
+        if (lookup.Domain?.EvidenceExpiresAt is { } expiresAt && expiresAt > timeProvider.GetUtcNow())
+            persistenceMetrics.RecordDomainReuse();
+    }
+
+    private async Task<EmailValidationResult> ReusePersistentAsync(
+        string email,
+        string key,
+        PersistenceLookup lookup,
+        CancellationToken cancellationToken)
+    {
+        persistenceMetrics.RecordMailboxReuse(liveSmtpAvoided: true);
+        var stored = lookup.Mailbox!.LastResult with
+        {
+            Email = email,
+            DurationMs = 0,
+            Diagnostics = lookup.Mailbox.LastResult.Diagnostics is null
+                ? null
+                : lookup.Mailbox.LastResult.Diagnostics with
+                {
+                    PersistentMailboxFound = true,
+                    PersistentDomainFound = lookup.Domain is not null,
+                    PersistentMailboxFresh = true,
+                    PersistentIntelligenceDecision = "Reused previous mailbox result"
+                }
+        };
+        var reused = await EnrichAsync(stored, ValidationResultSource.PersistentReuse, cancellationToken)
+            .ConfigureAwait(false);
+        await CacheIfReusableAsync(key, reused, lookup.Decision, cancellationToken).ConfigureAwait(false);
+        return reused;
+    }
+
+    private async Task<EmailValidationResult?> GetCachedAsync(string key, CancellationToken cancellationToken)
+    {
+        if (!_reuseOptions.Enabled || !_reuseOptions.MemoryCacheEnabled) return null;
+        EmailValidationResult? cached;
+        try
+        {
+            cached = await resultCache.GetAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsRecoverableCacheFailure(exception))
+        {
+            logger.LogWarning(
+                "Result cache read failed; validation will continue without the cache ({ErrorType})",
+                exception.GetType().Name);
+            return null;
+        }
+        persistenceMetrics.RecordMemoryCacheLookup(cached is not null);
+        return cached;
+    }
+
+    private async Task CacheIfReusableAsync(
+        string key,
+        EmailValidationResult result,
+        ValidationReuseDecision decision,
+        CancellationToken cancellationToken)
+    {
+        if (!_reuseOptions.MemoryCacheEnabled || !decision.CanReuse) return;
+        try
+        {
+            await resultCache.SetAsync(key, result, decision.RemainingLifetime, cancellationToken).ConfigureAwait(false);
+            persistenceMetrics.RecordCacheWrite();
+        }
+        catch (Exception exception) when (IsRecoverableCacheFailure(exception))
+        {
+            logger.LogWarning(
+                "Result cache write failed; validation result remains available ({ErrorType})",
+                exception.GetType().Name);
+        }
+    }
+
+    private async Task TryRemoveCachedAsync(string key, CancellationToken cancellationToken)
+    {
+        if (!_reuseOptions.MemoryCacheEnabled) return;
+        try
+        {
+            await resultCache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            persistenceMetrics.RecordCacheInvalidation();
+        }
+        catch (Exception exception) when (IsRecoverableCacheFailure(exception))
+        {
+            logger.LogWarning(
+                "Result cache invalidation failed; validation will continue ({ErrorType})",
+                exception.GetType().Name);
+        }
+    }
+
+    private static bool IsRecoverableCacheFailure(Exception exception) =>
+        exception is IOException or InvalidOperationException or TimeoutException;
+
+    private EmailValidationResult ReturnFromSource(
+        EmailValidationResult result,
+        string email,
+        ValidationResultSource source)
+    {
+        var now = timeProvider.GetUtcNow();
+        var metadata = result.Metadata;
+        var validatedAt = metadata?.ValidatedAt ?? now;
+        var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse ||
+            metadata?.Reused == true;
+        var returned = result with
+        {
+            Email = email,
+            DurationMs = source == ValidationResultSource.JoinedInFlightValidation ? result.DurationMs : 0,
+            Metadata = new ValidationResultMetadata(
+                metadata?.Policy ?? _policy,
+                validatedAt,
+                reused,
+                reused ? now : metadata?.ReusedAt,
+                metadata?.MxTopologyFingerprint,
+                source,
+                now,
+                reused ? now - validatedAt : metadata?.ReuseAge),
+            Diagnostics = result.Diagnostics is null ? null : result.Diagnostics with
+            {
+                PersistentIntelligenceDecision = source switch
+                {
+                    ValidationResultSource.MemoryCache => "Fresh result reused from memory cache",
+                    ValidationResultSource.JoinedInFlightValidation => "Joined validation already in progress",
+                    _ => result.Diagnostics.PersistentIntelligenceDecision
+                }
+            }
+        };
+        if (source == ValidationResultSource.MemoryCache) qualityMetrics.Record(returned);
+        return returned;
+    }
+
+    private string CreateExecutionKey(string normalizedEmail, EmailValidationRequest request) =>
+        $"{normalizedEmail}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|" +
+        $"engine:{_policy.ValidationEngineVersion}|classification:{_policy.ClassificationPolicyVersion}|" +
+        $"confidence:{_policy.ConfidenceModelVersion}|provider:{_policy.ProviderStrategyVersion}";
 
     private MailboxIntelligence ToMailboxIntelligence(EmailValidationResult result, bool usedLiveSmtp)
     {
@@ -632,6 +976,7 @@ public sealed class IntelligenceEmailValidator(
 
     private static EmailValidationResult SanitizeForPersistence(EmailValidationResult result) => result with
     {
+        Email = result.NormalizedEmail ?? result.Email,
         SmtpEvidence = null,
         SmtpSessionEvidence = null,
         MxValidation = null,
@@ -640,4 +985,9 @@ public sealed class IntelligenceEmailValidator(
             : result.CatchAllEvidence with { ProbeResults = [] },
         Diagnostics = result.Diagnostics is null ? null : result.Diagnostics with { Detail = null }
     };
+
+    private sealed record PersistenceLookup(
+        MailboxIntelligence? Mailbox,
+        DomainIntelligence? Domain,
+        ValidationReuseDecision Decision);
 }

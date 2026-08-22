@@ -94,6 +94,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMailProviderStrategy, GenericSmtpStrategy>();
         services.AddSingleton<IMailProviderStrategyResolver, MailProviderStrategyResolver>();
         services.AddSingleton<IHistoricalSignalAggregator, HistoricalSignalAggregator>();
+        services.AddSingleton<IValidationResultCache, InMemoryValidationResultCache>();
         services.AddSingleton<IValidationSingleFlight, ValidationSingleFlight>();
         services.AddSingleton<IValidationResultReusePolicy, ValidationResultReusePolicy>();
         services.AddSingleton<IConfidenceCalibrationService, ConfidenceCalibrationService>();

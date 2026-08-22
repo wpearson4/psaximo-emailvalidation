@@ -346,12 +346,32 @@ public interface IEmailValidationPersistenceInitializer
 
 public interface IValidationPersistenceMetrics
 {
+    void RecordValidationRequest();
     void RecordRead(string recordType, bool found, TimeSpan elapsed);
     void RecordWrite(string recordType, bool succeeded);
     void RecordMailboxReuse(bool liveSmtpAvoided);
+    void RecordMemoryCacheLookup(bool hit);
+    void RecordReuseMiss(ValidationReuseRejectionReason reason);
+    void RecordLiveValidation();
+    void RecordSingleFlight(bool joinedExistingOperation);
+    void RecordCacheWrite();
+    void RecordCacheInvalidation();
     void RecordStaleMailboxRefresh();
     void RecordDomainReuse();
     ValidationPersistenceSnapshot GetSnapshot();
+}
+
+public interface IValidationResultCache
+{
+    Task<EmailValidationResult?> GetAsync(
+        string key,
+        CancellationToken cancellationToken = default);
+    Task SetAsync(
+        string key,
+        EmailValidationResult result,
+        TimeSpan lifetime,
+        CancellationToken cancellationToken = default);
+    Task RemoveAsync(string key, CancellationToken cancellationToken = default);
 }
 
 public interface IValidationSingleFlight
@@ -360,16 +380,27 @@ public interface IValidationSingleFlight
         string key,
         Func<CancellationToken, Task<EmailValidationResult>> factory,
         CancellationToken cancellationToken = default);
+    Task<ValidationSingleFlightResult> ExecuteWithStatusAsync(
+        string key,
+        Func<CancellationToken, Task<EmailValidationResult>> factory,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IValidationResultReusePolicy
 {
-    bool CanReuse(
+    ValidationReuseDecision Evaluate(
         MailboxIntelligence intelligence,
         DomainIntelligence? currentDomain,
         EmailValidationRequest request,
         ValidationPolicyVersions currentPolicy,
         DateTimeOffset now);
+
+    bool CanReuse(
+        MailboxIntelligence intelligence,
+        DomainIntelligence? currentDomain,
+        EmailValidationRequest request,
+        ValidationPolicyVersions currentPolicy,
+        DateTimeOffset now) => Evaluate(intelligence, currentDomain, request, currentPolicy, now).CanReuse;
 }
 
 public interface IConfidenceCalibrationService

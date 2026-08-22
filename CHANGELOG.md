@@ -28,6 +28,12 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Operational notes
 
+- Fresh reusable results now follow memory cache → persistent mailbox/domain policy → single-flight → live
+  validation. Persistent hits warm a bounded cache, live results replace stale entries, and temporary/provider-block
+  outcomes use a short configurable reuse window.
+- Concurrent equivalent requests share one process-local validation after reuse misses. Source metadata distinguishes
+  live, memory, persistent, and joined results while preserving the original evidence timestamp. Duplicate CSV rows
+  benefit automatically and retain row order.
 - Domain, provider, catch-all, structured observation, and mailbox intelligence now persist in two dedicated
   MongoDB collections behind the existing host-neutral store contracts. Startup creates missing indexes
   idempotently; temporary runtime Mongo failures degrade to live validation without changing classification.
@@ -43,5 +49,5 @@ This file records user-visible behavior, output-contract changes, and operationa
 
 ### Verification
 
-- The release is covered by 244 offline core tests and an integration-test assembly with opt-in live DNS and
+- The release is covered by 260 offline core tests and an integration-test assembly with opt-in live DNS and
   real-Mongo collection/index coverage.

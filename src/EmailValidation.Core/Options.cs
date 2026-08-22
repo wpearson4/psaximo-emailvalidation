@@ -29,9 +29,13 @@ public sealed class PersistenceOptions
 public sealed class ResultReuseOptions
 {
     public bool Enabled { get; set; } = true;
+    public bool MemoryCacheEnabled { get; set; } = true;
+    public bool SingleFlightEnabled { get; set; } = true;
+    public int MemoryCacheSizeLimit { get; set; } = 10_000;
     public int StrongPositiveMinutes { get; set; } = 60;
     public int StrongNegativeMinutes { get; set; } = 240;
     public int RiskyMinutes { get; set; } = 30;
+    public int TransientMinutes { get; set; } = 2;
 }
 
 public sealed class ValidationPolicyOptions

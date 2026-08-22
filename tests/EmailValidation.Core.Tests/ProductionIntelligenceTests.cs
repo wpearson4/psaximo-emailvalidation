@@ -96,7 +96,11 @@ public sealed class ProductionIntelligenceTests
         var mailbox = Mailbox(Result(), now.AddMinutes(-5));
 
         Assert.True(reuse.CanReuse(mailbox, Domain(now.AddHours(1)), new EmailValidationRequest(true), policy, now));
-        Assert.False(reuse.CanReuse(mailbox with { LastValidatedAt = now.AddDays(-1) }, Domain(now.AddHours(1)),
+        Assert.False(reuse.CanReuse(mailbox with
+        {
+            LastValidatedAt = now.AddDays(-1),
+            LastStrongPositiveEvidenceAt = now.AddDays(-1)
+        }, Domain(now.AddHours(1)),
             new EmailValidationRequest(true), policy, now));
         Assert.False(reuse.CanReuse(mailbox, Domain(now.AddHours(1)), new EmailValidationRequest(true),
             policy with { ClassificationPolicyVersion = "3.0.0" }, now));
@@ -139,6 +143,7 @@ public sealed class ProductionIntelligenceTests
             executor,
             new EmailNormalizer(),
             store,
+            new InMemoryValidationResultCache(options, TimeProvider.System),
             new ValidationSingleFlight(),
             new ValidationResultReusePolicy(options),
             new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]),
@@ -172,6 +177,7 @@ public sealed class ProductionIntelligenceTests
             executor,
             new EmailNormalizer(),
             store,
+            new InMemoryValidationResultCache(options, TimeProvider.System),
             new ValidationSingleFlight(),
             new ValidationResultReusePolicy(options),
             new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]),

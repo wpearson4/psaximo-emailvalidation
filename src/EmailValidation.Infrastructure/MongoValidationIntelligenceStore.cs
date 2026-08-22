@@ -457,6 +457,8 @@ public sealed class MongoValidationIntelligenceStore :
             var now = DateTime.UtcNow;
             var sanitizedResult = model.LastResult with
             {
+                Email = email,
+                NormalizedEmail = email,
                 SmtpEvidence = null,
                 SmtpSessionEvidence = null,
                 MxValidation = null,
