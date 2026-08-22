@@ -12,6 +12,30 @@ public sealed class EmailValidationOptions
     public PersistenceOptions Persistence { get; set; } = new();
     public ResultReuseOptions ResultReuse { get; set; } = new();
     public ValidationPolicyOptions Policy { get; set; } = new();
+    public RevalidationOptions Revalidation { get; set; } = new();
+}
+
+public sealed class RevalidationOptions
+{
+    public bool Enabled { get; set; }
+    public int DefaultMaxAttempts { get; set; } = 2;
+    public int OutboxDispatchIntervalSeconds { get; set; } = 30;
+    public int OutboxBatchSize { get; set; } = 100;
+    public int OutboxLeaseSeconds { get; set; } = 60;
+    public ServiceBusRevalidationOptions ServiceBus { get; set; } = new();
+}
+
+public sealed class ServiceBusRevalidationOptions
+{
+    public string ConnectionString { get; set; } = string.Empty;
+    public string QueueName { get; set; } = "email-validation-retry";
+    public bool ProvisionQueue { get; set; }
+    public bool EnableDuplicateDetection { get; set; }
+    public int DuplicateDetectionMinutes { get; set; } = 10;
+    public int MaxDeliveryCount { get; set; } = 10;
+    public int MaxConcurrentCalls { get; set; } = 4;
+    public int PrefetchCount { get; set; }
+    public int MaxAutoLockRenewalMinutes { get; set; } = 10;
 }
 
 public sealed class PersistenceOptions
@@ -24,6 +48,7 @@ public sealed class PersistenceOptions
     public string DatabaseName { get; set; } = string.Empty;
     public string DomainCollection { get; set; } = "EmailValidationDomainIntelligence";
     public string MailboxCollection { get; set; } = "EmailValidationMailboxIntelligence";
+    public string LifecycleCollection { get; set; } = "EmailValidationLifecycle";
 }
 
 public sealed class ResultReuseOptions

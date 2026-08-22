@@ -103,9 +103,36 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRiskDataSource, PersistentSuppressionRiskDataSource>();
         services.AddSingleton<IEmailRiskIntelligence, EmailRiskIntelligence>();
         services.AddSingleton<IValidationQualityMetrics, ValidationQualityMetrics>();
+        services.AddSingleton<RevalidationMetrics>();
+        services.AddSingleton<IRevalidationMetrics>(provider => provider.GetRequiredService<RevalidationMetrics>());
+        services.AddSingleton<IRevalidationPolicy, RevalidationPolicy>();
+        services.AddSingleton<IRevalidationSchedulePolicy, RevalidationSchedulePolicy>();
+        services.AddSingleton<IRevalidationMessageSerializer, JsonRevalidationMessageSerializer>();
+        services.AddSingleton<MongoValidationLifecycleStore>();
+        services.AddSingleton<NoOpValidationLifecycleStore>();
+        services.AddSingleton<IValidationLifecycleStore>(provider => IsRevalidationEnabled(provider)
+            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+        services.AddSingleton<IRevalidationOutbox>(provider => IsRevalidationEnabled(provider)
+            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+        services.AddSingleton<IRevalidationPersistenceInitializer>(provider => IsRevalidationEnabled(provider)
+            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+        services.AddSingleton<AzureServiceBusRevalidationScheduler>();
+        services.AddSingleton<DisabledRevalidationScheduler>();
+        services.AddSingleton<IRevalidationScheduler>(provider => IsRevalidationEnabled(provider)
+            ? provider.GetRequiredService<AzureServiceBusRevalidationScheduler>()
+            : provider.GetRequiredService<DisabledRevalidationScheduler>());
+        services.AddSingleton<IRevalidationOutboxDispatcher, RevalidationOutboxDispatcher>();
+        services.AddSingleton<IValidationLifecycleCoordinator, ValidationLifecycleCoordinator>();
+        services.AddSingleton<IEmailRevalidationProcessor, EmailRevalidationProcessor>();
+        services.AddSingleton<IRevalidationInfrastructureInitializer, RevalidationInfrastructureInitializer>();
         services.AddSingleton<EmailValidator>();
         services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
-        services.AddSingleton<IEmailValidator, IntelligenceEmailValidator>();
+        services.AddSingleton<IntelligenceEmailValidator>();
+        services.AddSingleton<IEmailValidationService>(provider => provider.GetRequiredService<IntelligenceEmailValidator>());
+        services.AddSingleton<IEmailValidator, LifecycleEmailValidator>();
         services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;
     }
@@ -118,4 +145,7 @@ public static class ServiceCollectionExtensions
             "MongoDB",
             StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsRevalidationEnabled(IServiceProvider provider) =>
+        provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Revalidation.Enabled;
 }

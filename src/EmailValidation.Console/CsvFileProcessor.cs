@@ -24,7 +24,8 @@ internal sealed class CsvFileProcessor
         "Status", "Classification Confidence", "Confidence Reason", "Evidence Quality",
         "Confidence Type", "Deliverability Probability", "Catch-All Classification",
         "Probe Attempted", "Probe Disposition", "SMTP Response Category", "Retry After",
-        "Validation Date/Time"
+        "Validation Date/Time", "Validation ID", "Result State", "Attempt Number",
+        "Maximum Attempts", "Retry Scheduled", "First Validated At", "Last Validated At", "Finalized At"
     ];
 
     private readonly IDomainValidationScheduler _scheduler;
@@ -277,6 +278,14 @@ internal sealed class CsvFileProcessor
             ?? SmtpResponseCategory.NotAttempted.ToString();
         values[resultIndexes["Retry After"]] = row.Result.RetryAfter?.UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) ?? string.Empty;
+        values[resultIndexes["Validation ID"]] = row.Result.ValidationId ?? string.Empty;
+        values[resultIndexes["Result State"]] = row.Result.ResultState.ToString();
+        values[resultIndexes["Attempt Number"]] = row.Result.AttemptNumber.ToString(CultureInfo.InvariantCulture);
+        values[resultIndexes["Maximum Attempts"]] = row.Result.MaximumAttempts.ToString(CultureInfo.InvariantCulture);
+        values[resultIndexes["Retry Scheduled"]] = row.Result.RetryScheduled ? "Yes" : "No";
+        values[resultIndexes["First Validated At"]] = FormatTimestamp(row.Result.FirstValidatedAt);
+        values[resultIndexes["Last Validated At"]] = FormatTimestamp(row.Result.LastValidatedAt);
+        values[resultIndexes["Finalized At"]] = FormatTimestamp(row.Result.FinalizedAt);
         foreach (var value in values) writer.WriteField(value ?? string.Empty);
         await writer.NextRecordAsync();
     }
@@ -286,6 +295,9 @@ internal sealed class CsvFileProcessor
         var percentage = Math.Clamp(confidence, 0, 1) * 100;
         return $"{Math.Round(percentage, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture)}%";
     }
+
+    private static string FormatTimestamp(DateTimeOffset? value) => value?.UtcDateTime.ToString(
+        "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static async Task<CsvFileMetadata> InspectAsync(
         string path,

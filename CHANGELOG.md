@@ -2,7 +2,30 @@
 
 This file records user-visible behavior, output-contract changes, and operational migration notes.
 
-## Unreleased — 2026-08-21
+## Unreleased — 2026-08-22
+
+### Added
+
+- Durable, bounded revalidation now converts retryable `Unknown` outcomes into a provisional lifecycle with a stable
+  validation ID, compact immutable attempt history, optimistic concurrency, and one canonical current result.
+- Azure Service Bus scheduled enqueue is isolated behind `IRevalidationScheduler`; the new worker maps explicit
+  application dispositions to complete, reschedule, abandon, or the queue's native dead-letter subqueue.
+- A Mongo lifecycle document embeds a pending publication record. This outbox closes the Mongo/Service Bus dual-write
+  gap and is retried by the worker without polling Mongo for validation due times.
+- Retry eligibility and timing are separate policies. Timing takes the maximum of result `RetryAfter`, current local
+  cooldown, provider policy cooldown, and the existing bounded domain backoff.
+- Revalidation telemetry covers scheduling, execution, fresh-result skips, final/stale/duplicate outcomes, transition
+  labels, attempts/time to final, worker failures, and Microsoft-specific effectiveness counters.
+
+### Revalidation operations
+
+- Revalidation is disabled by default. Enabling it requires Mongo lifecycle persistence and a Service Bus connection
+  supplied through the existing Azure App Configuration/Key Vault pattern. Queue provisioning is separately gated by
+  `ProvisionQueue`; normal runtime credentials do not need management permission.
+- The default queue is `email-validation-retry`. Provisioning is idempotent and never deletes or recreates an existing
+  queue. Broker duplicate detection is optional; lifecycle compare-and-set remains authoritative.
+- Console, CSV, and worker retries share the existing reuse, single-flight, validation planner, catch-all intelligence,
+  provider throttle, and sender policy. No retry-specific SMTP or sender-rotation path was added.
 
 ### Changed
 
@@ -32,7 +55,7 @@ This file records user-visible behavior, output-contract changes, and operationa
 - Existing input files containing the legacy `Confidence` column retain it and receive an updated value for
   backward compatibility.
 - Exports now include `Evidence Quality`, `Catch-All Classification`, `Probe Attempted`, `Probe Disposition`,
-  `SMTP Response Category`, and `Retry After`.
+  `SMTP Response Category`, `Retry After`, validation lifecycle state, attempt limits, and lifecycle timestamps.
 
 ### Operational notes
 

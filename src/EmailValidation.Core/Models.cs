@@ -3,6 +3,7 @@ namespace EmailValidation.Core;
 // Append new values to preserve numeric compatibility with persisted intelligence.
 public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid, CatchAll }
 public enum ConfidenceType { Heuristic, CalibratedProbability }
+public enum ValidationResultState { Final, Provisional }
 // Evidence quality describes how much direct validation evidence was obtained; it is independent of label confidence.
 public enum EvidenceQuality { Unknown, Conclusive, Partial, Blocked, NotAttempted }
 // Public CatchAll results retain the internal basis without reintroducing separate deliverability statuses.
@@ -405,6 +406,14 @@ public sealed record EmailValidationResult
     public long DurationMs { get; init; }
     public ValidationDiagnostics? Diagnostics { get; init; }
     public ValidationResultMetadata? Metadata { get; init; }
+    public string? ValidationId { get; init; }
+    public ValidationResultState ResultState { get; init; } = ValidationResultState.Final;
+    public int AttemptNumber { get; init; } = 1;
+    public int MaximumAttempts { get; init; } = 1;
+    public bool RetryScheduled { get; init; }
+    public DateTimeOffset? FirstValidatedAt { get; init; }
+    public DateTimeOffset? LastValidatedAt { get; init; }
+    public DateTimeOffset? FinalizedAt { get; init; }
 }
 
 public sealed record MailboxValidationDetails(

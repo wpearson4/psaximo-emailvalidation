@@ -723,7 +723,7 @@ public sealed class IntelligenceEmailValidator(
     IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
     TimeProvider timeProvider,
-    ILogger<IntelligenceEmailValidator> logger) : IEmailValidator
+    ILogger<IntelligenceEmailValidator> logger) : IEmailValidator, IEmailValidationService
 {
     private readonly ValidationPolicyVersions _policy = options.Value.Policy.ToVersions();
     private readonly ResultReuseOptions _reuseOptions = options.Value.ResultReuse;

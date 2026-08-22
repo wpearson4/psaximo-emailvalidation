@@ -39,6 +39,10 @@ internal static class ResultFormatter
         Add(builder, "Probe Attempted:", result.ProbeAttempted ? "Yes" : "No");
         Add(builder, "Probe Disposition:", result.ProbeDisposition.ToString());
         Add(builder, "Retry After:", result.RetryAfter?.ToString("O", CultureInfo.InvariantCulture) ?? "—");
+        Add(builder, "Validation ID:", result.ValidationId ?? "—");
+        Add(builder, "Result State:", result.ResultState.ToString());
+        Add(builder, "Attempt:", $"{result.AttemptNumber}/{result.MaximumAttempts}");
+        Add(builder, "Retry Scheduled:", result.RetryScheduled ? "Yes" : "No");
         if (result.ConfidenceReason is not null) Add(builder, "Confidence Reason:", result.ConfidenceReason);
         Add(builder, "Syntax:", result.Checks.SyntaxValid ? "Valid" : "Invalid");
         Add(builder, "Domain:", result.Checks.DomainExists ? "Valid" : "Not verified");
@@ -175,7 +179,7 @@ internal static class ResultFormatter
 
     private static string ToCsv(IReadOnlyList<EmailValidationResult> results)
     {
-        var builder = new StringBuilder("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth,evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter\n");
+        var builder = new StringBuilder("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth,evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter,validationId,resultState,attemptNumber,maximumAttempts,retryScheduled,firstValidatedAt,lastValidatedAt,finalizedAt\n");
         foreach (var result in results)
         {
             var fields = new[]
@@ -226,7 +230,15 @@ internal static class ResultFormatter
                 result.CatchAllClassification.ToString(),
                 result.ProbeAttempted.ToString(),
                 result.ProbeDisposition.ToString(),
-                result.RetryAfter?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty
+                result.RetryAfter?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty,
+                result.ValidationId ?? string.Empty,
+                result.ResultState.ToString(),
+                result.AttemptNumber.ToString(CultureInfo.InvariantCulture),
+                result.MaximumAttempts.ToString(CultureInfo.InvariantCulture),
+                result.RetryScheduled.ToString(),
+                result.FirstValidatedAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty,
+                result.LastValidatedAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty,
+                result.FinalizedAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty
             };
             builder.AppendLine(string.Join(',', fields.Select(Escape)));
         }

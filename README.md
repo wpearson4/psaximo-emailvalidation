@@ -7,12 +7,16 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 - `src/EmailValidation.Core` — models, contracts, normalization, orchestration, classification, and confidence scoring.
 - `src/EmailValidation.Infrastructure` — MX/DNS, SMTP, catch-all probing, throttling, caching, provider detection, and domain intelligence.
 - `src/EmailValidation.Console` — command parsing, configuration, batch ingestion, output, diagnostics, and logging bootstrap.
+- `src/EmailValidation.Worker` — Azure Service Bus receive adapter and durable revalidation outbox publisher.
 - `tests/EmailValidation.Core.Tests` — offline unit tests using fakes.
 - `tests/EmailValidation.IntegrationTests` — opt-in live network tests.
 
 User-visible changes and migration notes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The console is only a host. A future API or worker can call `IEmailValidator` after registering `AddEmailValidation()`.
+
+Durable automatic revalidation is documented in [docs/automatic-revalidation.md](docs/automatic-revalidation.md),
+including its architecture gap analysis, configuration, lifecycle semantics, and operations.
 
 ## Run
 
@@ -24,6 +28,8 @@ az account set --subscription "Visual Studio Professional"
 ```
 
 The configured bootstrap endpoint is `https://appcs-p-ometa-dsi-scus.azconfig.io`; `AZURE_APPCONFIG_ENDPOINT` can override it for another deployment. When Azure identity is unavailable, local `Azure:AppConfigurationConnectionString` and `EmailValidation:Persistence:ConnectionString` values can bootstrap App Configuration and resolve its Mongo Key Vault reference without `az login`; `Azure:MongoConnectionSecretUri` restricts that local override to the intended secret. Treat both connection strings as secrets and never commit them. The configured label is `Production`, matching the existing OpenMeta environment convention. Use a different label when a development App Configuration/Mongo environment is provisioned—do not point an ad hoc development run at production.
+
+Production hosts do not depend on a developer Azure session: use an App Configuration connection string or workload/managed identity for bootstrap, and store the Service Bus connection string as an `EmailValidation:*` App Configuration value or Key Vault reference. Local Service Bus secret overrides use `Azure:ServiceBusConnectionSecretUri` with `EmailValidation:Revalidation:ServiceBus:ConnectionString` and are never logged.
 
 From this directory:
 
@@ -156,7 +162,7 @@ john@example.com
 jane@example.org
 ```
 
-If multiple plausible email columns exist, select one with `--column`; an explicit column always takes precedence. The command invokes the same `IEmailValidator` pipeline used by `validate`, preserves row order, and appends or updates `Status`, `Classification Confidence`, `Confidence Reason`, `Evidence Quality`, `Confidence Type`, `Deliverability Probability`, `Catch-All Classification`, `Probe Attempted`, `Probe Disposition`, `SMTP Response Category`, `Retry After`, and `Validation Date/Time`. New files no longer receive a duplicate `Confidence` column; a legacy column already present in an input file is preserved and refreshed for compatibility.
+If multiple plausible email columns exist, select one with `--column`; an explicit column always takes precedence. The command invokes the same `IEmailValidator` pipeline used by `validate`, preserves row order, and appends or updates `Status`, `Classification Confidence`, `Confidence Reason`, `Evidence Quality`, `Confidence Type`, `Deliverability Probability`, `Catch-All Classification`, `Probe Attempted`, `Probe Disposition`, `SMTP Response Category`, `Retry After`, `Validation Date/Time`, `Validation ID`, `Result State`, attempt limits, scheduling state, and lifecycle timestamps. New files no longer receive a duplicate `Confidence` column; a legacy column already present in an input file is preserved and refreshed for compatibility.
 
 The source file is replaced only after all rows have been validated and a same-directory temporary CSV has been flushed and verified. Cancellation or a parse/write failure leaves the original unchanged. UTF-8 BOM behavior, quoted commas, quoted quotes, embedded newlines, empty values, and Unicode data are supported. Processing uses bounded, ordered batches. Each batch is grouped by the normalized recipient domain and scheduled round-robin, while completed rows are written in original sequence order. Existing domain locks and caches reuse DNS, MX, provider, catch-all, and behavioral intelligence. Duplicate normalized addresses share an active validation and then reuse its hot result; every input row still receives output in original order. For reused results, `Validation Date/Time` remains the underlying evidence time rather than the later return time.
 

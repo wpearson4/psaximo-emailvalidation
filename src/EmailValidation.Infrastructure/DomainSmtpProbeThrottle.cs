@@ -95,8 +95,38 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
     {
         var policy = _policyResolver.Resolve(context.Provider);
         var key = CircuitKey(policy.ProviderKey, context);
-        return _providerCircuits.TryGetValue(key, out var circuit)
+        var circuitAvailability = _providerCircuits.TryGetValue(key, out var circuit)
             ? Availability(circuit)
+            : ProviderThrottleAvailability.Available;
+        var retryAfter = circuitAvailability.RetryAfter;
+        var reason = circuitAvailability.Reason;
+        var now = _timeProvider.GetUtcNow();
+        if (_domains.TryGetValue(context.Domain, out var domain))
+        {
+            lock (domain.Sync)
+            {
+                var domainRetry = Max(domain.State.NextAllowedAttemptAt, domain.State.CooldownUntil);
+                if (domainRetry > now && (retryAfter is null || domainRetry > retryAfter))
+                {
+                    retryAfter = domainRetry;
+                    reason = "DomainCooldown";
+                }
+            }
+        }
+        if (_providers.TryGetValue(policy.ProviderKey, out var provider))
+        {
+            lock (provider.Sync)
+            {
+                var providerRetry = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
+                if (providerRetry > now && (retryAfter is null || providerRetry > retryAfter))
+                {
+                    retryAfter = providerRetry;
+                    reason = "ProviderPacing";
+                }
+            }
+        }
+        return retryAfter > now
+            ? new(false, retryAfter, reason ?? "LocalCooldown")
             : ProviderThrottleAvailability.Available;
     }
 

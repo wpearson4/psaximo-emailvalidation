@@ -91,6 +91,35 @@ public sealed class EmailValidationOptionsValidatorTests
     }
 
     [Fact]
+    public void RevalidationConfiguration_BindsAndRequiresDurableInfrastructureOnlyWhenEnabled()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["EmailValidation:Revalidation:Enabled"] = "true",
+            ["EmailValidation:Revalidation:DefaultMaxAttempts"] = "2",
+            ["EmailValidation:Revalidation:ServiceBus:QueueName"] = "email-validation-retry",
+            ["EmailValidation:Revalidation:ServiceBus:ConnectionString"] = "configured-outside-the-test"
+        }).Build();
+        var bound = configuration.GetSection("EmailValidation").Get<EmailValidationOptions>();
+
+        Assert.NotNull(bound);
+        Assert.True(bound.Revalidation.Enabled);
+        Assert.Equal(2, bound.Revalidation.DefaultMaxAttempts);
+        Assert.Equal("email-validation-retry", bound.Revalidation.ServiceBus.QueueName);
+
+        var disabled = ValidOptions();
+        var disabledResult = new EmailValidationOptionsValidator().Validate(null, disabled);
+        var enabled = ValidOptions();
+        enabled.Revalidation.Enabled = true;
+        var enabledResult = new EmailValidationOptionsValidator().Validate(null, enabled);
+
+        Assert.False(disabledResult.Failed);
+        Assert.True(enabledResult.Failed);
+        Assert.Contains(enabledResult.Failures, failure => failure.Contains("requires MongoDB", StringComparison.Ordinal));
+        Assert.Contains(enabledResult.Failures, failure => failure.Contains("ServiceBus:ConnectionString", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void AzureBootstrap_UsesConfiguredEndpointAndEnvironmentLabel()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -112,4 +141,13 @@ public sealed class EmailValidationOptionsValidatorTests
             new Uri("https://example.vault.azure.net/secrets/Other"),
             "https://example.vault.azure.net/secrets/Mongo"));
     }
+
+    private static EmailValidationOptions ValidOptions() => new()
+    {
+        ProbeSenderSource = new ProbeSenderSourceOptions
+        {
+            Index = "authorized-senders",
+            QueryJson = "{\"match_all\":{}}"
+        }
+    };
 }

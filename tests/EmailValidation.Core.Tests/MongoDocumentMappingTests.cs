@@ -73,6 +73,57 @@ public sealed class MongoDocumentMappingTests
     }
 
     [Fact]
+    public void LifecycleDocument_PreservesCompactHistoryAndDropsRawProbePayloads()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var result = Result() with
+        {
+            ValidationId = "validation-123",
+            ResultState = ValidationResultState.Provisional,
+            SmtpEvidence = new SmtpEvidence(
+                SmtpCommand.RcptTo, 451, "4.7.0", SmtpResponseCategory.TemporaryFailure,
+                SmtpResponseTextClassification.TemporaryCondition, 1, MailProvider.GenericSmtp,
+                "mx.example.test", 1, now, "raw lifecycle response"),
+            DomainIntelligence = Domain() with
+            {
+                CatchAll = Domain().CatchAll with
+                {
+                    ProbeResults = [new(SmtpMailboxStatus.Accepted, 250, "raw catch-all response", TimeSpan.Zero)]
+                }
+            }
+        };
+        var message = new EmailRevalidationMessageV1(
+            "validation-123", 2, 2, now, now, now.AddMinutes(5), "GenericSmtp",
+            EmailValidationStatus.Unknown, DetailedStatus.Unknown, "2.2.0");
+        var lifecycle = new ValidationLifecycle
+        {
+            ValidationId = "validation-123",
+            NormalizedEmail = "person@example.test",
+            Request = new(true),
+            ResultState = ValidationResultState.Provisional,
+            AttemptNumber = 1,
+            MaximumAttempts = 2,
+            CurrentResult = result,
+            Attempts = [new(1, result.Status, result.SubStatus, result.Confidence, result.MailProvider,
+                result.ReasonCodes, now, ValidationResultSource.LiveValidation, now.AddMinutes(5))],
+            FirstValidatedAt = now,
+            LastValidatedAt = now,
+            NextRetryAt = now.AddMinutes(5),
+            PendingRevalidation = new(message, now, now.AddMinutes(5)),
+            Version = 1
+        };
+
+        var document = MongoValidationLifecycleStore.ValidationLifecycleDocument.FromModel(lifecycle, now);
+        var restored = document.ToModel();
+
+        Assert.Single(restored.Attempts);
+        Assert.Null(restored.CurrentResult.SmtpEvidence);
+        Assert.Empty(restored.CurrentResult.DomainIntelligence!.CatchAll.ProbeResults);
+        Assert.DoesNotContain("raw lifecycle response", document.PayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("raw catch-all response", document.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MongoUnavailable_ReadAndWriteDegradeWithoutLeakingConnectionDetails()
     {
         var username = $"test-user-{Guid.NewGuid():N}";

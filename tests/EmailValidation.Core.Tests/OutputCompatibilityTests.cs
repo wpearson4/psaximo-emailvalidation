@@ -21,6 +21,8 @@ public sealed class OutputCompatibilityTests
         Assert.Contains("\"smtpEvidence\"", json, StringComparison.Ordinal);
         Assert.Contains("\"mailbox\"", json, StringComparison.Ordinal);
         Assert.Contains("\"catchAll\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"resultState\": \"final\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"attemptNumber\": 1", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -32,7 +34,7 @@ public sealed class OutputCompatibilityTests
         Assert.StartsWith("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent", header, StringComparison.Ordinal);
         Assert.Contains("providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus", header, StringComparison.Ordinal);
         Assert.Equal(1, header.Split(',').Count(column => column == "classificationConfidence"));
-        Assert.EndsWith("evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter", header, StringComparison.Ordinal);
+        Assert.EndsWith("retryAfter,validationId,resultState,attemptNumber,maximumAttempts,retryScheduled,firstValidatedAt,lastValidatedAt,finalizedAt", header, StringComparison.Ordinal);
         Assert.Equal(header.Split(',').Length, csv.Split('\n')[1].Split(',').Length);
     }
 
@@ -43,6 +45,10 @@ public sealed class OutputCompatibilityTests
 
         Assert.Contains("Classification Confidence: 80 %", text, StringComparison.Ordinal);
         Assert.Contains("Deliverability Probability: Not calibrated", text, StringComparison.Ordinal);
+        Assert.Contains("Result State:", text, StringComparison.Ordinal);
+        Assert.Contains("Final", text, StringComparison.Ordinal);
+        Assert.Contains("Attempt:", text, StringComparison.Ordinal);
+        Assert.Contains("1/1", text, StringComparison.Ordinal);
     }
 
     private static EmailValidationResult Result() => new()

@@ -1,5 +1,6 @@
 using Azure;
 using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.AzureAppConfiguration;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +16,8 @@ public static class EmailValidationAzureConfiguration
     public const string ConnectionStringKey = "Azure:AppConfigurationConnectionString";
     public const string MongoSecretUriKey = "Azure:MongoConnectionSecretUri";
     public const string MongoConnectionStringKey = "EmailValidation:Persistence:ConnectionString";
+    public const string ServiceBusSecretUriKey = "Azure:ServiceBusConnectionSecretUri";
+    public const string ServiceBusConnectionStringKey = "EmailValidation:Revalidation:ServiceBus:ConnectionString";
     public const string LabelKey = "Azure:AppConfigurationLabel";
     public const string EndpointEnvironmentVariable = "AZURE_APPCONFIG_ENDPOINT";
 
@@ -27,6 +30,8 @@ public static class EmailValidationAzureConfiguration
         var connectionString = ResolveConnectionString(bootstrap);
         var localMongoConnectionString = bootstrap[MongoConnectionStringKey]?.Trim() ?? string.Empty;
         var mongoSecretUri = bootstrap[MongoSecretUriKey]?.Trim() ?? string.Empty;
+        var localServiceBusConnectionString = bootstrap[ServiceBusConnectionStringKey]?.Trim() ?? string.Empty;
+        var serviceBusSecretUri = bootstrap[ServiceBusSecretUriKey]?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(endpoint) && string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException(
                 $"Azure App Configuration bootstrap is missing. Configure {ConnectionStringKey}, {EndpointKey}, or {EndpointEnvironmentVariable}.");
@@ -46,19 +51,30 @@ public static class EmailValidationAzureConfiguration
                     .Select("EmailValidation:*", label)
                     .ConfigureKeyVault(keyVault =>
                     {
-                        if (string.IsNullOrWhiteSpace(localMongoConnectionString) ||
-                            string.IsNullOrWhiteSpace(mongoSecretUri))
+                        var hasMongoOverride = !string.IsNullOrWhiteSpace(localMongoConnectionString) &&
+                            !string.IsNullOrWhiteSpace(mongoSecretUri);
+                        var hasServiceBusOverride = !string.IsNullOrWhiteSpace(localServiceBusConnectionString) &&
+                            !string.IsNullOrWhiteSpace(serviceBusSecretUri);
+                        if (!hasMongoOverride && !hasServiceBusOverride)
                         {
                             keyVault.SetCredential(credential);
                             return;
                         }
 
-                        keyVault.SetSecretResolver(secretUri =>
+                        keyVault.SetSecretResolver(async secretUri =>
                         {
                             if (MatchesSecret(secretUri, mongoSecretUri))
-                                return ValueTask.FromResult(localMongoConnectionString);
-                            throw new InvalidOperationException(
-                                "No local override is configured for an Azure Key Vault reference.");
+                                return localMongoConnectionString;
+                            if (MatchesSecret(secretUri, serviceBusSecretUri))
+                                return localServiceBusConnectionString;
+                            var segments = secretUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                            if (segments.Length < 2 || !string.Equals(segments[0], "secrets", StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidOperationException("The Azure Key Vault reference URI is invalid.");
+                            var vault = new Uri($"{secretUri.Scheme}://{secretUri.Host}");
+                            var secretClient = new SecretClient(vault, credential);
+                            var response = await secretClient.GetSecretAsync(
+                                segments[1], segments.Length > 2 ? segments[2] : null).ConfigureAwait(false);
+                            return response.Value.Value;
                         });
                     });
             });

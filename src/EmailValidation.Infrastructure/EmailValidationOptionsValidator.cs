@@ -15,6 +15,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var reuse = options.ResultReuse;
         var catchAll = options.CatchAll;
         var policy = options.Policy;
+        var revalidation = options.Revalidation;
         var failures = new List<string>();
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
             failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
@@ -84,10 +85,33 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 failures.Add("EmailValidation:Persistence:ConnectionString is required for MongoDB and must be resolved through App Configuration/Key Vault.");
             if (string.IsNullOrWhiteSpace(persistence.DatabaseName))
                 failures.Add("EmailValidation:Persistence:DatabaseName is required for MongoDB.");
-            if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection))
+            if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
+                string.IsNullOrWhiteSpace(persistence.LifecycleCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
+            if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 3)
+                failures.Add("EmailValidation MongoDB domain, mailbox, and lifecycle collection names must be different.");
+        }
+        if (revalidation.Enabled)
+        {
+            if (!persistence.Enabled || !string.Equals(persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase))
+                failures.Add("EmailValidation revalidation requires MongoDB persistence for its durable lifecycle and outbox.");
+            if (revalidation.DefaultMaxAttempts < 1)
+                failures.Add("EmailValidation:Revalidation:DefaultMaxAttempts must be at least 1.");
+            if (revalidation.OutboxDispatchIntervalSeconds <= 0 || revalidation.OutboxBatchSize <= 0 ||
+                revalidation.OutboxLeaseSeconds <= 0)
+                failures.Add("EmailValidation revalidation outbox intervals, batch size, and lease must be positive.");
+            if (string.IsNullOrWhiteSpace(revalidation.ServiceBus.ConnectionString))
+                failures.Add("EmailValidation:Revalidation:ServiceBus:ConnectionString is required when revalidation is enabled.");
+            if (string.IsNullOrWhiteSpace(revalidation.ServiceBus.QueueName))
+                failures.Add("EmailValidation:Revalidation:ServiceBus:QueueName is required when revalidation is enabled.");
+            if (revalidation.ServiceBus.MaxDeliveryCount < 1 || revalidation.ServiceBus.MaxConcurrentCalls < 1 ||
+                revalidation.ServiceBus.PrefetchCount < 0 || revalidation.ServiceBus.MaxAutoLockRenewalMinutes < 1)
+                failures.Add("EmailValidation Service Bus delivery, concurrency, prefetch, and lock-renewal settings are invalid.");
+            if (revalidation.ServiceBus.EnableDuplicateDetection && revalidation.ServiceBus.DuplicateDetectionMinutes < 1)
+                failures.Add("EmailValidation duplicate detection history must be at least one minute when enabled.");
         }
         if (persistence.MaximumObservationsPerDomain <= 0)
             failures.Add("EmailValidation:Persistence:MaximumObservationsPerDomain must be greater than zero.");
