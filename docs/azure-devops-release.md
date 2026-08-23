@@ -10,6 +10,14 @@
 
 Every `master` update validates the .NET solution, Compose model, Nginx configuration, and Certbot image, then publishes both the immutable Git commit tag and `latest` to ACR. Production deployment is opt-in: manually run the pipeline with `deployProduction=true`. On the first deployment only, also set `bootstrapLetsEncrypt=true` and provide a monitored `letsencryptEmail` after confirming public ports 80 and 443 reach `10.10.252.31`.
 
+## Current rollout status
+
+As of 2026-08-23, Azure DevOps pipeline `EmailValidation Production` (definition ID 26) is active and GitHub-backed. Run 1260 completed successfully for commit `ece89b46f4a541e061d42297c9550b53a81022ca`; validation passed and ACR published both the immutable commit tag and `latest` with digest `sha256:bd967fe7833a29849d26b652baf1821c116202b6e234ce07f0d5d72feb3069b5`.
+
+The pipeline has scoped access to the active `OpenMeta Prod` Azure service connection and production environment `emailvalidation-production` (environment ID 6). Do not switch it to the legacy `Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)` service connection; that connection references an Entra application that no longer exists.
+
+No production deployment has run. `OMetaSearchPool` has no registered agents, Azure CLI is not installed on `esdata03`, `/opt/emailvalidation` has not been provisioned, the production `.env` and secret source files are absent, and public HTTP port 80 did not reach the host during preflight. Complete those items before manually enabling the deployment and first-certificate parameters.
+
 ## Self-hosted agent
 
 Add one Linux agent to the existing `OMetaSearchPool` and run it on `esdata03` (`10.10.252.31`) as an unprivileged account such as `gwadmin`, never as root. In Azure DevOps, open **Organization settings → Agent pools → OMetaSearchPool → New agent**, select Linux x64, and use the displayed current download URL and checksum. Configure it with a short-lived PAT that has only **Agent Pools: Read & manage**:
