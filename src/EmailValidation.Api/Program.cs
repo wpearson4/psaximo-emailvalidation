@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Text.Json.Nodes;
 using EmailValidation.Api;
 using EmailValidation.Application;
@@ -7,6 +8,7 @@ using EmailValidation.Core;
 using EmailValidation.Grpc;
 using EmailValidation.Infrastructure;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -45,6 +47,15 @@ builder.Services.AddSingleton<IValidationJobAccessPolicy, CommercialValidationJo
 builder.Services.AddEmailValidationSecurity(builder.Configuration, builder.Environment);
 builder.Services.AddEmailValidationApiPlatform(builder.Configuration);
 builder.Services.AddEmailValidationOpenApi(builder.Configuration);
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedHost |
+        ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownProxies.Add(IPAddress.Loopback);
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
 builder.Services.AddGrpc(options => options.EnableDetailedErrors = builder.Environment.IsDevelopment());
 builder.Services.AddGrpcReflection();
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
@@ -86,6 +97,7 @@ if (!app.Environment.IsEnvironment("Testing"))
     await app.Services.GetRequiredService<ICommercialResourceInfrastructureInitializer>().InitializeAsync();
 }
 
+app.UseForwardedHeaders();
 app.UseStatusCodePages(async statusContext =>
 {
     var response = statusContext.HttpContext.Response;

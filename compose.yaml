@@ -2,7 +2,8 @@ name: emailvalidation
 
 services:
   emailvalidation-api:
-    image: emailvalidation-api:${IMAGE_TAG:-latest}
+    image: ${CONTAINER_REGISTRY:-acrpometadsiscussrch.azurecr.io}/emailvalidation-api:${IMAGE_TAG:-latest}
+    pull_policy: ${IMAGE_PULL_POLICY:-always}
     build:
       context: .
       dockerfile: Dockerfile
@@ -44,8 +45,89 @@ services:
       start_period: 30s
     stop_grace_period: 45s
 
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: emailvalidation-nginx
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      emailvalidation-api:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap 'kill -TERM $$nginx_pid; wait $$nginx_pid' TERM INT
+        nginx -g 'daemon off;' &
+        nginx_pid=$$!
+        while kill -0 $$nginx_pid 2>/dev/null; do
+          sleep 6h & wait $$! || true
+          kill -HUP $$nginx_pid 2>/dev/null || true
+        done
+        wait $$nginx_pid
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0755
+      - /var/run:size=1m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    volumes:
+      - ./deploy/nginx/emailvalidation.conf:/etc/nginx/conf.d/default.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-check-certificate", "--quiet", "--output-document=/dev/null", "https://127.0.0.1/health/live"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
+
+  certbot:
+    image: certbot/certbot:v5.1.0
+    container_name: emailvalidation-certbot
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      nginx:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap 'exit 0' TERM INT
+        while :; do
+          certbot renew --webroot --webroot-path /var/www/certbot --quiet
+          sleep 12h & wait $$! || true
+        done
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+      - certbot_lib:/var/lib/letsencrypt
+      - certbot_logs:/var/log/letsencrypt
+
 secrets:
   azure_app_configuration_connection_string:
     file: ${AZURE_APPCONFIG_SECRET_FILE:?set AZURE_APPCONFIG_SECRET_FILE}
   azure_client_certificate:
     file: ${AZURE_CLIENT_CERTIFICATE_FILE:?set AZURE_CLIENT_CERTIFICATE_FILE}
+
+volumes:
+  letsencrypt:
+  certbot_www:
+  certbot_lib:
+  certbot_logs:

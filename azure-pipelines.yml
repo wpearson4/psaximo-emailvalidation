@@ -1,0 +1,201 @@
+name: emailvalidation-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  branches:
+    include:
+      - master
+
+pr:
+  branches:
+    include:
+      - master
+
+parameters:
+  - name: deployProduction
+    displayName: Deploy to 10.10.252.31
+    type: boolean
+    default: false
+  - name: bootstrapLetsEncrypt
+    displayName: Request the first Let's Encrypt certificate
+    type: boolean
+    default: false
+  - name: letsencryptEmail
+    displayName: Let's Encrypt contact email (required for bootstrap)
+    type: string
+    default: ''
+
+variables:
+  azureServiceConnection: Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)
+  acrName: acrpometadsiscussrch
+  acrLoginServer: acrpometadsiscussrch.azurecr.io
+  imageRepository: emailvalidation-api
+  buildConfiguration: Release
+
+stages:
+  - stage: Validate
+    displayName: Validate source and deployment assets
+    jobs:
+      - job: Test
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+
+          - task: UseDotNet@2
+            displayName: Install .NET 10 SDK
+            inputs:
+              packageType: sdk
+              version: 10.x
+
+          - script: dotnet restore EmailValidation.sln
+            displayName: Restore
+
+          - script: dotnet test EmailValidation.sln --configuration $(buildConfiguration) --no-restore
+            displayName: Build and test
+
+          - bash: |
+              set -euo pipefail
+              docker compose --file compose.yaml config --quiet
+            displayName: Validate Compose configuration
+            env:
+              AZURE_TENANT_ID: 00000000-0000-0000-0000-000000000000
+              AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000001
+              AUTHORITY: https://identity.example.invalid
+              AZURE_APPCONFIG_SECRET_FILE: /tmp/emailvalidation-placeholder-appconfig
+              AZURE_CLIENT_CERTIFICATE_FILE: /tmp/emailvalidation-placeholder-cert
+
+          - bash: |
+              set -euo pipefail
+              read -r validation_directory < <(mktemp -d)
+              trap 'rm -rf "$validation_directory"' EXIT
+              certificate_directory="$validation_directory/letsencrypt/live/email.digitalwarehouse.io"
+              mkdir -p "$certificate_directory"
+              openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+                -subj /CN=email.digitalwarehouse.io \
+                -keyout "$certificate_directory/privkey.pem" \
+                -out "$certificate_directory/fullchain.pem" >/dev/null 2>&1
+              docker run --rm --entrypoint nginx \
+                --volume "$(Build.SourcesDirectory)/deploy/nginx/emailvalidation.conf:/etc/nginx/conf.d/default.conf:ro" \
+                --volume "$validation_directory/letsencrypt:/etc/letsencrypt:ro" \
+                nginx:1.28-alpine -t
+              docker run --rm certbot/certbot:v5.1.0 --version
+            displayName: Validate Nginx and Certbot
+
+  - stage: Publish
+    displayName: Publish immutable image to Azure Container Registry
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+    jobs:
+      - job: PublishImage
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 1
+
+          - task: AzureCLI@2
+            displayName: Build and push application image
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr build \
+                  --registry "$(acrName)" \
+                  --file Dockerfile \
+                  --image "$(imageRepository):$(Build.SourceVersion)" \
+                  --image "$(imageRepository):latest" \
+                  "$(Build.SourcesDirectory)"
+
+  - ${{ if eq(parameters.deployProduction, true) }}:
+      - stage: Deploy
+        displayName: Deploy production
+        dependsOn: Publish
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+        jobs:
+          - deployment: DeployEmailValidation
+            displayName: Deploy to esdata03
+            pool:
+              name: OMetaSearchPool
+              demands:
+                - Agent.OS -equals Linux
+            environment: emailvalidation-production
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - checkout: self
+                      clean: true
+                      fetchDepth: 1
+
+                    - bash: |
+                        set -euo pipefail
+                        sudo install -d -m 0755 \
+                          /opt/emailvalidation/deploy/nginx \
+                          /opt/emailvalidation/deploy/letsencrypt
+                        sudo install -m 0644 compose.yaml /opt/emailvalidation/compose.yaml
+                        sudo install -m 0644 deploy/nginx/emailvalidation.conf \
+                          /opt/emailvalidation/deploy/nginx/emailvalidation.conf
+                        sudo install -m 0755 deploy/letsencrypt/bootstrap.sh \
+                          /opt/emailvalidation/deploy/letsencrypt/bootstrap.sh
+                        sudo test -f /opt/emailvalidation/.env
+                      displayName: Install deployment manifests
+
+                    - task: AzureCLI@2
+                      displayName: Pull and deploy release
+                      inputs:
+                        azureSubscription: $(azureServiceConnection)
+                        scriptType: bash
+                        scriptLocation: inlineScript
+                        inlineScript: |
+                          set -euo pipefail
+                          if [[ "${BOOTSTRAP_LETSENCRYPT,,}" == "true" && -z "$LETSENCRYPT_EMAIL" ]]; then
+                            echo "letsencryptEmail is required when bootstrapLetsEncrypt is enabled." >&2
+                            exit 2
+                          fi
+
+                          read -r access_token < <(
+                            az acr login --name "$(acrName)" --expose-token --query accessToken --output tsv
+                          )
+                          printf '%s' "$access_token" | sudo docker login "$(acrLoginServer)" \
+                            --username 00000000-0000-0000-0000-000000000000 \
+                            --password-stdin
+                          unset access_token
+                          trap 'sudo docker logout "$(acrLoginServer)" >/dev/null 2>&1 || true' EXIT
+
+                          cd /opt/emailvalidation
+                          export IMAGE_TAG="$(Build.SourceVersion)"
+                          sudo --preserve-env=IMAGE_TAG docker compose config --quiet
+                          sudo --preserve-env=IMAGE_TAG docker compose pull emailvalidation-api nginx certbot
+                          sudo --preserve-env=IMAGE_TAG docker compose up -d emailvalidation-api
+
+                          if [[ "${BOOTSTRAP_LETSENCRYPT,,}" == "true" ]]; then
+                            sudo --preserve-env=IMAGE_TAG,LETSENCRYPT_EMAIL \
+                              ./deploy/letsencrypt/bootstrap.sh
+                          else
+                            sudo --preserve-env=IMAGE_TAG docker compose up -d nginx certbot
+                          fi
+
+                          for attempt in {1..30}; do
+                            if curl --fail --silent --show-error \
+                              --resolve email.digitalwarehouse.io:443:127.0.0.1 \
+                              https://email.digitalwarehouse.io/health/ready >/dev/null; then
+                              break
+                            fi
+                            if [[ "$attempt" == 30 ]]; then
+                              sudo --preserve-env=IMAGE_TAG docker compose ps
+                              sudo --preserve-env=IMAGE_TAG docker compose logs --tail=200 \
+                                emailvalidation-api nginx certbot
+                              exit 1
+                            fi
+                            sleep 2
+                          done
+
+                          sudo --preserve-env=IMAGE_TAG docker compose ps
+                      env:
+                        BOOTSTRAP_LETSENCRYPT: ${{ parameters.bootstrapLetsEncrypt }}
+                        LETSENCRYPT_EMAIL: ${{ parameters.letsencryptEmail }}
