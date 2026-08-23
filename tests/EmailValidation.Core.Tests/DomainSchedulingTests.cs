@@ -1,4 +1,4 @@
-using EmailValidation.ConsoleApp;
+using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -62,6 +62,20 @@ public sealed class DomainSchedulingTests
         Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
         Assert.Equal(0, results.Current.Sequence);
         Assert.False(await results.MoveNextAsync());
+    }
+
+    [Fact]
+    public async Task StreamingScheduler_EarlyReaderDisposal_CancelsBlockedBoundedProducer()
+    {
+        var scheduler = Scheduler(new TrackingValidator(delayMilliseconds: 1), global: 1, perDomain: 1);
+        var work = Enumerable.Range(0, 100)
+            .Select(index => new ValidationWorkItem(
+                index, $"person{index}@example.test", new EmailValidationRequest()))
+            .ToArray();
+        var results = scheduler.ScheduleStreamingAsync(work).GetAsyncEnumerator();
+
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        await results.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
     }
 
     [Fact]

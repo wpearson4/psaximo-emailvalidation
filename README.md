@@ -23,6 +23,8 @@ Durable automatic revalidation is documented in [docs/automatic-revalidation.md]
 including its architecture gap analysis, configuration, lifecycle semantics, and operations.
 Real-time lifecycle status, gRPC reconnect semantics, authorization boundaries, and distributed delivery are
 documented in [docs/realtime-status-gap-analysis.md](docs/realtime-status-gap-analysis.md).
+The current boundary assessment, SOLID review, remediated risks, and dependency guardrails are documented in
+[docs/architecture-review-guardrails.md](docs/architecture-review-guardrails.md).
 
 ## Run
 

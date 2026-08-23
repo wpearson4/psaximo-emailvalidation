@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\EmailValidation.Application\EmailValidation.Application.csproj" />
     <ProjectReference Include="..\EmailValidation.Core\EmailValidation.Core.csproj" />
     <ProjectReference Include="..\EmailValidation.Infrastructure\EmailValidation.Infrastructure.csproj" />
   </ItemGroup>

@@ -1,4 +1,5 @@
 using EmailValidation.Core;
+using EmailValidation.Application;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -335,18 +336,62 @@ public sealed class EmailValidatorTests
     {
         settings ??= new EmailValidationOptions();
         var options = Microsoft.Extensions.Options.Options.Create(settings);
+        var persistenceMetrics = metrics ?? new ValidationPersistenceMetrics();
+        var domainCache = cache ?? new InMemoryDomainValidationCache();
+        var catchAllDetector = catchAll ?? new FakeCatchAll();
+        var providerDetector = new MailProviderDetector();
+        var planBuilder = new ValidationPlanBuilder(options);
+        var domainService = new DomainIntelligenceService(
+            new MailRoutingAnalyzer(dns),
+            new UnknownDnsSecurityAnalyzer(),
+            new UnknownAuthenticationAnalyzer(),
+            new UnknownDisposableProvider(),
+            new FakeDomainIntelligence(),
+            providerDetector,
+            catchAllDetector,
+            domainCache,
+            planBuilder,
+            new DomainIntelligenceFreshnessPolicy(options),
+            persistenceMetrics,
+            options,
+            TimeProvider.System,
+            NullLogger<DomainIntelligenceService>.Instance);
         IMailProviderStrategy[] strategies =
         [
             new Microsoft365Strategy(), new GoogleWorkspaceStrategy(), new ProofpointStrategy(),
             new MimecastStrategy(), new GenericSmtpStrategy()
         ];
         return new EmailValidator(
-            new EmailNormalizer(), dns, new FakeDomainIntelligence(), new FakeEmailIntelligence(), new RoleAccountDetector(options),
-            new MailProviderDetector(), smtp ?? new FakeSmtp(), new HealthyProbeSender(), catchAll ?? new FakeCatchAll(), cache ?? new InMemoryDomainValidationCache(),
+            new EmailNormalizer(), new FakeEmailIntelligence(), new RoleAccountDetector(options),
+            smtp ?? new FakeSmtp(), new HealthyProbeSender(),
             new EmailClassificationEngine(), new MailProviderStrategyResolver(strategies),
             observationStore ?? new InMemoryValidationObservationStore(), new HistoricalSignalAggregator(),
-            new ResultEvaluator(), new SmtpSessionBudget(), new ValidationPlanBuilder(options),
-            metrics ?? new ValidationPersistenceMetrics(), options, NullLogger<EmailValidator>.Instance);
+            new ResultEvaluator(), new SmtpSessionBudget(), persistenceMetrics,
+            domainService, new SmtpBannerProviderDetector(), options, NullLogger<EmailValidator>.Instance);
+    }
+
+    private sealed class UnknownDnsSecurityAnalyzer : IDnsSecurityAnalyzer
+    {
+        public Task<DnsSecurityIntelligence> AnalyzeAsync(
+            string domain,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(DnsSecurityIntelligence.Unknown);
+    }
+
+    private sealed class UnknownAuthenticationAnalyzer : IEmailAuthenticationAnalyzer
+    {
+        public Task<EmailAuthenticationIntelligence> AnalyzeAsync(
+            string domain,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(EmailAuthenticationIntelligence.Unknown);
+    }
+
+    private sealed class UnknownDisposableProvider : IDisposableEmailDomainProvider
+    {
+        public ValueTask<DisposableDomainResult> GetAsync(
+            string domain,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(DisposableDomainResult.Unknown);
     }
 
     private sealed class FakeDomainIntelligence : IDomainIntelligenceEvaluator
@@ -600,7 +645,8 @@ public sealed class EmailValidatorTests
         },
         ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
         EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(50),
-        StrategyVersion = "1.1.0"
+        StrategyVersion = "1.1.0",
+        IntelligencePolicyVersion = "2.0.0"
     };
 
     private static EmailValidationOptions LiveSettings() => new()

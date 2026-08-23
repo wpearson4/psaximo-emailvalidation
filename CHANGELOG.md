@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Completed an architecture guardrail review covering layering, shared orchestration, evidence/reuse, SMTP and sender policy, retry/lifecycle authority, risk/confidence boundaries, async safety, and commercial extensibility.
+- Moved bounded domain scheduling from the Console host into Application, added asynchronous channel backpressure, and removed the duplicate legacy domain-intelligence workflow from `EmailValidator`.
+- Preserved compatible historical catch-all evidence across inconclusive refreshes, including records written before richer provider fingerprints, while retaining topology/provider invalidation.
+- Added assembly-dependency tests that prevent Domain/Application from acquiring infrastructure or host dependencies.
 - Added separate `EmailValidation.Domain` and `EmailValidation.Application` assemblies while preserving existing public namespaces and consumers.
 - Added reusable domain intelligence for MX routing/TTL and fallback metadata, resolver-validated DNSSEC state, SPF and DMARC parsing, honest DKIM observation state, provider/banner evidence, disposable-domain provenance, and lifecycle fingerprints.
 - Added bounded domain-level single-flight and independent catch-all single-flight with memory/persistent reuse and topology-aware invalidation.

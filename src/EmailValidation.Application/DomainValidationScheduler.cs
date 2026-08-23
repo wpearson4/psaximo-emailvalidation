@@ -5,7 +5,7 @@ using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace EmailValidation.ConsoleApp;
+namespace EmailValidation.Application;
 
 /// <summary>Fair, async, batch-scoped round-robin scheduling by normalized domain.</summary>
 public sealed class DomainValidationScheduler(
@@ -42,13 +42,18 @@ public sealed class DomainValidationScheduler(
         var groups = Group(items);
         _uniqueDomains = groups.Count;
         _maximumQueueDepth = groups.Count == 0 ? 0 : groups.Max(group => group.Value.Count);
-        var completed = Channel.CreateUnbounded<ValidationWorkResult>(new UnboundedChannelOptions
+        var globalConcurrency = Math.Max(1,
+            _options.GlobalConcurrency > 0 ? _options.GlobalConcurrency : _legacyGlobalConcurrency);
+        var completed = Channel.CreateBounded<ValidationWorkResult>(new BoundedChannelOptions(
+            Math.Max(1, Math.Min(items.Count, globalConcurrency * 2)))
         {
             SingleReader = true,
             SingleWriter = false,
-            AllowSynchronousContinuations = false
+            AllowSynchronousContinuations = false,
+            FullMode = BoundedChannelFullMode.Wait
         });
-        var producer = ProduceAsync(groups, completed.Writer, cancellationToken);
+        using var producerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var producer = ProduceAsync(groups, completed.Writer, producerCancellation.Token);
 
         try
         {
@@ -57,7 +62,18 @@ public sealed class DomainValidationScheduler(
         }
         finally
         {
-            await producer;
+            // An async-stream consumer may stop before draining the bounded result
+            // channel. Cancel the producer so iterator disposal cannot deadlock on
+            // backpressure from a reader that no longer exists.
+            producerCancellation.Cancel();
+            try
+            {
+                await producer.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Cancellation belongs to early iterator disposal, not the caller.
+            }
         }
     }
 
@@ -100,18 +116,20 @@ public sealed class DomainValidationScheduler(
         ChannelWriter<ValidationWorkResult> completed,
         CancellationToken cancellationToken)
     {
-        var ready = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
-        {
-            SingleReader = false,
-            SingleWriter = false,
-            AllowSynchronousContinuations = false
-        });
         var queues = wave.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
         var sync = new object();
         var remaining = wave.Sum(pair => pair.Value.Count);
         var perDomain = Math.Max(1, _options.PerDomainConcurrency > 0
             ? _options.PerDomainConcurrency
             : _legacyPerDomainConcurrency);
+        var readyCapacity = Math.Max(1, wave.Sum(pair => Math.Min(perDomain, pair.Value.Count)));
+        var ready = Channel.CreateBounded<string>(new BoundedChannelOptions(readyCapacity)
+        {
+            SingleReader = false,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+            FullMode = BoundedChannelFullMode.Wait
+        });
         foreach (var pair in wave)
         {
             var initial = Math.Min(perDomain, pair.Value.Count);
@@ -120,7 +138,7 @@ public sealed class DomainValidationScheduler(
 
         var workerCount = Math.Min(remaining, Math.Max(1,
             _options.GlobalConcurrency > 0 ? _options.GlobalConcurrency : _legacyGlobalConcurrency));
-        var workers = Enumerable.Range(0, workerCount).Select(_ => Task.Run(async () =>
+        async Task ProcessReadyAsync()
         {
             await foreach (var domain in ready.Reader.ReadAllAsync(cancellationToken))
             {
@@ -152,7 +170,9 @@ public sealed class DomainValidationScheduler(
                 if (shouldContinue) ready.Writer.TryWrite(domain);
                 if (finish) ready.Writer.TryComplete();
             }
-        }, cancellationToken)).ToArray();
+        }
+
+        var workers = Enumerable.Range(0, workerCount).Select(_ => ProcessReadyAsync()).ToArray();
         await Task.WhenAll(workers);
     }
 

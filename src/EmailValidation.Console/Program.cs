@@ -1,4 +1,5 @@
 using EmailValidation.ConsoleApp;
+using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Configuration;

@@ -130,8 +130,8 @@ internal sealed class EmailAuthenticationAnalyzer(
         catch (Exception exception) when (exception is SocketException or IOException or TimeoutException or FormatException or OperationCanceledException)
         {
             failed = true;
-            if (spfTask.IsCompletedSuccessfully) spfResponse = spfTask.Result;
-            if (dmarcTask.IsCompletedSuccessfully) dmarcResponse = dmarcTask.Result;
+            if (spfTask.IsCompletedSuccessfully) spfResponse = await spfTask.ConfigureAwait(false);
+            if (dmarcTask.IsCompletedSuccessfully) dmarcResponse = await dmarcTask.ConfigureAwait(false);
             logger.LogWarning("Email-authentication analysis degraded for {Domain} ({ErrorType})",
                 domain, exception.GetType().Name);
         }

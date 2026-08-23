@@ -257,15 +257,15 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             var authenticationFingerprint = Fingerprints.CreateAuthentication(authentication);
             var topologyChanged = existing is not null &&
                 (!string.Equals(Fingerprints.Mx(existing), mxFingerprint, StringComparison.Ordinal) ||
-                 !string.Equals(Fingerprints.Provider(existing), providerFingerprint, StringComparison.Ordinal));
+                 !ProviderCompatible(existing, provider, providerFingerprint));
             var authenticationChanged = existing is not null &&
                 !string.Equals(existing.AuthenticationFingerprint, authenticationFingerprint, StringComparison.Ordinal);
             var changed = topologyChanged || authenticationChanged;
             if (topologyChanged) TopologyChanges.Add(1);
-            var catchAllCompatible = existing is not null &&
+            var catchAllTopologyCompatible = existing is not null &&
                 string.Equals(Fingerprints.Mx(existing), mxFingerprint, StringComparison.Ordinal) &&
-                string.Equals(Fingerprints.Provider(existing), providerFingerprint, StringComparison.Ordinal) &&
-                IsCatchAllFresh(existing, now);
+                ProviderCompatible(existing, provider, providerFingerprint) &&
+                string.Equals(existing.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal);
             var lifetime = DomainLifetime(routing.TimeToLive);
             var intelligence = new DomainIntelligence
             {
@@ -283,17 +283,19 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 MxForward = supplemental.MxForward,
                 DomainAge = supplemental.DomainAge,
                 MailInfrastructure = supplemental.MailInfrastructure,
-                CatchAll = catchAllCompatible
+                // Compatible stale catch-all evidence remains refresh context, but the
+                // planner still observes its old timestamp and requires a live refresh.
+                CatchAll = catchAllTopologyCompatible
                     ? existing!.CatchAll
                     : new CatchAllDetectionResult(CatchAllStatus.NotAttempted, 0, 0, 0, 0),
-                Behavior = catchAllCompatible ? existing!.Behavior : null,
+                Behavior = catchAllTopologyCompatible ? existing!.Behavior : null,
                 ObservedAt = now,
                 EvidenceExpiresAt = now.Add(lifetime),
                 StrategyVersion = _options.Policy.ProviderStrategyVersion,
                 MxTopologyFingerprint = mxFingerprint,
                 ProviderFingerprint = providerFingerprint,
                 AuthenticationFingerprint = authenticationFingerprint,
-                CatchAllFingerprint = catchAllCompatible
+                CatchAllFingerprint = catchAllTopologyCompatible
                     ? existing!.CatchAllFingerprint ?? Fingerprints.CreateCatchAll(existing.CatchAll)
                     : null,
                 FirstObservedUtc = existing?.FirstObservedUtc is { } first && first != default
@@ -401,11 +403,21 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         string.Equals(current.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal) &&
         string.Equals(Fingerprints.Mx(current), current.Provider.TopologyFingerprint, StringComparison.Ordinal);
 
-    private bool IsCatchAllFresh(DomainIntelligence intelligence, DateTimeOffset now)
+    private static bool ProviderCompatible(
+        DomainIntelligence existing,
+        ProviderDetectionResult current,
+        string currentFingerprint)
     {
-        var observedAt = intelligence.CatchAll.ObservedAt ?? intelligence.ObservedAt;
-        return observedAt != default &&
-            observedAt.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes)) > now;
+        if (!string.IsNullOrWhiteSpace(existing.ProviderFingerprint))
+            return string.Equals(existing.ProviderFingerprint, currentFingerprint, StringComparison.Ordinal);
+
+        // Records written before provider fingerprints were introduced do not
+        // contain the richer family/gateway fields. Treat unknown legacy fields
+        // as wildcards while still requiring the detected provider to agree.
+        return existing.Provider.Provider == current.Provider &&
+            (existing.Provider.Family == ProviderFamily.Unknown || existing.Provider.Family == current.Family) &&
+            (existing.Provider.GatewayProvider == GatewayProvider.Unknown ||
+             existing.Provider.GatewayProvider == current.GatewayProvider);
     }
 
     private TimeSpan DomainLifetime(TimeSpan? routingTtl)
@@ -445,7 +457,7 @@ internal static class Fingerprints
         intelligence.ProviderFingerprint ?? CreateProvider(intelligence.Provider);
 
     public static string CreateProvider(ProviderDetectionResult provider) => Hash(
-        $"{provider.Provider}|{provider.Family}|{provider.GatewayProvider}|{provider.MxHost?.ToLowerInvariant()}|{provider.DetectionVersion}");
+        $"{provider.Provider}|{provider.Family}|{provider.GatewayProvider}|{provider.MxHost?.ToLowerInvariant()}");
 
     public static string CreateAuthentication(EmailAuthenticationIntelligence authentication) => Hash(
         $"{authentication.Spf.State}|{authentication.Spf.Record}|{authentication.Dmarc.State}|" +

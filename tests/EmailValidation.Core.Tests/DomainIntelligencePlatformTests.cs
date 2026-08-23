@@ -8,6 +8,31 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class DomainIntelligencePlatformTests
 {
+    [Fact]
+    public void DomainAssembly_DoesNotReferenceApplicationInfrastructureOrHosts()
+    {
+        var references = typeof(DomainIntelligence).Assembly
+            .GetReferencedAssemblies()
+            .Select(reference => reference.Name ?? string.Empty)
+            .ToArray();
+
+        Assert.DoesNotContain(references, IsOuterLayerAssembly);
+    }
+
+    [Fact]
+    public void ApplicationAssembly_DoesNotReferenceInfrastructureOrHosts()
+    {
+        var references = typeof(DomainIntelligenceService).Assembly
+            .GetReferencedAssemblies()
+            .Select(reference => reference.Name ?? string.Empty)
+            .ToArray();
+
+        Assert.DoesNotContain(references, IsInfrastructureOrHostAssembly);
+        Assert.Same(
+            typeof(DomainIntelligenceService).Assembly,
+            typeof(DomainValidationScheduler).Assembly);
+    }
+
     [Theory]
     [InlineData("sales", RoleAddressType.Sales)]
     [InlineData("info", RoleAddressType.Information)]
@@ -458,4 +483,19 @@ public sealed class DomainIntelligencePlatformTests
         [],
         TimeSpan.FromMinutes(5),
         DateTimeOffset.UtcNow);
+
+    private static bool IsOuterLayerAssembly(string assemblyName) =>
+        IsInfrastructureOrHostAssembly(assemblyName) ||
+        assemblyName == "EmailValidation.Application" ||
+        assemblyName.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("Grpc", StringComparison.Ordinal);
+
+    private static bool IsInfrastructureOrHostAssembly(string assemblyName) =>
+        assemblyName == "EmailValidation.Infrastructure" ||
+        assemblyName.StartsWith("EmailValidation.Console", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("EmailValidation.Worker", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("EmailValidation.Grpc", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("MongoDB", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("Azure.", StringComparison.Ordinal) ||
+        assemblyName.StartsWith("Elastic", StringComparison.Ordinal);
 }
