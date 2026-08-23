@@ -19,7 +19,8 @@ var builder = WebApplication.CreateBuilder(args);
 var exportingOpenApi = args.Length >= 2 && string.Equals(args[0], "--export-openapi", StringComparison.Ordinal);
 builder.Configuration.AddJsonFile(
     Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
-if (!builder.Environment.IsEnvironment("Testing"))
+if (!builder.Environment.IsEnvironment("Testing") &&
+    builder.Configuration.GetValue("Azure:AppConfigurationEnabled", true))
     builder.Configuration.AddEmailValidationAzureAppConfiguration(builder.Environment);
 builder.Configuration.AddEnvironmentVariables();
 if (exportingOpenApi)
@@ -109,8 +110,8 @@ app.UseStatusCodePages(async statusContext =>
         instance: statusContext.HttpContext.Request.Path)
         .ExecuteAsync(statusContext.HttpContext).ConfigureAwait(false);
 });
-app.UseEmailValidationApiPlatform();
 app.MapEmailValidationOpenApi();
+app.UseEmailValidationApiPlatform();
 
 await app.RunAsync();
 return 0;

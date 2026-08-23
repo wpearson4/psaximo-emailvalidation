@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "SwaggerLocal": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "applicationUrl": "http://localhost:8080",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Azure__AppConfigurationEnabled": "false",
+        "EmailValidation__Persistence__Enabled": "false",
+        "EmailValidation__Persistence__Provider": "Json",
+        "EmailValidation__Persistence__StoragePath": "data/swagger-local",
+        "EmailValidation__Revalidation__Enabled": "false",
+        "EmailValidation__Jobs__Enabled": "false",
+        "EmailValidation__ProbeSenderSource__Index": "local-swagger",
+        "EmailValidation__ProbeSenderSource__Query__match_all__enabled": "true",
+        "Kestrel__Endpoints__Http__Url": "http://127.0.0.1:8080",
+        "Kestrel__Endpoints__Grpc__Url": "http://127.0.0.1:8081"
+      }
+    }
+  }
+}

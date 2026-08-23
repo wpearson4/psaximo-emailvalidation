@@ -39,6 +39,14 @@ dotnet build src/EmailValidation.Api/EmailValidation.Api.csproj -p:GenerateOpenA
 
 The artifact is `openapi/emailvalidation-v1.json`; generation uses a non-networked Testing configuration and needs no production credentials.
 
+For an interactive local Swagger UI in Rider, select the `SwaggerLocal` launch profile. The profile disables Azure App Configuration and durable infrastructure, supplies non-production validation placeholders, binds only to loopback, and opens `http://localhost:8080/swagger`. From a terminal, the equivalent command is:
+
+```bash
+dotnet run --project src/EmailValidation.Api/EmailValidation.Api.csproj --launch-profile SwaggerLocal
+```
+
+Swagger is anonymous only in Development. Business operations still require their documented OAuth scopes. `Azure:AppConfigurationEnabled` defaults to `true`; disable it only in an explicitly local profile such as `SwaggerLocal`.
+
 ## Configuration and secrets
 
 Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
