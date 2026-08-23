@@ -237,10 +237,22 @@ public sealed class EmailIntelligenceEvaluator(
         string domain,
         CancellationToken cancellationToken = default)
     {
-        var trapTask = spamTrapDetector.EvaluateAsync(email, cancellationToken);
-        var abuseTask = abuseRiskProvider.EvaluateAsync(email, cancellationToken);
-        var suppressionTask = suppressionProvider.EvaluateAsync(email, cancellationToken);
-        var identityTask = identityProvider.EvaluateAsync(email, cancellationToken);
+        var trapTask = IsolateAsync(
+            () => spamTrapDetector.EvaluateAsync(email, cancellationToken),
+            SpamTrapRiskResult.Unknown,
+            cancellationToken);
+        var abuseTask = IsolateAsync(
+            () => abuseRiskProvider.EvaluateAsync(email, cancellationToken),
+            AbuseRiskResult.Unknown,
+            cancellationToken);
+        var suppressionTask = IsolateAsync(
+            () => suppressionProvider.EvaluateAsync(email, cancellationToken),
+            SuppressionResult.Unknown,
+            cancellationToken);
+        var identityTask = IsolateAsync(
+            () => identityProvider.EvaluateAsync(email, cancellationToken),
+            EmailIdentityResult.Unknown,
+            cancellationToken);
         await Task.WhenAll(trapTask, abuseTask, suppressionTask, identityTask);
         return new EmailAddressIntelligence
         {
@@ -251,6 +263,25 @@ public sealed class EmailIntelligenceEvaluator(
             Suppression = await suppressionTask,
             Identity = await identityTask
         };
+    }
+
+    private static async Task<T> IsolateAsync<T>(
+        Func<Task<T>> action,
+        T fallback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return fallback;
+        }
     }
 }
 

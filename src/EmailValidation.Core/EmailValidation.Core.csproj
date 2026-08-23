@@ -10,4 +10,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\EmailValidation.Domain\EmailValidation.Domain.csproj" />
+  </ItemGroup>
+
 </Project>

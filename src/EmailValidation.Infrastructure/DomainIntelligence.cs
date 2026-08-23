@@ -1,24 +1,50 @@
 using EmailValidation.Core;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Infrastructure;
 
 public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> options) :
     IDisposableEmailDetector,
-    IDisposableDomainIntelligenceProvider
+    IDisposableDomainIntelligenceProvider,
+    IDisposableEmailDomainProvider
 {
+    private static readonly Meter Meter = new("EmailValidation.Disposable", "1.0.0");
+    private static readonly Counter<long> Matches = Meter.CreateCounter<long>("disposable_domain_match");
+    private readonly DisposableEmailOptions _options = options.Value.DisposableEmail;
     private readonly HashSet<string> _domains = new(
         options.Value.Intelligence.DisposableDomains,
         StringComparer.OrdinalIgnoreCase);
 
-    public bool IsDisposable(string domain) => MatchesDomainOrParent(_domains, domain);
+    public bool IsDisposable(string domain) => _options.Enabled && MatchesDomainOrParent(_domains, domain);
 
-    public DisposableDomainResult Evaluate(string domain) => IsDisposable(domain)
-        ? new DisposableDomainResult(
+    public DisposableDomainResult Evaluate(string domain)
+    {
+        if (!IsDisposable(domain))
+            return DisposableDomainResult.Unknown with
+            {
+                Source = "ConfiguredDomainDataset",
+                DatasetVersion = _options.DatasetVersion,
+                LastUpdatedUtc = DateTimeOffset.UtcNow
+            };
+        Matches.Add(1);
+        return new DisposableDomainResult(
             DisposableDomainStatus.KnownDisposable,
             0.99,
-            EvidenceSource.ConfiguredIntelligenceProvider)
-        : DisposableDomainResult.Unknown;
+            EvidenceSource.ConfiguredIntelligenceProvider,
+            "ConfiguredDomainDataset",
+            _options.DatasetVersion,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+    }
+
+    public ValueTask<DisposableDomainResult> GetAsync(
+        string domain,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Evaluate(domain));
+    }
 
     internal static bool MatchesDomainOrParent(IReadOnlySet<string> domains, string domain)
     {
@@ -29,17 +55,54 @@ public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> opt
     }
 }
 
-public sealed class RoleAccountDetector(IOptions<EmailValidationOptions> options) : IRoleAccountDetector
+public sealed class RoleAccountDetector(IOptions<EmailValidationOptions> options) :
+    IRoleAccountDetector,
+    IRoleAddressDetector
 {
+    private static readonly Meter Meter = new("EmailValidation.RoleAddress", "1.0.0");
+    private static readonly Counter<long> Matches = Meter.CreateCounter<long>("role_address_detected");
     private readonly HashSet<string> _roles = new(
         options.Value.Intelligence.RoleAccounts,
         StringComparer.OrdinalIgnoreCase);
+    private readonly RiskIntelligenceOptions _options = options.Value.RiskIntelligence;
 
     public bool IsRoleAccount(string localPart)
     {
         var plus = localPart.IndexOf('+');
         var canonical = plus > 0 ? localPart[..plus] : localPart;
         return _roles.Contains(canonical);
+    }
+
+    public RoleAddressDetectionResult Detect(NormalizedEmailAddress email)
+    {
+        if (!_options.RoleDetectionEnabled) return RoleAddressDetectionResult.NotRole;
+        var plus = email.LocalPart.IndexOf('+');
+        var canonical = (plus > 0 ? email.LocalPart[..plus] : email.LocalPart).ToLowerInvariant();
+        if (!_roles.Contains(canonical)) return RoleAddressDetectionResult.NotRole;
+        Matches.Add(1);
+        return new RoleAddressDetectionResult(
+            true,
+            canonical switch
+            {
+                "info" => RoleAddressType.Information,
+                "sales" => RoleAddressType.Sales,
+                "support" => RoleAddressType.Support,
+                "admin" => RoleAddressType.Administration,
+                "billing" => RoleAddressType.Billing,
+                "contact" => RoleAddressType.Contact,
+                "office" => RoleAddressType.Office,
+                "help" => RoleAddressType.Help,
+                "marketing" => RoleAddressType.Marketing,
+                "abuse" => RoleAddressType.Abuse,
+                "postmaster" => RoleAddressType.Postmaster,
+                "webmaster" => RoleAddressType.Webmaster,
+                "security" => RoleAddressType.Security,
+                "hr" => RoleAddressType.HumanResources,
+                "careers" => RoleAddressType.Careers,
+                _ => RoleAddressType.Other
+            },
+            $"Local-part '{canonical}' matched the configured role-address rules.",
+            _options.RoleRuleVersion);
     }
 }
 
@@ -102,7 +165,9 @@ public sealed class MailProviderDetector : IMailProviderDetector
         // A lower-priority Microsoft route behind a third-party MX must never cause
         // the validator to skip that published gateway.
         var minimumPreference = records.Min(record => record.Preference);
-        foreach (var record in records.Where(record => record.Preference == minimumPreference))
+        foreach (var record in records
+                     .Where(record => record.Preference == minimumPreference)
+                     .OrderBy(record => NormalizeHost(record.Host), StringComparer.Ordinal))
         {
             var host = NormalizeHost(record.Host);
             foreach (var fingerprint in Fingerprints)
@@ -120,7 +185,11 @@ public sealed class MailProviderDetector : IMailProviderDetector
             }
         }
 
-        var selectedHost = NormalizeHost(records.First(record => record.Preference == minimumPreference).Host);
+        var selectedHost = records
+            .Where(record => record.Preference == minimumPreference)
+            .Select(record => NormalizeHost(record.Host))
+            .OrderBy(host => host, StringComparer.Ordinal)
+            .First();
         return new ProviderDetectionResult(
             MailProvider.GenericSmtp,
             0.55,
@@ -142,4 +211,77 @@ public sealed class MailProviderDetector : IMailProviderDetector
         : string.Join('|', records
             .Select(record => $"{record.Preference}:{NormalizeHost(record.Host)}")
             .OrderBy(value => value, StringComparer.Ordinal));
+}
+
+public sealed class SmtpBannerProviderDetector : ISmtpProviderDetector
+{
+    private sealed record Signature(string Token, MailProvider Provider, double Confidence);
+
+    private static readonly Signature[] Signatures =
+    [
+        new("outlook.com", MailProvider.Microsoft365, 0.90),
+        new("microsoft", MailProvider.Microsoft365, 0.82),
+        new("google.com", MailProvider.GoogleWorkspace, 0.90),
+        new("google", MailProvider.GoogleWorkspace, 0.80),
+        new("yahoodns.net", MailProvider.Yahoo, 0.88),
+        new("proofpoint", MailProvider.Proofpoint, 0.88),
+        new("mimecast", MailProvider.Mimecast, 0.88),
+        new("protonmail", MailProvider.Proton, 0.88),
+        new("zoho", MailProvider.Zoho, 0.84),
+        new("messagingengine.com", MailProvider.Fastmail, 0.88)
+    ];
+
+    public ProviderDetectionResult Detect(SmtpSessionEvidence evidence)
+    {
+        var source = string.Join(' ', new[] { evidence.ServerBanner, evidence.EhloHost }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        foreach (var signature in Signatures)
+        {
+            if (!source.Contains(signature.Token, StringComparison.OrdinalIgnoreCase)) continue;
+            return new ProviderDetectionResult(
+                signature.Provider,
+                signature.Confidence,
+                MatchedSignature: signature.Token,
+                Evidence: ["SmtpGreetingOrEhlo"],
+                DetectedAtUtc: DateTimeOffset.UtcNow,
+                DetectionVersion: "smtp-banner-1.0.0",
+                SmtpObservedProvider: signature.Provider,
+                SmtpEvidenceConfidence: signature.Confidence);
+        }
+        return new ProviderDetectionResult(
+            MailProvider.Unknown,
+            0,
+            Evidence: source.Length == 0 ? [] : ["UnrecognizedSmtpGreetingOrEhlo"],
+            DetectedAtUtc: DateTimeOffset.UtcNow,
+            DetectionVersion: "smtp-banner-1.0.0");
+    }
+}
+
+public sealed class ConfiguredSpamTrapRiskProvider(ISpamTrapRiskDetector detector) : ISpamTrapRiskProvider
+{
+    private static readonly Meter Meter = new("EmailValidation.SpamTrap", "1.0.0");
+    private static readonly Counter<long> KnownMatches = Meter.CreateCounter<long>("spam_trap_known_match");
+
+    public async Task<SpamTrapRiskAssessment> EvaluateAsync(
+        EmailRiskContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await detector.EvaluateAsync(context.NormalizedEmail, cancellationToken).ConfigureAwait(false);
+        var assessment = result.Status switch
+        {
+            SpamTrapRiskStatus.KnownSpamTrap when result.EvidenceSource is not EvidenceSource.Heuristic =>
+                new(SpamTrapRiskLevel.Known, SpamTrapEvidenceKind.TrustedDatasetMatch,
+                    result.Confidence, result.EvidenceSource?.ToString()),
+            SpamTrapRiskStatus.LikelySpamTrap => new(SpamTrapRiskLevel.High,
+                result.EvidenceSource == EvidenceSource.Heuristic
+                    ? SpamTrapEvidenceKind.HeuristicOnly
+                    : SpamTrapEvidenceKind.DomainRiskPattern,
+                result.Confidence, result.EvidenceSource?.ToString()),
+            SpamTrapRiskStatus.PossibleSpamTrap => new(SpamTrapRiskLevel.Elevated,
+                SpamTrapEvidenceKind.HeuristicOnly, result.Confidence, result.EvidenceSource?.ToString()),
+            _ => SpamTrapRiskAssessment.None
+        };
+        if (assessment.Level == SpamTrapRiskLevel.Known) KnownMatches.Add(1);
+        return assessment;
+    }
 }

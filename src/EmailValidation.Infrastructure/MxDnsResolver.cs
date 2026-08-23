@@ -26,7 +26,9 @@ public sealed class MxDnsResolver(IOptions<EmailValidationOptions> options, ILog
             if (parsed.Status == DnsStatus.DomainNotFound)
                 return new(parsed.Status, false, [], false, stopwatch.Elapsed);
             if (parsed.MxRecords.Count > 0 || parsed.NullMx)
-                return new(DnsStatus.Success, true, parsed.MxRecords, false, stopwatch.Elapsed, ExplicitNullMx: parsed.NullMx);
+                return new(DnsStatus.Success, true, parsed.MxRecords, false, stopwatch.Elapsed,
+                    ExplicitNullMx: parsed.NullMx,
+                    TimeToLive: parsed.MinimumTtlSeconds is { } ttl ? TimeSpan.FromSeconds(ttl) : null);
 
             // RFC 5321 implicit MX fallback: if no MX exists but the domain has an address,
             // delivery may target the domain itself with preference zero.
@@ -34,7 +36,16 @@ public sealed class MxDnsResolver(IOptions<EmailValidationOptions> options, ILog
             {
                 var addresses = await Dns.GetHostAddressesAsync(domain, cancellationToken).WaitAsync(_timeout, cancellationToken);
                 if (addresses.Length > 0)
-                    return new(DnsStatus.Success, true, [new MxRecord(0, domain)], true, stopwatch.Elapsed);
+                    return new(
+                        DnsStatus.Success,
+                        true,
+                        [new MxRecord(0, domain)],
+                        true,
+                        stopwatch.Elapsed,
+                        Ipv4Addresses: addresses.Where(address => address.AddressFamily == AddressFamily.InterNetwork)
+                            .Select(address => address.ToString()).ToArray(),
+                        Ipv6Addresses: addresses.Where(address => address.AddressFamily == AddressFamily.InterNetworkV6)
+                            .Select(address => address.ToString()).ToArray());
             }
             catch (SocketException)
             {
@@ -151,13 +162,13 @@ public sealed class MxDnsResolver(IOptions<EmailValidationOptions> options, ILog
         return stream.ToArray();
     }
 
-    private static (DnsStatus Status, List<MxRecord> MxRecords, bool NullMx) ParseResponse(byte[] message, ushort expectedId)
+    private static (DnsStatus Status, List<MxRecord> MxRecords, bool NullMx, uint? MinimumTtlSeconds) ParseResponse(byte[] message, ushort expectedId)
     {
         if (message.Length < 12 || BinaryPrimitives.ReadUInt16BigEndian(message) != expectedId)
             throw new FormatException("Invalid DNS response");
         var flags = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(2, 2));
         var responseCode = flags & 0x000F;
-        if (responseCode == 3) return (DnsStatus.DomainNotFound, [], false);
+        if (responseCode == 3) return (DnsStatus.DomainNotFound, [], false, null);
         if (responseCode != 0) throw new FormatException($"DNS server returned code {responseCode}");
 
         var questions = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(4, 2));
@@ -171,16 +182,19 @@ public sealed class MxDnsResolver(IOptions<EmailValidationOptions> options, ILog
 
         var records = new List<MxRecord>();
         var nullMx = false;
+        uint? minimumTtl = null;
         for (var index = 0; index < answers; index++)
         {
             ReadName(message, ref offset);
             EnsureAvailable(message, offset, 10);
             var type = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(offset, 2));
+            var ttl = BinaryPrimitives.ReadUInt32BigEndian(message.AsSpan(offset + 4, 4));
             var dataLength = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(offset + 8, 2));
             offset += 10;
             EnsureAvailable(message, offset, dataLength);
             if (type == 15 && dataLength >= 3)
             {
+                minimumTtl = minimumTtl is null ? ttl : Math.Min(minimumTtl.Value, ttl);
                 var preference = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(offset, 2));
                 var nameOffset = offset + 2;
                 var exchange = ReadName(message, ref nameOffset).TrimEnd('.');
@@ -189,7 +203,10 @@ public sealed class MxDnsResolver(IOptions<EmailValidationOptions> options, ILog
             }
             offset += dataLength;
         }
-        return (DnsStatus.Success, records.OrderBy(record => record.Preference).ThenBy(record => record.Host, StringComparer.Ordinal).ToList(), nullMx);
+        return (DnsStatus.Success,
+            records.OrderBy(record => record.Preference).ThenBy(record => record.Host, StringComparer.Ordinal).ToList(),
+            nullMx,
+            minimumTtl);
     }
 
     private static string ReadName(byte[] message, ref int offset)

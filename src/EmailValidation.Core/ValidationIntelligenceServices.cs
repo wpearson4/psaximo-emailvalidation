@@ -581,7 +581,7 @@ public sealed class EmailRiskIntelligence(IEnumerable<IRiskDataSource> sources) 
 {
     public async Task<EmailRiskResult> EvaluateAsync(EmailRiskContext context, CancellationToken cancellationToken = default)
     {
-        var results = await Task.WhenAll(sources.Select(source => source.LookupAsync(context, cancellationToken)))
+        var results = await Task.WhenAll(sources.Select(source => LookupSafelyAsync(source, context, cancellationToken)))
             .ConfigureAwait(false);
         var level = results.Select(item => item.Level).DefaultIfEmpty(MailingRiskLevel.Unknown).MaxBy(Rank);
         return new(
@@ -599,6 +599,29 @@ public sealed class EmailRiskIntelligence(IEnumerable<IRiskDataSource> sources) 
         MailingRiskLevel.Low => 1,
         _ => 0
     };
+
+    private static async Task<RiskDataResult> LookupSafelyAsync(
+        IRiskDataSource source,
+        EmailRiskContext context,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await source.LookupAsync(context, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return new RiskDataResult(
+                source.GetType().Name,
+                MailingRiskLevel.Unknown,
+                [],
+                []);
+        }
+    }
 }
 
 public sealed class ValidationQualityMetrics : IValidationQualityMetrics

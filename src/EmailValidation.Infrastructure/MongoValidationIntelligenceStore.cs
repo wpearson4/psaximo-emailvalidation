@@ -37,8 +37,6 @@ public sealed class MongoValidationIntelligenceStore :
     private readonly PersistenceOptions _options;
     private readonly IValidationPersistenceMetrics _metrics;
     private readonly ILogger<MongoValidationIntelligenceStore> _logger;
-    private readonly ConcurrentDictionary<string, DomainIntelligence> _domainCache =
-        new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxCache =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -104,14 +102,12 @@ public sealed class MongoValidationIntelligenceStore :
         CancellationToken cancellationToken = default)
     {
         var normalized = NormalizeDomain(domain);
-        if (_domainCache.TryGetValue(normalized, out var cached)) return cached;
         var stopwatch = Stopwatch.StartNew();
         try
         {
             var document = await _domains.Find(x => x.Id == normalized)
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             var model = document?.ToModel();
-            if (model is not null) _domainCache[normalized] = model;
             _metrics.RecordRead("domain", model is not null, stopwatch.Elapsed);
             return model;
         }
@@ -173,6 +169,16 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.Provider, document.Provider)
             .Set(x => x.GatewayProvider, document.GatewayProvider)
             .Set(x => x.ProviderConfidence, document.ProviderConfidence)
+            .Set(x => x.ProviderFingerprint, document.ProviderFingerprint)
+            .Set(x => x.DnsSecurityState, document.DnsSecurityState)
+            .Set(x => x.SpfState, document.SpfState)
+            .Set(x => x.DmarcState, document.DmarcState)
+            .Set(x => x.DmarcPolicy, document.DmarcPolicy)
+            .Set(x => x.DkimState, document.DkimState)
+            .Set(x => x.AuthenticationFingerprint, document.AuthenticationFingerprint)
+            .Set(x => x.DisposableStatus, document.DisposableStatus)
+            .Set(x => x.DisposableSource, document.DisposableSource)
+            .Set(x => x.DisposableDatasetVersion, document.DisposableDatasetVersion)
             .Set(x => x.CatchAllStatus, document.CatchAllStatus)
             .Set(x => x.CatchAllConfidence, document.CatchAllConfidence)
             .Set(x => x.CatchAllReasonCode, document.CatchAllReasonCode)
@@ -188,6 +194,10 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.LastValidatedAt, document.LastValidatedAt)
             .Set(x => x.EvidenceFreshUntil, document.EvidenceFreshUntil)
             .Set(x => x.ProviderStrategyVersion, document.ProviderStrategyVersion)
+            .Set(x => x.IntelligencePolicyVersion, document.IntelligencePolicyVersion)
+            .Set(x => x.FirstObservedAt, document.FirstObservedAt)
+            .Set(x => x.LastChangedAt, document.LastChangedAt)
+            .Set(x => x.ChangeCount, document.ChangeCount)
             .Set(x => x.PayloadJson, document.PayloadJson)
             .Set(x => x.UpdatedAt, document.UpdatedAt)
             .SetOnInsert(x => x.CreatedAt, document.CreatedAt);
@@ -198,7 +208,6 @@ public sealed class MongoValidationIntelligenceStore :
                 update,
                 new UpdateOptions { IsUpsert = true },
                 cancellationToken).ConfigureAwait(false);
-            _domainCache[document.NormalizedDomain] = document.ToModel()!;
             _metrics.RecordWrite("domain", true);
         }
         catch (MongoException exception)
@@ -355,6 +364,7 @@ public sealed class MongoValidationIntelligenceStore :
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
+    [BsonIgnoreExtraElements]
     internal sealed class DomainIntelligenceDocument
     {
         [BsonId]
@@ -368,6 +378,22 @@ public sealed class MongoValidationIntelligenceStore :
         [BsonRepresentation(BsonType.String)]
         public GatewayProvider GatewayProvider { get; set; }
         public double ProviderConfidence { get; set; }
+        public string? ProviderFingerprint { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public DnsSecurityState DnsSecurityState { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public AuthenticationRecordState SpfState { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public AuthenticationRecordState DmarcState { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public DmarcPolicy DmarcPolicy { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public DkimObservationState DkimState { get; set; }
+        public string? AuthenticationFingerprint { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public DisposableDomainStatus DisposableStatus { get; set; }
+        public string? DisposableSource { get; set; }
+        public string? DisposableDatasetVersion { get; set; }
         [BsonRepresentation(BsonType.String)]
         public CatchAllStatus CatchAllStatus { get; set; }
         public double CatchAllConfidence { get; set; }
@@ -386,6 +412,10 @@ public sealed class MongoValidationIntelligenceStore :
         public DateTime LastValidatedAt { get; set; }
         public DateTime? EvidenceFreshUntil { get; set; }
         public string ProviderStrategyVersion { get; set; } = string.Empty;
+        public string IntelligencePolicyVersion { get; set; } = string.Empty;
+        public DateTime? FirstObservedAt { get; set; }
+        public DateTime? LastChangedAt { get; set; }
+        public int ChangeCount { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string? PayloadJson { get; set; }
@@ -409,6 +439,16 @@ public sealed class MongoValidationIntelligenceStore :
                 Provider = model.Provider.Provider,
                 GatewayProvider = model.Provider.GatewayProvider,
                 ProviderConfidence = model.Provider.Confidence,
+                ProviderFingerprint = model.ProviderFingerprint,
+                DnsSecurityState = model.DnsSecurity.State,
+                SpfState = model.Authentication.Spf.State,
+                DmarcState = model.Authentication.Dmarc.State,
+                DmarcPolicy = model.Authentication.Dmarc.Policy,
+                DkimState = model.Authentication.Dkim.State,
+                AuthenticationFingerprint = model.AuthenticationFingerprint,
+                DisposableStatus = model.DisposableIntelligence.Status,
+                DisposableSource = model.DisposableIntelligence.Source,
+                DisposableDatasetVersion = model.DisposableIntelligence.DatasetVersion,
                 CatchAllStatus = model.CatchAll.Status,
                 CatchAllConfidence = model.CatchAll.Confidence,
                 CatchAllReasonCode = model.CatchAll.ReasonCode,
@@ -427,15 +467,110 @@ public sealed class MongoValidationIntelligenceStore :
                 LastValidatedAt = model.ObservedAt.UtcDateTime,
                 EvidenceFreshUntil = model.EvidenceExpiresAt?.UtcDateTime,
                 ProviderStrategyVersion = model.StrategyVersion,
+                IntelligencePolicyVersion = model.IntelligencePolicyVersion,
+                FirstObservedAt = (model.FirstObservedUtc == default ? model.ObservedAt : model.FirstObservedUtc).UtcDateTime,
+                LastChangedAt = model.LastChangedUtc?.UtcDateTime,
+                ChangeCount = model.ChangeCount,
                 CreatedAt = now,
                 UpdatedAt = now,
                 PayloadJson = JsonSerializer.Serialize(sanitized, JsonOptions)
             };
         }
 
-        public DomainIntelligence? ToModel() => string.IsNullOrWhiteSpace(PayloadJson)
-            ? null
-            : JsonSerializer.Deserialize<DomainIntelligence>(PayloadJson, JsonOptions);
+        public DomainIntelligence? ToModel()
+        {
+            var lastObserved = LastObservedAt == default ? UpdatedAt : LastObservedAt;
+            if (lastObserved == default) lastObserved = DateTime.UtcNow;
+            var observed = new DateTimeOffset(DateTime.SpecifyKind(lastObserved, DateTimeKind.Utc));
+            if (!string.IsNullOrWhiteSpace(PayloadJson))
+            {
+                var model = JsonSerializer.Deserialize<DomainIntelligence>(PayloadJson, JsonOptions);
+                if (model is null) return null;
+                return model with
+                {
+                    MxTopologyFingerprint = model.MxTopologyFingerprint ?? MxTopologyFingerprint,
+                    ProviderFingerprint = model.ProviderFingerprint ?? ProviderFingerprint,
+                    AuthenticationFingerprint = model.AuthenticationFingerprint ?? AuthenticationFingerprint,
+                    FirstObservedUtc = model.FirstObservedUtc != default
+                        ? model.FirstObservedUtc
+                        : FirstObservedAt is { } first
+                            ? new DateTimeOffset(DateTime.SpecifyKind(first, DateTimeKind.Utc))
+                            : model.ObservedAt,
+                    LastObservedUtc = model.LastObservedUtc != default ? model.LastObservedUtc : model.ObservedAt,
+                    LastChangedUtc = model.LastChangedUtc ?? (LastChangedAt is { } changed
+                        ? new DateTimeOffset(DateTime.SpecifyKind(changed, DateTimeKind.Utc))
+                        : null),
+                    ChangeCount = Math.Max(model.ChangeCount, ChangeCount),
+                    IntelligencePolicyVersion = string.IsNullOrWhiteSpace(model.IntelligencePolicyVersion)
+                        ? IntelligencePolicyVersion
+                        : model.IntelligencePolicyVersion
+                };
+            }
+
+            // Documents written before the JSON payload was introduced still retain
+            // enough structured fields to provide safe, conservative domain evidence.
+            var mx = MxRecords.Select(record => record.ToModel()).ToArray();
+            var disposable = new DisposableDomainResult(
+                DisposableStatus,
+                DisposableStatus == DisposableDomainStatus.KnownDisposable ? 0.99 : 0,
+                Source: DisposableSource,
+                DatasetVersion: DisposableDatasetVersion);
+            return new DomainIntelligence
+            {
+                Domain = string.IsNullOrWhiteSpace(Domain) ? NormalizedDomain : Domain,
+                DomainExists = mx.Length > 0,
+                Dns = new DnsLookupResult(DnsStatus.Success, mx.Length > 0, mx, false, TimeSpan.Zero),
+                Provider = new ProviderDetectionResult(
+                    Provider,
+                    ProviderConfidence,
+                    GatewayProvider: GatewayProvider,
+                    TopologyFingerprint: MxTopologyFingerprint),
+                DnsSecurity = new DnsSecurityIntelligence(
+                    DnsSecurityState,
+                    IntelligenceAvailability.NotAvailable,
+                    observed),
+                Authentication = new EmailAuthenticationIntelligence(
+                    new SpfIntelligence(SpfState),
+                    new DmarcIntelligence(DmarcState, DmarcPolicy),
+                    new DkimIntelligence(DkimState, []),
+                    IntelligenceAvailability.NotAvailable,
+                    observed),
+                Disposable = DisposableStatus is DisposableDomainStatus.KnownDisposable or DisposableDomainStatus.LikelyDisposable,
+                DisposableIntelligence = disposable,
+                CatchAll = new CatchAllDetectionResult(
+                    CatchAllStatus,
+                    CatchAllEvidenceCount,
+                    RandomProbeAcceptedCount,
+                    RandomProbeRejectedCount,
+                    Math.Max(0, CatchAllEvidenceCount - RandomProbeAcceptedCount - RandomProbeRejectedCount),
+                    CatchAllReason,
+                    CatchAllConfidence)
+                {
+                    ReasonCode = CatchAllReasonCode,
+                    ObservedAt = CatchAllObservedAt is { } catchAllAt
+                        ? new DateTimeOffset(DateTime.SpecifyKind(catchAllAt, DateTimeKind.Utc))
+                        : null,
+                    StrategyVersion = CatchAllStrategyVersion
+                },
+                ObservedAt = observed,
+                EvidenceExpiresAt = EvidenceFreshUntil is { } freshUntil
+                    ? new DateTimeOffset(DateTime.SpecifyKind(freshUntil, DateTimeKind.Utc))
+                    : null,
+                StrategyVersion = ProviderStrategyVersion,
+                MxTopologyFingerprint = MxTopologyFingerprint,
+                ProviderFingerprint = ProviderFingerprint,
+                AuthenticationFingerprint = AuthenticationFingerprint,
+                FirstObservedUtc = FirstObservedAt is { } firstObserved
+                    ? new DateTimeOffset(DateTime.SpecifyKind(firstObserved, DateTimeKind.Utc))
+                    : observed,
+                LastObservedUtc = observed,
+                LastChangedUtc = LastChangedAt is { } lastChanged
+                    ? new DateTimeOffset(DateTime.SpecifyKind(lastChanged, DateTimeKind.Utc))
+                    : null,
+                ChangeCount = ChangeCount,
+                IntelligencePolicyVersion = IntelligencePolicyVersion
+            };
+        }
     }
 
     internal sealed class MailboxIntelligenceDocument
@@ -545,6 +680,7 @@ public sealed class MongoValidationIntelligenceStore :
         public int Preference { get; set; }
         public string Host { get; set; } = string.Empty;
         public static MxRecordDocument FromModel(MxRecord model) => new() { Preference = model.Preference, Host = model.Host };
+        public MxRecord ToModel() => new(Preference, Host);
     }
 
     internal sealed class ValidationObservationDocument

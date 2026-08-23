@@ -26,7 +26,9 @@ public sealed class EmailValidator(
     IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
     ILogger<EmailValidator> logger,
-    IValidationProgressReporter? progressReporter = null) : IEmailValidator, IEmailValidationExecutor
+    IValidationProgressReporter? progressReporter = null,
+    IDomainIntelligenceService? domainIntelligenceService = null,
+    ISmtpProviderDetector? smtpProviderDetector = null) : IEmailValidator, IEmailValidationExecutor
 {
     private readonly EmailValidationOptions _options = options.Value;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _domainLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -52,7 +54,9 @@ public sealed class EmailValidator(
 
         var localPart = normalized.LocalPart!;
         var domain = normalized.Domain!;
-        var roleAccount = roleDetector.IsRoleAccount(localPart);
+        var normalizedAddress = new NormalizedEmailAddress(normalized.NormalizedEmail!, localPart, domain);
+        var roleDetection = roleDetector.Detect(normalizedAddress);
+        var roleAccount = roleDetection.IsRoleAddress;
         var smtpRequested = request.EnableSmtp && _options.Smtp.Enabled;
         var probeSenderHealth = smtpRequested
             ? await probeSenderHealthChecker.CheckAsync(cancellationToken)
@@ -67,6 +71,7 @@ public sealed class EmailValidator(
         await ReportProgressAsync(request.ValidationId, ValidationProgressStage.DomainChecks,
             "Domain and MX validation completed.", cancellationToken).ConfigureAwait(false);
         var (addressIntelligence, addressIntelligenceDurationMs) = await addressTask;
+        addressIntelligence = addressIntelligence with { RoleAddress = roleDetection };
         var selectedMx = domainData.Dns.MxRecords.OrderBy(record => record.Preference).FirstOrDefault()?.Host;
         await ReportProgressAsync(request.ValidationId, ValidationProgressStage.ProviderChecks,
             $"Provider identified as {domainData.Provider.Provider}.", cancellationToken).ConfigureAwait(false);
@@ -141,10 +146,20 @@ public sealed class EmailValidator(
                 VerificationReliabilityLevel = VerificationReliabilityLevel.Low
             };
         }
+        var smtpProvider = mailbox.SessionEvidence is not null && smtpProviderDetector is not null
+            ? smtpProviderDetector.Detect(mailbox.SessionEvidence)
+            : null;
         var effectiveProvider = domainData.Provider with
         {
-            MailboxProvider = providerValidation.MailboxProvider
+            MailboxProvider = providerValidation.MailboxProvider,
+            SmtpObservedProvider = smtpProvider?.SmtpObservedProvider ?? MailProvider.Unknown,
+            SmtpEvidenceConfidence = smtpProvider?.SmtpEvidenceConfidence ?? 0,
+            Evidence = (domainData.Provider.Evidence ?? [])
+                .Concat(smtpProvider?.Evidence ?? [])
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
         };
+        var effectiveDomainData = activeDomainData with { Provider = effectiveProvider };
         var mailboxEvidence = new MailboxEvidence(domain, selectedMx ?? string.Empty, mailbox, providerValidation);
 
         var checks = new EmailValidationChecks
@@ -201,7 +216,7 @@ public sealed class EmailValidator(
                 .Concat(SenderHealthReasons(probeSenderHealth))
                 .Distinct().ToArray(),
             UsedImplicitMxFallback = domainData.Dns.UsedAddressFallback,
-            DomainIntelligence = activeDomainData,
+            DomainIntelligence = effectiveDomainData,
             CatchAllEvidence = domainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
             SmtpSessionEvidence = mailbox.SessionEvidence,
@@ -221,6 +236,7 @@ public sealed class EmailValidator(
             DetailedStatuses = evaluation.DetailedStatuses,
             AddressIntelligence = addressIntelligence,
             Risk = evaluation.Risk,
+            DeliverabilityRisk = CreateDeliverabilityRisk(roleDetection, domainData, addressIntelligence),
             Recommendation = evaluation.Recommendation,
             Evidence = evaluation.Evidence,
             DurationMs = stopwatch.ElapsedMilliseconds,
@@ -310,6 +326,7 @@ public sealed class EmailValidator(
     {
         var hosts = domain.Dns.MxRecords
             .OrderBy(record => record.Preference)
+            .ThenBy(record => record.Host, StringComparer.OrdinalIgnoreCase)
             .Select(record => record.Host)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(Math.Clamp(_options.Smtp.MaxMxAttempts, 1, 3))
@@ -388,6 +405,18 @@ public sealed class EmailValidator(
         bool smtpEnabled,
         CancellationToken cancellationToken)
     {
+        if (domainIntelligenceService is not null)
+        {
+            var acquisition = await domainIntelligenceService.AcquireAsync(domain, smtpEnabled, cancellationToken)
+                .ConfigureAwait(false);
+            return (
+                acquisition.Intelligence,
+                acquisition.Source is not DomainIntelligenceSource.LiveAnalysis,
+                acquisition.CatchAllProbes,
+                acquisition.AnalysisDurationMs,
+                acquisition.Plan);
+        }
+
         var policy = _options.Policy.ToVersions();
         var now = DateTimeOffset.UtcNow;
         var cached = await cache.GetAsync(domain, cancellationToken);
@@ -644,4 +673,63 @@ public sealed class EmailValidator(
             DurationMs = durationMs,
             Metadata = new ValidationResultMetadata(policy, validatedAt)
         };
+
+    private static DeliverabilityRisk CreateDeliverabilityRisk(
+        RoleAddressDetectionResult role,
+        DomainIntelligence domain,
+        EmailAddressIntelligence address)
+    {
+        var spamTrap = address.SpamTrapRisk.Status switch
+        {
+            SpamTrapRiskStatus.KnownSpamTrap when address.SpamTrapRisk.EvidenceSource is not EvidenceSource.Heuristic =>
+                new SpamTrapRiskAssessment(
+                    SpamTrapRiskLevel.Known,
+                    SpamTrapEvidenceKind.TrustedDatasetMatch,
+                    address.SpamTrapRisk.Confidence,
+                    address.SpamTrapRisk.EvidenceSource?.ToString()),
+            SpamTrapRiskStatus.LikelySpamTrap => new SpamTrapRiskAssessment(
+                SpamTrapRiskLevel.High,
+                address.SpamTrapRisk.EvidenceSource == EvidenceSource.Heuristic
+                    ? SpamTrapEvidenceKind.HeuristicOnly
+                    : SpamTrapEvidenceKind.DomainRiskPattern,
+                address.SpamTrapRisk.Confidence,
+                address.SpamTrapRisk.EvidenceSource?.ToString()),
+            SpamTrapRiskStatus.PossibleSpamTrap => new SpamTrapRiskAssessment(
+                SpamTrapRiskLevel.Elevated,
+                SpamTrapEvidenceKind.HeuristicOnly,
+                address.SpamTrapRisk.Confidence,
+                address.SpamTrapRisk.EvidenceSource?.ToString()),
+            _ => SpamTrapRiskAssessment.None
+        };
+        var reasons = new List<MailingRiskReason>();
+        if (role.IsRoleAddress) reasons.Add(MailingRiskReason.RoleAccount);
+        if (domain.Disposable) reasons.Add(MailingRiskReason.DisposableAddress);
+        if (spamTrap.Level is SpamTrapRiskLevel.Elevated or SpamTrapRiskLevel.High or SpamTrapRiskLevel.Known)
+            reasons.Add(MailingRiskReason.SpamTrapIndicator);
+        if (address.Suppression.Status == SuppressionStatus.Suppressed)
+            reasons.Add(MailingRiskReason.KnownSuppression);
+        if (address.AbuseRisk.Status == AbuseRiskStatus.KnownRisk)
+            reasons.Add(MailingRiskReason.KnownAbuse);
+        if (domain.ToxicDomain.Status is ToxicDomainStatus.LikelyToxic or ToxicDomainStatus.KnownToxic)
+            reasons.Add(MailingRiskReason.ToxicDomain);
+        return new DeliverabilityRisk(
+            role,
+            domain.DisposableIntelligence,
+            spamTrap,
+            address.Suppression.Status == SuppressionStatus.Suppressed ? DeliverabilityRiskLevel.High : null,
+            address.AbuseRisk.Status == AbuseRiskStatus.KnownRisk ? DeliverabilityRiskLevel.High : null,
+            domain.ToxicDomain.Status switch
+            {
+                ToxicDomainStatus.KnownToxic => DeliverabilityRiskLevel.High,
+                ToxicDomainStatus.LikelyToxic => DeliverabilityRiskLevel.Medium,
+                _ => null
+            },
+            reasons,
+            new[]
+            {
+                role.IsRoleAddress ? 0.99 : 0,
+                domain.DisposableIntelligence.Confidence,
+                address.SpamTrapRisk.Confidence
+            }.Max());
+    }
 }

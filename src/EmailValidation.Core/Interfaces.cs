@@ -21,6 +21,27 @@ public interface IDnsMailResolver
     Task<DnsLookupResult> ResolveAsync(string domain, CancellationToken cancellationToken = default);
 }
 
+public interface IMailRoutingAnalyzer
+{
+    Task<MailRoutingIntelligence> AnalyzeAsync(
+        string domain,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IDnsSecurityAnalyzer
+{
+    Task<DnsSecurityIntelligence> AnalyzeAsync(
+        string domain,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IEmailAuthenticationAnalyzer
+{
+    Task<EmailAuthenticationIntelligence> AnalyzeAsync(
+        string domain,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IDisposableEmailDetector
 {
     bool IsDisposable(string domain);
@@ -31,9 +52,25 @@ public interface IDisposableDomainIntelligenceProvider
     DisposableDomainResult Evaluate(string domain);
 }
 
+public interface IDisposableEmailDomainProvider
+{
+    ValueTask<DisposableDomainResult> GetAsync(
+        string domain,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IRoleAccountDetector
 {
     bool IsRoleAccount(string localPart);
+
+    RoleAddressDetectionResult Detect(NormalizedEmailAddress email) => IsRoleAccount(email.LocalPart)
+        ? new RoleAddressDetectionResult(true, RoleAddressType.Other, email.LocalPart, "legacy")
+        : RoleAddressDetectionResult.NotRole;
+}
+
+public interface IRoleAddressDetector
+{
+    RoleAddressDetectionResult Detect(NormalizedEmailAddress email);
 }
 
 public interface IEmailTypoDetector
@@ -54,6 +91,59 @@ public interface IToxicDomainDetector
 public interface ISpamTrapRiskDetector
 {
     Task<SpamTrapRiskResult> EvaluateAsync(string email, CancellationToken cancellationToken = default);
+}
+
+public interface ISpamTrapRiskProvider
+{
+    Task<SpamTrapRiskAssessment> EvaluateAsync(
+        EmailRiskContext context,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ICatchAllDeliverabilityPredictor
+{
+    Task<CatchAllPrediction?> PredictAsync(
+        CatchAllPredictionContext context,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ISmtpProviderDetector
+{
+    ProviderDetectionResult Detect(SmtpSessionEvidence evidence);
+}
+
+public enum DomainIntelligenceSource { MemoryCache, PersistentStore, LiveAnalysis, JoinedInFlight }
+
+public sealed record DomainIntelligenceAcquisition(
+    DomainIntelligence Intelligence,
+    DomainIntelligenceSource Source,
+    int CatchAllProbes,
+    long AnalysisDurationMs,
+    ValidationPlan Plan);
+
+public interface IDomainIntelligenceService
+{
+    Task<DomainIntelligence> GetAsync(
+        string domain,
+        CancellationToken cancellationToken = default);
+
+    Task<DomainIntelligenceAcquisition> AcquireAsync(
+        string domain,
+        bool allowCatchAllProbe,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record DomainIntelligenceReuseDecision(
+    bool CanReuse,
+    bool CatchAllCompatible,
+    string Reason);
+
+public interface IDomainIntelligenceFreshnessPolicy
+{
+    DomainIntelligenceReuseDecision Evaluate(
+        DomainIntelligence existing,
+        DomainIntelligence? current,
+        DateTimeOffset now);
 }
 
 public interface IAbuseRiskProvider

@@ -4,7 +4,9 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 
 ## Projects
 
-- `src/EmailValidation.Core` — models, contracts, normalization, orchestration, classification, and confidence scoring.
+- `src/EmailValidation.Domain` — immutable business models, enums, value objects, and risk/intelligence semantics. The existing `EmailValidation.Core` namespace is retained for binary/source compatibility while ownership moves to the Domain assembly.
+- `src/EmailValidation.Application` — host-independent domain-intelligence orchestration, freshness/compatibility policy, bounded concurrency, and domain-level single-flight.
+- `src/EmailValidation.Core` — compatibility-facing contracts plus the existing normalization, mailbox orchestration, classification, and confidence policies; new domain and application functionality is kept out of hosts.
 - `src/EmailValidation.Infrastructure` — MX/DNS, SMTP, catch-all probing, throttling, caching, provider detection, and domain intelligence.
 - `src/EmailValidation.Console` — command parsing, configuration, batch ingestion, output, diagnostics, and logging bootstrap.
 - `src/EmailValidation.Worker` — Azure Service Bus receive adapter and durable revalidation outbox publisher.
@@ -198,6 +200,8 @@ Authorized downstream systems can record `DeliveryOutcomeRecord` values containi
 `IValidationQualityMetrics` provides host-neutral validation and provider summaries, including status/unknown rates, verification blocks, catch-all, disposable, typo, suppression, reliability, and latency. `IValidationPersistenceMetrics` separately records requests, persistence reads/hits/misses and latency, write success/failure, cache hits/writes/invalidations, persistent reuse, rejection causes, mailbox/domain reuse, live executions, single-flight leaders/joiners, avoided live work, and collapse ratio. No dashboard framework or console dependency is embedded in the engine.
 
 Address intelligence is intentionally separate from domain intelligence. Conservative typo suggestions and free-provider detection work locally. Toxic-domain, known spam-trap, abuse-risk, suppression, and MX-forward results require explicitly configured application-owned intelligence. Alias, alternate-address, and domain-age contracts are available, but the default providers return `Unknown` because SMTP and DNS cannot establish those facts reliably.
+
+Domain intelligence is now a first-class application service. It collapses concurrent work by normalized domain, reads memory before durable intelligence, refreshes only stale snapshots, bounds concurrent live analysis, and persists one immutable snapshot containing mail routing, DNSSEC, SPF/DMARC metadata, honest DKIM observation state, provider evidence, catch-all state, disposable-domain provenance, and topology lifecycle fingerprints. Catch-all probing has its own domain flight so a cancelled waiter cannot cancel work still needed by other callers. DNSSEC/authentication/dataset failures degrade their own intelligence sections without changing mailbox classification.
 
 ## Microsoft 365 validation boundary
 

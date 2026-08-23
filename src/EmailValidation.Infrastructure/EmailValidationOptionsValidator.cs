@@ -16,6 +16,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var catchAll = options.CatchAll;
         var policy = options.Policy;
         var revalidation = options.Revalidation;
+        var domainIntelligence = options.DomainIntelligence;
         var failures = new List<string>();
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
             failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
@@ -124,6 +125,18 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add("EmailValidation:CatchAll:MinimumReusableConfidence must be between zero and one.");
         if (catchAll.CacheMinutes < 0)
             failures.Add("EmailValidation:CatchAll:CacheMinutes cannot be negative.");
+        if (domainIntelligence.MemoryCacheMinutes < 0 || domainIntelligence.PersistentFreshnessHours < 0)
+            failures.Add("EmailValidation:DomainIntelligence freshness windows cannot be negative.");
+        if (domainIntelligence.MaximumConcurrentAnalyses < 1)
+            failures.Add("EmailValidation:DomainIntelligence:MaximumConcurrentAnalyses must be at least 1.");
+        if (string.IsNullOrWhiteSpace(domainIntelligence.PolicyVersion))
+            failures.Add("EmailValidation:DomainIntelligence:PolicyVersion is required.");
+        if (options.DisposableEmail.CacheMinutes < 0)
+            failures.Add("EmailValidation:DisposableEmail:CacheMinutes cannot be negative.");
+        if (string.IsNullOrWhiteSpace(options.DisposableEmail.DatasetVersion))
+            failures.Add("EmailValidation:DisposableEmail:DatasetVersion is required.");
+        if (string.IsNullOrWhiteSpace(options.RiskIntelligence.RoleRuleVersion))
+            failures.Add("EmailValidation:RiskIntelligence:RoleRuleVersion is required.");
         if (new[]
             {
                 policy.ValidationEngineVersion,

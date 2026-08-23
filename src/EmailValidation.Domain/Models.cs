@@ -98,7 +98,10 @@ public sealed record DnsLookupResult(
     bool UsedAddressFallback,
     TimeSpan Duration,
     string? Error = null,
-    bool ExplicitNullMx = false)
+    bool ExplicitNullMx = false,
+    TimeSpan? TimeToLive = null,
+    IReadOnlyList<string>? Ipv4Addresses = null,
+    IReadOnlyList<string>? Ipv6Addresses = null)
 {
     public bool MxPresent => MxRecords.Count > 0;
     public bool ExplicitMxPresent => MxPresent && !UsedAddressFallback;
@@ -401,6 +404,7 @@ public sealed record EmailValidationResult
     public EmailAddressIntelligence? AddressIntelligence { get; init; }
     public ValidationRisk? Risk { get; init; }
     public EmailRiskResult? MailingRisk { get; init; }
+    public DeliverabilityRisk? DeliverabilityRisk { get; init; }
     public SendRecommendation? Recommendation { get; init; }
     public IReadOnlyList<EvidenceProvenance> Evidence { get; init; } = [];
     public long DurationMs { get; init; }

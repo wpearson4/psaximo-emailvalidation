@@ -49,7 +49,7 @@ public sealed class ClassificationEngineTests
     }
 
     [Fact]
-    public void DisposableOrRoleAccount_IsRiskyNotInvalid()
+    public void DisposableOrRoleAccount_RemainsTechnicallyValidWithSeparateRiskReasons()
     {
         var checks = Checks(SmtpMailboxStatus.Accepted, CatchAllStatus.NotCatchAll) with
         {
@@ -58,7 +58,7 @@ public sealed class ClassificationEngineTests
         };
         var result = _classifier.Classify(checks, DnsStatus.Success);
 
-        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(EmailValidationStatus.Valid, result.Status);
         Assert.Contains(ReasonCode.DisposableDomain, result.ReasonCodes);
         Assert.Contains(ReasonCode.RoleAccount, result.ReasonCodes);
         Assert.InRange(result.Confidence, 0, 1);

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added separate `EmailValidation.Domain` and `EmailValidation.Application` assemblies while preserving existing public namespaces and consumers.
+- Added reusable domain intelligence for MX routing/TTL and fallback metadata, resolver-validated DNSSEC state, SPF and DMARC parsing, honest DKIM observation state, provider/banner evidence, disposable-domain provenance, and lifecycle fingerprints.
+- Added bounded domain-level single-flight and independent catch-all single-flight with memory/persistent reuse and topology-aware invalidation.
+- Added typed role-address and deliverability-risk contracts, trusted-evidence spam-trap semantics, and a future catch-all deliverability predictor port without fabricated probability output.
+- Extended Mongo domain documents additively with MongoDB 4.4-compatible updates and conservative restoration of older documents that lack the JSON payload or new fields.
+- Removed local connection secrets from the checked-out console configuration; runtime secrets remain deployment-owned through App Configuration and Key Vault.
+
 This file records user-visible behavior, output-contract changes, and operational migration notes.
 
 ## Unreleased — 2026-08-22

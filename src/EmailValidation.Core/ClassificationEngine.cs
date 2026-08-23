@@ -72,7 +72,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (domain.Disposable)
         {
             reasons.Add(ReasonCode.DisposableDomain);
-            Add(contributions, "Disposable-domain risk", -0.20, "The domain appears on the configured disposable list.");
         }
         if (domain.FreeEmailProvider) reasons.Add(ReasonCode.FreeEmailProvider);
         if (domain.ToxicDomain.Status is ToxicDomainStatus.KnownToxic or ToxicDomainStatus.LikelyToxic)
@@ -82,7 +81,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (evidence.RoleAccount)
         {
             reasons.Add(ReasonCode.RoleAccount);
-            Add(contributions, "Role-account risk", -0.08, "The local part is a configured role account.");
         }
         var address = evidence.AddressIntelligence;
         if (address?.Typo.TypoDetected == true)
@@ -230,12 +228,10 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         // the independent risk result. Catch-all acceptance has already been classified
         // independently above. A domain typo remains relevant to deliverability.
         var intelligenceRisk = address?.Typo.TypoDetected == true;
-        var risky = domain.Disposable || evidence.RoleAccount || intelligenceRisk;
-        if (risky)
+        if (intelligenceRisk)
         {
             var riskConfidence = Math.Clamp(
-                0.65 + (domain.Disposable ? 0.08 : 0) + (evidence.RoleAccount ? 0.08 : 0) +
-                (intelligenceRisk ? 0.08 : 0),
+                0.65 + 0.08,
                 0.65,
                 0.96);
             return FinalizeResult(EmailValidationStatus.Risky, riskConfidence, reasons, contributions);

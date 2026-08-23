@@ -2,6 +2,11 @@ namespace EmailValidation.Core;
 
 public sealed class EmailValidationOptions
 {
+    public DomainIntelligenceOptions DomainIntelligence { get; set; } = new();
+    public DnsSecurityOptions DnsSecurity { get; set; } = new();
+    public AuthenticationIntelligenceOptions AuthenticationIntelligence { get; set; } = new();
+    public DisposableEmailOptions DisposableEmail { get; set; } = new();
+    public RiskIntelligenceOptions RiskIntelligence { get; set; } = new();
     public SmtpOptions Smtp { get; set; } = new();
     public SchedulingOptions Scheduling { get; set; } = new();
     public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
@@ -13,6 +18,41 @@ public sealed class EmailValidationOptions
     public ResultReuseOptions ResultReuse { get; set; } = new();
     public ValidationPolicyOptions Policy { get; set; } = new();
     public RevalidationOptions Revalidation { get; set; } = new();
+}
+
+public sealed class DomainIntelligenceOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int MemoryCacheMinutes { get; set; } = 30;
+    public int PersistentFreshnessHours { get; set; } = 24;
+    public int MaximumConcurrentAnalyses { get; set; } = 16;
+    public string PolicyVersion { get; set; } = "2.0.0";
+}
+
+public sealed class DnsSecurityOptions
+{
+    public bool Enabled { get; set; } = true;
+}
+
+public sealed class AuthenticationIntelligenceOptions
+{
+    public bool SpfEnabled { get; set; } = true;
+    public bool DmarcEnabled { get; set; } = true;
+    public bool DkimObservationEnabled { get; set; } = true;
+}
+
+public sealed class DisposableEmailOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int CacheMinutes { get; set; } = 60;
+    public string DatasetVersion { get; set; } = "configured-1";
+}
+
+public sealed class RiskIntelligenceOptions
+{
+    public bool RoleDetectionEnabled { get; set; } = true;
+    public bool SpamTrapDetectionEnabled { get; set; } = true;
+    public string RoleRuleVersion { get; set; } = "1.0.0";
 }
 
 public sealed class RevalidationOptions
@@ -178,7 +218,8 @@ public sealed class DnsOptions
 public sealed class IntelligenceOptions
 {
     public string[] RoleAccounts { get; set; } =
-        ["info", "support", "admin", "sales", "billing", "contact", "help", "office", "marketing", "webmaster"];
+        ["info", "support", "admin", "sales", "billing", "contact", "help", "office", "marketing",
+            "abuse", "postmaster", "webmaster", "security", "hr", "careers"];
     public string[] DisposableDomains { get; set; } =
         ["10minutemail.com", "guerrillamail.com", "mailinator.com", "temp-mail.org", "yopmail.com", "trashmail.com"];
     public string[] FreeEmailDomains { get; set; } =

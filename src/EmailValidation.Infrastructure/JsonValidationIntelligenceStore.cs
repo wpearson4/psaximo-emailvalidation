@@ -281,9 +281,21 @@ public sealed class JsonValidationIntelligenceStore :
     }
 }
 
-public sealed class PersistentDomainValidationCache(IValidationIntelligenceStore store) : IDomainValidationCache
+public sealed class PersistentDomainValidationCache : IDomainValidationCache
 {
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IValidationIntelligenceStore _store;
+    private readonly TimeSpan? _configuredMemoryLifetime;
+
+    public PersistentDomainValidationCache(
+        IValidationIntelligenceStore store,
+        IOptions<EmailValidationOptions>? options = null)
+    {
+        _store = store;
+        _configuredMemoryLifetime = options is null
+            ? null
+            : TimeSpan.FromMinutes(Math.Max(0, options.Value.DomainIntelligence.MemoryCacheMinutes));
+    }
 
     public int Count => _cache.Count;
 
@@ -305,10 +317,10 @@ public sealed class PersistentDomainValidationCache(IValidationIntelligenceStore
     public async Task<DomainIntelligence?> GetAsync(string domain, CancellationToken cancellationToken = default)
     {
         if (TryGet(domain, out var cached)) return cached;
-        var stored = await store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
+        var stored = await _store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
         if (stored is null) return null;
         if (stored.EvidenceExpiresAt is { } expiresAt && expiresAt > DateTimeOffset.UtcNow)
-            _cache[domain] = new(stored, expiresAt);
+            _cache[domain] = new(stored, MemoryExpiration(expiresAt));
         // Return stale durable evidence to the planner as historical context. The
         // planner must refresh it before allowing it to suppress live SMTP work.
         return stored;
@@ -317,8 +329,22 @@ public sealed class PersistentDomainValidationCache(IValidationIntelligenceStore
     public async Task StoreAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
     {
         var durable = data with { EvidenceExpiresAt = DateTimeOffset.UtcNow.Add(lifetime) };
-        Store(durable, lifetime);
-        await store.SaveDomainAsync(durable, cancellationToken).ConfigureAwait(false);
+        Store(durable, MemoryLifetime(lifetime));
+        await _store.SaveDomainAsync(durable, cancellationToken).ConfigureAwait(false);
+    }
+
+    private TimeSpan MemoryLifetime(TimeSpan durableLifetime) => _configuredMemoryLifetime is null
+        ? durableLifetime
+        : _configuredMemoryLifetime.Value <= durableLifetime
+            ? _configuredMemoryLifetime.Value
+            : durableLifetime;
+
+    private DateTimeOffset MemoryExpiration(DateTimeOffset durableExpiration)
+    {
+        var configured = _configuredMemoryLifetime;
+        if (configured is null) return durableExpiration;
+        var memoryExpiration = DateTimeOffset.UtcNow.Add(configured.Value);
+        return memoryExpiration <= durableExpiration ? memoryExpiration : durableExpiration;
     }
 
     private sealed record CacheEntry(DomainIntelligence Value, DateTimeOffset ExpiresAt);

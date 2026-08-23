@@ -1,6 +1,7 @@
 using Elastic.Clients.Elasticsearch;
 using Elastic.Transport;
 using EmailValidation.Core;
+using EmailValidation.Application;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
@@ -14,14 +15,23 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IValidateOptions<EmailValidationOptions>, EmailValidationOptionsValidator>();
         services.AddSingleton<IEmailNormalizer, EmailNormalizer>();
         services.AddSingleton<IDnsMailResolver, MxDnsResolver>();
+        services.AddSingleton<IMailRoutingAnalyzer, MailRoutingAnalyzer>();
+        services.AddSingleton<IDnsWireQueryClient, DnsWireQueryClient>();
+        services.AddSingleton<IDnsSecurityAnalyzer, DnsSecurityAnalyzer>();
+        services.AddSingleton<IEmailAuthenticationAnalyzer, EmailAuthenticationAnalyzer>();
         services.AddSingleton<IDisposableEmailDetector, DisposableEmailDetector>();
         services.AddSingleton<IDisposableDomainIntelligenceProvider>(provider =>
             (DisposableEmailDetector)provider.GetRequiredService<IDisposableEmailDetector>());
+        services.AddSingleton<IDisposableEmailDomainProvider>(provider =>
+            (DisposableEmailDetector)provider.GetRequiredService<IDisposableEmailDetector>());
         services.AddSingleton<IRoleAccountDetector, RoleAccountDetector>();
+        services.AddSingleton<IRoleAddressDetector>(provider =>
+            (RoleAccountDetector)provider.GetRequiredService<IRoleAccountDetector>());
         services.AddSingleton<IEmailTypoDetector, EmailTypoDetector>();
         services.AddSingleton<IFreeEmailProviderDetector, FreeEmailProviderDetector>();
         services.AddSingleton<IToxicDomainDetector, ToxicDomainDetector>();
         services.AddSingleton<ISpamTrapRiskDetector, SpamTrapRiskDetector>();
+        services.AddSingleton<ISpamTrapRiskProvider, ConfiguredSpamTrapRiskProvider>();
         services.AddSingleton<IAbuseRiskProvider, AbuseRiskProvider>();
         services.AddSingleton<ISuppressionIntelligenceProvider, SuppressionIntelligenceProvider>();
         services.AddSingleton<IMxForwardDetector, MxForwardDetector>();
@@ -31,6 +41,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEmailIntelligenceEvaluator, EmailIntelligenceEvaluator>();
         services.AddSingleton<IDomainIntelligenceEvaluator, DomainIntelligenceEvaluator>();
         services.AddSingleton<IMailProviderDetector, MailProviderDetector>();
+        services.AddSingleton<ISmtpProviderDetector, SmtpBannerProviderDetector>();
         services.AddSingleton<ISmtpProbeThrottle, DomainSmtpProbeThrottle>();
         services.AddSingleton<ISmtpResponseClassifier, SmtpResponseClassifier>();
         services.AddSingleton(TimeProvider.System);
@@ -85,6 +96,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGlobalSuppressionStore>(provider =>
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDomainValidationCache, PersistentDomainValidationCache>();
+        services.AddSingleton<IDomainIntelligenceFreshnessPolicy, DomainIntelligenceFreshnessPolicy>();
+        services.AddSingleton<IDomainIntelligenceService, DomainIntelligenceService>();
         services.AddSingleton<IEmailClassificationEngine, EmailClassificationEngine>();
         services.AddSingleton<IResultEvaluator, ResultEvaluator>();
         services.AddSingleton<IMailProviderStrategy, Microsoft365Strategy>();

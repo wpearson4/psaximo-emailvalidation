@@ -49,7 +49,12 @@ public sealed record ProviderDetectionResult(
     GatewayProvider GatewayProvider = GatewayProvider.Unknown,
     MailProvider MailboxProvider = MailProvider.Unknown,
     string? MxHost = null,
-    string? TopologyFingerprint = null);
+    string? TopologyFingerprint = null,
+    IReadOnlyList<string>? Evidence = null,
+    DateTimeOffset? DetectedAtUtc = null,
+    string DetectionVersion = "1.0.0",
+    MailProvider SmtpObservedProvider = MailProvider.Unknown,
+    double SmtpEvidenceConfidence = 0);
 
 public sealed record SmtpEvidence(
     SmtpCommand Command,
@@ -119,7 +124,10 @@ public sealed record DomainIntelligence
     public bool DomainExists { get; init; }
     public required DnsLookupResult Dns { get; init; }
     public IReadOnlyList<MxRecord> MxRecords => Dns.MxRecords;
+    public MailRoutingIntelligence? MailRouting { get; init; }
     public required ProviderDetectionResult Provider { get; init; }
+    public DnsSecurityIntelligence DnsSecurity { get; init; } = DnsSecurityIntelligence.Unknown;
+    public EmailAuthenticationIntelligence Authentication { get; init; } = EmailAuthenticationIntelligence.Unknown;
     public bool Disposable { get; init; }
     public DisposableDomainResult DisposableIntelligence { get; init; } = DisposableDomainResult.Unknown;
     public bool FreeEmailProvider { get; init; }
@@ -133,6 +141,92 @@ public sealed record DomainIntelligence
     public DateTimeOffset ObservedAt { get; init; }
     public DateTimeOffset? EvidenceExpiresAt { get; init; }
     public string StrategyVersion { get; init; } = "1.0.0";
+    public string? MxTopologyFingerprint { get; init; }
+    public string? ProviderFingerprint { get; init; }
+    public string? AuthenticationFingerprint { get; init; }
+    public string? CatchAllFingerprint { get; init; }
+    public DateTimeOffset FirstObservedUtc { get; init; }
+    public DateTimeOffset LastObservedUtc { get; init; }
+    public DateTimeOffset? LastChangedUtc { get; init; }
+    public int ChangeCount { get; init; }
+    public string IntelligencePolicyVersion { get; init; } = "1.0.0";
+}
+
+public sealed record MailRoutingIntelligence(
+    DnsStatus Status,
+    bool DomainExists,
+    IReadOnlyList<MxRecord> Routes,
+    bool UsedAddressFallback,
+    bool ExplicitNullMx,
+    IReadOnlyList<string> Ipv4Addresses,
+    IReadOnlyList<string> Ipv6Addresses,
+    TimeSpan? TimeToLive,
+    DateTimeOffset ObservedAtUtc,
+    string? Error = null,
+    TimeSpan LookupDuration = default)
+{
+    public bool HasUsableRoute => Routes.Count > 0 && !ExplicitNullMx;
+}
+
+public enum DnsSecurityState { Unknown, NotPresent, Secure, Bogus, Indeterminate }
+public enum IntelligenceAvailability { Available, NotAvailable, Degraded, Failed }
+
+public sealed record DnsSecurityIntelligence(
+    DnsSecurityState State,
+    IntelligenceAvailability Availability,
+    DateTimeOffset ObservedAtUtc,
+    string? Detail = null)
+{
+    public static DnsSecurityIntelligence Unknown { get; } = new(
+        DnsSecurityState.Unknown, IntelligenceAvailability.NotAvailable, default);
+}
+
+public enum AuthenticationRecordState { Unknown, NotPresent, Valid, Invalid, LookupFailed }
+public enum DkimObservationState { Unknown, Observed, NotEvaluated }
+public enum DmarcPolicy { Unknown, None, Quarantine, Reject }
+
+public sealed record SpfIntelligence(
+    AuthenticationRecordState State,
+    string? AllMechanism = null,
+    string? Record = null,
+    string? Detail = null)
+{
+    public static SpfIntelligence Unknown { get; } = new(AuthenticationRecordState.Unknown);
+}
+
+public sealed record DmarcIntelligence(
+    AuthenticationRecordState State,
+    DmarcPolicy Policy = DmarcPolicy.Unknown,
+    DmarcPolicy? SubdomainPolicy = null,
+    int? Percentage = null,
+    string? Record = null,
+    string? Detail = null)
+{
+    public static DmarcIntelligence Unknown { get; } = new(AuthenticationRecordState.Unknown);
+}
+
+public sealed record DkimIntelligence(
+    DkimObservationState State,
+    IReadOnlyList<string> ObservedSelectors,
+    string? Detail = null)
+{
+    public static DkimIntelligence NotEvaluated { get; } = new(
+        DkimObservationState.NotEvaluated, [], "DKIM selectors are not exhaustively discoverable.");
+}
+
+public sealed record EmailAuthenticationIntelligence(
+    SpfIntelligence Spf,
+    DmarcIntelligence Dmarc,
+    DkimIntelligence Dkim,
+    IntelligenceAvailability Availability,
+    DateTimeOffset ObservedAtUtc)
+{
+    public static EmailAuthenticationIntelligence Unknown { get; } = new(
+        SpfIntelligence.Unknown,
+        DmarcIntelligence.Unknown,
+        DkimIntelligence.NotEvaluated,
+        IntelligenceAvailability.NotAvailable,
+        default);
 }
 
 public sealed record DomainBehaviorProfile(

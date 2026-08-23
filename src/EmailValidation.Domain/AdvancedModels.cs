@@ -87,7 +87,11 @@ public sealed record TypoDetectionResult(
 public sealed record DisposableDomainResult(
     DisposableDomainStatus Status,
     double Confidence,
-    EvidenceSource? EvidenceSource = null)
+    EvidenceSource? EvidenceSource = null,
+    string? Source = null,
+    string? DatasetVersion = null,
+    DateTimeOffset? DetectedAtUtc = null,
+    DateTimeOffset? LastUpdatedUtc = null)
 {
     public static DisposableDomainResult Unknown { get; } = new(DisposableDomainStatus.Unknown, 0);
 }
@@ -173,7 +177,63 @@ public sealed record EmailAddressIntelligence
     public AbuseRiskResult AbuseRisk { get; init; } = AbuseRiskResult.Unknown;
     public SuppressionResult Suppression { get; init; } = SuppressionResult.Unknown;
     public EmailIdentityResult Identity { get; init; } = EmailIdentityResult.Unknown;
+    public RoleAddressDetectionResult RoleAddress { get; init; } = RoleAddressDetectionResult.NotRole;
 }
+
+public enum RoleAddressType
+{
+    None, Information, Sales, Support, Administration, Billing, Contact, Office,
+    Help, Marketing, Abuse, Postmaster, Webmaster, Security, HumanResources, Careers, Other
+}
+
+public sealed record NormalizedEmailAddress(string Value, string LocalPart, string Domain);
+
+public sealed record RoleAddressDetectionResult(
+    bool IsRoleAddress,
+    RoleAddressType RoleType,
+    string? Evidence,
+    string RuleVersion)
+{
+    public static RoleAddressDetectionResult NotRole { get; } = new(false, RoleAddressType.None, null, "1.0.0");
+}
+
+public enum SpamTrapRiskLevel { None, Low, Elevated, High, Known }
+public enum SpamTrapEvidenceKind { None, TrustedDatasetMatch, HistoricalOutcome, DomainRiskPattern, HeuristicOnly }
+public enum DeliverabilityRiskLevel { Low, Medium, High, Unknown }
+
+public sealed record SpamTrapRiskAssessment(
+    SpamTrapRiskLevel Level,
+    SpamTrapEvidenceKind EvidenceKind,
+    double HeuristicConfidence,
+    string? Source = null)
+{
+    public static SpamTrapRiskAssessment None { get; } = new(
+        SpamTrapRiskLevel.None, SpamTrapEvidenceKind.None, 0);
+}
+
+public sealed record DeliverabilityRisk(
+    RoleAddressDetectionResult RoleAddress,
+    DisposableDomainResult Disposable,
+    SpamTrapRiskAssessment SpamTrap,
+    DeliverabilityRiskLevel? SuppressionRisk,
+    DeliverabilityRiskLevel? AbuseRisk,
+    DeliverabilityRiskLevel? DomainRisk,
+    IReadOnlyList<MailingRiskReason> Reasons,
+    double RiskConfidence);
+
+public sealed record CatchAllPredictionContext(
+    string Domain,
+    ProviderDetectionResult Provider,
+    CatchAllDetectionResult CatchAll,
+    DomainBehaviorProfile? HistoricalBehavior,
+    string? MxTopologyFingerprint);
+
+public sealed record CatchAllPrediction(
+    double? CalibratedDeliverabilityProbability,
+    double? HeuristicConfidence,
+    string ModelVersion,
+    string? CalibrationVersion,
+    string Explanation);
 
 public sealed record ValidationRisk(
     BounceRisk BounceRisk,
