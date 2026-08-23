@@ -3,7 +3,7 @@
 `azure-pipelines.yml` defines the GitHub-backed pipeline in the OpenMeta Azure DevOps organization, `Search Api` project. It uses these existing resources:
 
 - GitHub service connection: `wpearson4`
-- Azure service connection: `Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)`
+- Azure service connection: `OpenMeta Prod`
 - Azure Container Registry: `acrpometadsiscussrch.azurecr.io`
 - Production agent pool: `OMetaSearchPool`
 - Production environment: `emailvalidation-production`

@@ -25,7 +25,7 @@ parameters:
     default: ''
 
 variables:
-  azureServiceConnection: Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)
+  azureServiceConnection: OpenMeta Prod
   acrName: acrpometadsiscussrch
   acrLoginServer: acrpometadsiscussrch.azurecr.io
   imageRepository: emailvalidation-api
