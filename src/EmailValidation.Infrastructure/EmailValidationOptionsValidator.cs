@@ -88,13 +88,14 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (string.IsNullOrWhiteSpace(persistence.DatabaseName))
                 failures.Add("EmailValidation:Persistence:DatabaseName is required for MongoDB.");
             if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
-                string.IsNullOrWhiteSpace(persistence.LifecycleCollection))
+                string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
-            if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection }
-                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 3)
-                failures.Add("EmailValidation MongoDB domain, mailbox, and lifecycle collection names must be different.");
+            if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection,
+                    persistence.CommercialResourceCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 4)
+                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, and commercial resource collection names must be different.");
         }
         if (revalidation.Enabled)
         {

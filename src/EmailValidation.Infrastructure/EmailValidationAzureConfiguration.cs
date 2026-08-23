@@ -14,6 +14,7 @@ public static class EmailValidationAzureConfiguration
 {
     public const string EndpointKey = "Azure:AppConfigurationEndpoint";
     public const string ConnectionStringKey = "Azure:AppConfigurationConnectionString";
+    public const string ConnectionStringFileKey = "Azure:AppConfigurationConnectionStringFile";
     public const string MongoSecretUriKey = "Azure:MongoConnectionSecretUri";
     public const string MongoConnectionStringKey = "EmailValidation:Persistence:ConnectionString";
     public const string ServiceBusSecretUriKey = "Azure:ServiceBusConnectionSecretUri";
@@ -105,8 +106,22 @@ public static class EmailValidationAzureConfiguration
             : configured.Trim();
     }
 
-    public static string ResolveConnectionString(IConfiguration configuration) =>
-        configuration[ConnectionStringKey]?.Trim() ?? string.Empty;
+    public static string ResolveConnectionString(IConfiguration configuration)
+    {
+        var configured = configuration[ConnectionStringKey]?.Trim();
+        if (!string.IsNullOrWhiteSpace(configured)) return configured;
+        var path = configuration[ConnectionStringFileKey]?.Trim();
+        if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+        try
+        {
+            return File.ReadAllText(path).Trim();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"Azure App Configuration bootstrap secret file '{path}' could not be read.", exception);
+        }
+    }
 
     public static string ResolveLabel(IConfiguration configuration, string environmentName)
     {

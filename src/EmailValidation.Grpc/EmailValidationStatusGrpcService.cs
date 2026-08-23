@@ -1,8 +1,11 @@
 using System.Diagnostics.Metrics;
 using System.Security.Claims;
+using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Status.V1;
 using Grpc.Core;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Logging;
 
 namespace EmailValidation.Grpc;
 
@@ -24,6 +27,7 @@ public sealed class EmailValidationStatusGrpcService(
     private static readonly Histogram<double> PublicationLatency =
         Meter.CreateHistogram<double>("email_validation.grpc.publication_latency", "ms");
 
+    [Authorize(Policy = EmailValidationPolicies.Read)]
     public override async Task<ValidationStatusResponse> GetValidationStatus(
         GetValidationStatusRequest request,
         ServerCallContext context)
@@ -36,6 +40,7 @@ public sealed class EmailValidationStatusGrpcService(
         return ValidationStatusGrpcMapper.Map(snapshot, timeProvider.GetUtcNow());
     }
 
+    [Authorize(Policy = EmailValidationPolicies.Stream)]
     public override async Task WatchValidationStatus(
         WatchValidationStatusRequest request,
         IServerStreamWriter<ValidationStatusResponse> responseStream,
@@ -88,7 +93,10 @@ public sealed class EmailValidationStatusGrpcService(
         var user = context.GetHttpContext().User;
         var accessContext = new ValidationAccessContext(
             user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub"),
-            user.FindFirstValue("tenant_id") ?? user.FindFirstValue("tid"));
+            user.FindFirstValue("tenant_id") ?? user.FindFirstValue("tid"),
+            user.FindAll("scope").Concat(user.FindAll("scp"))
+                .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                .ToHashSet(StringComparer.Ordinal));
         if (!await accessPolicy.CanAccessAsync(validationId, accessContext, context.CancellationToken)
                 .ConfigureAwait(false))
             throw new RpcException(new global::Grpc.Core.Status(StatusCode.PermissionDenied, "Validation is not accessible to this caller."));
@@ -96,7 +104,10 @@ public sealed class EmailValidationStatusGrpcService(
 
     private static void ValidateId(string validationId)
     {
-        if (string.IsNullOrWhiteSpace(validationId) || validationId.Length > 128)
-            throw new RpcException(new global::Grpc.Core.Status(StatusCode.InvalidArgument, "validation_id is required and must not exceed 128 characters."));
+        if (string.IsNullOrWhiteSpace(validationId) || validationId.Length > 128 ||
+            validationId.Any(character => character is not
+                (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
+            throw new RpcException(new global::Grpc.Core.Status(StatusCode.InvalidArgument,
+                "validation_id is required and contains unsupported characters or is too long."));
     }
 }

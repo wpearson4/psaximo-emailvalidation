@@ -1,93 +1,228 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using EmailValidation.Api;
 using EmailValidation.Application;
 using EmailValidation.Core;
+using EmailValidation.Infrastructure;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Api.Tests;
 
 public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFactory>
 {
+    private static readonly string[] DifferentEmail = ["different@example.com"];
+    private static readonly string[] OneEmail = ["one@example.com"];
     private readonly EmailValidationApiFactory _factory;
-    private readonly HttpClient _client;
 
-    public EmailValidationApiTests(EmailValidationApiFactory factory)
+    public EmailValidationApiTests(EmailValidationApiFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task BusinessEndpoint_WithoutToken_ReturnsProblemDetails401()
     {
-        _factory = factory;
-        _client = factory.CreateClient();
+        using var client = _factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/v1/email-validations", new { email = "valid@example.com" });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Theory]
+    [InlineData("invalid")]
+    [InlineData("expired")]
+    public async Task InvalidOrExpiredToken_Returns401(string authenticationState)
+    {
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Auth", authenticationState);
+        var response = await client.GetAsync("/v1/email-validations/known");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
-    public async Task Validate_ReturnsFinalCanonicalResult()
+    public async Task MissingScope_Returns403()
     {
-        var response = await _client.PostAsJsonAsync("/v1/email/validate", new { email = "valid@example.com" });
+        using var client = _factory.CreateAuthenticatedClient([]);
+        var response = await client.PostAsJsonAsync("/v1/email-validations", new { email = "valid@example.com" });
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Validate_ReturnsFinalVersionedCanonicalContract()
+    {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);
+        var response = await client.PostAsJsonAsync("/v1/email-validations", new { email = "valid@example.com" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var result = await response.Content.ReadFromJsonAsync<EmailValidationResult>();
+        var result = await response.Content.ReadFromJsonAsync<EmailValidationV1Response>();
         Assert.Equal("validation-final", result!.ValidationId);
-        Assert.Equal(ValidationResultState.Final, result.ResultState);
+        Assert.Equal("Final", result.ResultState);
+        Assert.Equal("Final", result.LifecycleState);
+        Assert.Equal("Valid", result.Status);
     }
 
     [Fact]
-    public async Task Validate_ReturnsProvisionalWithoutHoldingRequestForRetry()
+    public async Task Validate_ReturnsProvisionalRetryLifecycle()
     {
-        var response = await _client.PostAsJsonAsync("/v1/email/validate", new { email = "provisional@example.com" });
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);
+        var response = await client.PostAsJsonAsync("/v1/email-validations", new { email = "provisional@example.com" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var result = await response.Content.ReadFromJsonAsync<EmailValidationResult>();
-        Assert.Equal(ValidationResultState.Provisional, result!.ResultState);
+        var result = await response.Content.ReadFromJsonAsync<EmailValidationV1Response>();
+        Assert.Equal("Provisional", result!.ResultState);
+        Assert.Equal("RetryScheduled", result.LifecycleState);
         Assert.True(result.RetryScheduled);
     }
 
     [Fact]
-    public async Task Validate_RejectsMissingEmail()
+    public async Task InvalidShape_ReturnsTraceableProblemDetails()
     {
-        var response = await _client.PostAsJsonAsync("/v1/email/validate", new { email = "" });
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);
+        var response = await client.PostAsJsonAsync("/v1/email-validations", new { email = "" });
+
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(400, problem.RootElement.GetProperty("status").GetInt32());
+        Assert.True(problem.RootElement.TryGetProperty("traceId", out _));
     }
 
     [Fact]
-    public async Task Status_ReturnsCanonicalSnapshotOrNotFound()
+    public async Task Status_RequiresReadScopeAndEnforcesTenantOwnership()
     {
-        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync("/v1/email-validations/known")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/v1/email-validations/missing")).StatusCode);
+        using var owner = _factory.CreateAuthenticatedClient([EmailValidationScopes.Read], tenant: "tenant-a");
+        using var other = _factory.CreateAuthenticatedClient([EmailValidationScopes.Read], tenant: "tenant-b");
+        using var validateOnly = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate], tenant: "tenant-a");
+
+        Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync("/v1/email-validations/known")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await other.GetAsync("/v1/email-validations/known")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await validateOnly.GetAsync("/v1/email-validations/known")).StatusCode);
     }
 
     [Fact]
-    public async Task HttpCancellation_CancelsWaiterToken()
+    public async Task Cancellation_CancelsOnlyTheRequestWaiter()
     {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _client.PostAsJsonAsync(
-            "/v1/email/validate", new { email = "wait@example.com" }, cancellation.Token));
-
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PostAsJsonAsync(
+            "/v1/email-validations", new { email = "wait@example.com" }, cancellation.Token));
         await _factory.Validator.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Fact]
-    public async Task JobEndpoints_CreateQueryAndReturnOrderedResults()
+    public async Task Jobs_AreScopedPagedAndIdempotent()
     {
-        var created = await _client.PostAsJsonAsync("/v1/email-validation/jobs",
-            new { emails = new List<string> { "one@example.com", "two@example.com" } });
-        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
-        var job = await created.Content.ReadFromJsonAsync<ValidationJobSnapshot>();
+        using var writer = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead], tenant: "tenant-a");
+        writer.DefaultRequestHeaders.Add("Idempotency-Key", "job-request-1");
+        var request = new { emails = new[] { "one@example.com", "two@example.com" } };
 
-        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync($"/v1/email-validation/jobs/{job!.JobId}")).StatusCode);
-        var results = await _client.GetFromJsonAsync<ValidationJobItem[]>(
-            $"/v1/email-validation/jobs/{job.JobId}/results");
-        Assert.Collection(results!,
-            item => Assert.Equal("one@example.com", item.Email),
-            item => Assert.Equal("two@example.com", item.Email));
+        var first = await writer.PostAsJsonAsync("/v1/email-validation-jobs", request);
+        var second = await writer.PostAsJsonAsync("/v1/email-validation-jobs", request);
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
+        var firstJob = await first.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        var secondJob = await second.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        Assert.Equal(firstJob!.JobId, secondJob!.JobId);
+
+        var page = await writer.GetFromJsonAsync<ValidationJobResultsPageV1Response>(
+            $"/v1/email-validation-jobs/{firstJob.JobId}/results?skip=0&take=1");
+        Assert.Single(page!.Items);
+        Assert.Equal(1, page.NextSkip);
+
+        using var otherTenant = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsRead], tenant: "tenant-b");
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await otherTenant.GetAsync($"/v1/email-validation-jobs/{firstJob.JobId}")).StatusCode);
+
+        var conflict = await writer.PostAsJsonAsync("/v1/email-validation-jobs",
+            new { emails = DifferentEmail });
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadScope_CannotCreateJob()
+    {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsRead]);
+        var response = await client.PostAsJsonAsync("/v1/email-validation-jobs",
+            new { emails = OneEmail });
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_IsAnonymousAndMinimal()
+    {
+        using var client = _factory.CreateClient();
+        var live = await client.GetAsync("/health/live");
+        var ready = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        Assert.Equal("{\"status\":\"Healthy\"}", await live.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Swagger_IsRestrictedOutsideDevelopmentAndContractHasScopes()
+    {
+        using var anonymous = _factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync("/swagger/v1/swagger.json")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync("/swagger/index.html")).StatusCode);
+
+        using var admin = _factory.CreateAuthenticatedClient([EmailValidationScopes.Admin]);
+        var response = await admin.GetAsync("/swagger/v1/swagger.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(document.RootElement.GetProperty("paths").TryGetProperty("/v1/email-validations", out var path));
+        Assert.Equal("CreateEmailValidationV1", path.GetProperty("post").GetProperty("operationId").GetString());
+        var schemes = document.RootElement.GetProperty("components").GetProperty("securitySchemes");
+        Assert.True(schemes.TryGetProperty("oauth2", out _));
+        Assert.Equal(EmailValidationScopes.Validate,
+            path.GetProperty("post").GetProperty("security")[0].GetProperty("oauth2")[0].GetString());
     }
 }
 
 public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
 {
     public ApiValidator Validator { get; } = new();
+    public InMemoryCommercialResourceStore Resources { get; } = new();
     private readonly ApiJobService _jobs = new();
+
+    public EmailValidationApiFactory()
+    {
+        Resources.GrantAsync(new ResourceOwnership(
+            OwnedResourceType.Validation,
+            "known",
+            "tenant:tenant-a:subject:consumer-a",
+            "consumer-a",
+            "tenant-a",
+            DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
+        Resources.GrantAsync(new ResourceOwnership(
+            OwnedResourceType.Validation,
+            "validation-provisional",
+            "tenant:tenant-a:subject:consumer-a",
+            "consumer-a",
+            "tenant-a",
+            DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
+    }
+
+    public HttpClient CreateAuthenticatedClient(IReadOnlyList<string> scopes, string tenant = "tenant-a")
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Auth", "valid");
+        client.DefaultRequestHeaders.Add("X-Test-Subject", "consumer-a");
+        client.DefaultRequestHeaders.Add("X-Test-Tenant", tenant);
+        client.DefaultRequestHeaders.Add("X-Test-Scopes", string.Join(' ', scopes));
+        return client;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -95,6 +230,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
             new Dictionary<string, string?>
             {
+                ["Api:OpenApi:ExposeInProduction"] = "true",
                 ["EmailValidation:Persistence:Enabled"] = "false",
                 ["EmailValidation:Persistence:Provider"] = "Json",
                 ["EmailValidation:Persistence:StoragePath"] = "test-data",
@@ -103,13 +239,42 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
             }));
         builder.ConfigureServices(services =>
         {
+            services.AddAuthentication(TestAuthenticationHandler.AuthenticationScheme)
+                .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
+                    TestAuthenticationHandler.AuthenticationScheme, _ => { });
             services.RemoveAll<IEmailValidator>();
             services.RemoveAll<IValidationStatusQueryService>();
             services.RemoveAll<IValidationJobService>();
+            services.RemoveAll<ICommercialResourceStore>();
             services.AddSingleton<IEmailValidator>(Validator);
             services.AddSingleton<IValidationStatusQueryService, ApiStatusService>();
             services.AddSingleton<IValidationJobService>(_jobs);
+            services.AddSingleton<ICommercialResourceStore>(Resources);
         });
+    }
+}
+
+public sealed class TestAuthenticationHandler(
+    IOptionsMonitor<AuthenticationSchemeOptions> options,
+    ILoggerFactory logger,
+    UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+{
+    public const string AuthenticationScheme = "Test";
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var state = Request.Headers["X-Test-Auth"].ToString();
+        if (string.IsNullOrWhiteSpace(state)) return Task.FromResult(AuthenticateResult.NoResult());
+        if (state is "invalid" or "expired")
+            return Task.FromResult(AuthenticateResult.Fail("The test access token is invalid."));
+        var claims = new[]
+        {
+            new Claim("sub", Request.Headers["X-Test-Subject"].FirstOrDefault() ?? "consumer-a"),
+            new Claim("tenant_id", Request.Headers["X-Test-Tenant"].FirstOrDefault() ?? "tenant-a"),
+            new Claim("scope", Request.Headers["X-Test-Scopes"].FirstOrDefault() ?? string.Empty)
+        };
+        return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
+            new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationScheme)), AuthenticationScheme)));
     }
 }
 
@@ -126,16 +291,22 @@ public sealed class ApiValidator : IEmailValidator
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
         var provisional = email == "provisional@example.com";
+        var now = DateTimeOffset.UtcNow;
         return new EmailValidationResult
         {
             Email = email,
             NormalizedEmail = email,
             Status = provisional ? EmailValidationStatus.Unknown : EmailValidationStatus.Valid,
+            SubStatus = provisional ? DetailedStatus.TemporaryFailure : DetailedStatus.MailboxAccepted,
             Confidence = provisional ? .8 : 1,
             Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true },
-            ValidationId = provisional ? "validation-provisional" : "validation-final",
+            ValidationId = request.ValidationId ?? (provisional ? "validation-provisional" : "validation-final"),
             ResultState = provisional ? ValidationResultState.Provisional : ValidationResultState.Final,
-            RetryScheduled = provisional
+            RetryScheduled = provisional,
+            RetryAfter = provisional ? now.AddMinutes(15) : null,
+            FirstValidatedAt = now,
+            LastValidatedAt = now,
+            FinalizedAt = provisional ? null : now
         };
     }
 }
@@ -143,29 +314,47 @@ public sealed class ApiValidator : IEmailValidator
 public sealed class ApiStatusService : IValidationStatusQueryService
 {
     public Task<ValidationStatusSnapshot?> GetAsync(string validationId, CancellationToken cancellationToken = default) =>
-        Task.FromResult<ValidationStatusSnapshot?>(validationId == "known" ? new ValidationStatusSnapshot
-        {
-            ValidationId = validationId,
-            LifecycleState = ValidationLifecycleState.Final,
-            ResultState = ValidationResultState.Final,
-            Sequence = 3
-        } : null);
+        Task.FromResult<ValidationStatusSnapshot?>(validationId is "known" or "validation-final" or "validation-provisional"
+            ? new ValidationStatusSnapshot
+            {
+                ValidationId = validationId,
+                Email = "valid@example.com",
+                LifecycleState = validationId == "validation-provisional"
+                    ? ValidationLifecycleState.RetryWaiting
+                    : ValidationLifecycleState.Final,
+                ResultState = validationId == "validation-provisional"
+                    ? ValidationResultState.Provisional
+                    : ValidationResultState.Final,
+                Status = validationId == "validation-provisional"
+                    ? EmailValidationStatus.Unknown
+                    : EmailValidationStatus.Valid,
+                RetryScheduled = validationId == "validation-provisional",
+                RetryAt = validationId == "validation-provisional" ? DateTimeOffset.UtcNow.AddMinutes(15) : null,
+                Sequence = 3,
+                LastUpdatedAt = DateTimeOffset.UtcNow
+            }
+            : null);
 }
 
 public sealed class ApiJobService : IValidationJobService
 {
     private readonly Dictionary<string, (ValidationJobSnapshot Job, ValidationJobItem[] Items)> _jobs = [];
+
     public Task<ValidationJobSnapshot> CreateAsync(CreateValidationJobRequest request, CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
-        var id = Guid.NewGuid().ToString("N");
+        var id = request.JobId ?? Guid.NewGuid().ToString("N");
         var job = new ValidationJobSnapshot(id, now, ValidationJobState.Queued, request.Emails.Count, 0, 0, 0, 0, now);
         _jobs[id] = (job, request.Emails.Select((email, position) =>
             new ValidationJobItem(id, position, email, ValidationJobItemState.Pending)).ToArray());
         return Task.FromResult(job);
     }
+
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
         Task.FromResult<ValidationJobSnapshot?>(_jobs.TryGetValue(jobId, out var value) ? value.Job : null);
-    public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<ValidationJobItem>>(_jobs[jobId].Items.Skip(skip).Take(take).ToArray());
+
+    public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(
+        string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<ValidationJobItem>>(
+            _jobs[jobId].Items.Skip(skip).Take(take).ToArray());
 }

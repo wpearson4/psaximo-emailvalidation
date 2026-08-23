@@ -142,6 +142,29 @@ public sealed class EmailValidationOptionsValidatorTests
             "https://example.vault.azure.net/secrets/Mongo"));
     }
 
+    [Fact]
+    public void AzureBootstrap_ReadsDockerSecretFileWithoutPuttingSecretInEnvironment()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "Endpoint=https://example.azconfig.io;Id=container;Secret=test-value\n");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [EmailValidationAzureConfiguration.ConnectionStringFileKey] = path
+                }).Build();
+
+            Assert.Equal(
+                "Endpoint=https://example.azconfig.io;Id=container;Secret=test-value",
+                EmailValidationAzureConfiguration.ResolveConnectionString(configuration));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static EmailValidationOptions ValidOptions() => new()
     {
         ProbeSenderSource = new ProbeSenderSourceOptions

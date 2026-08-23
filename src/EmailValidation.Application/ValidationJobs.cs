@@ -12,7 +12,10 @@ public enum ValidationJobItemState { Pending, Processing, Completed, Failed }
 public sealed class ValidationJobNotFoundException(string jobId)
     : Exception($"Validation job '{jobId}' does not exist.");
 
-public sealed record CreateValidationJobRequest(IReadOnlyList<string> Emails, bool EnableSmtp = true);
+public sealed record CreateValidationJobRequest(
+    IReadOnlyList<string> Emails,
+    bool EnableSmtp = true,
+    string? JobId = null);
 
 public sealed record ValidationJobSnapshot(
     string JobId,
@@ -116,7 +119,12 @@ public sealed class ValidationJobService(
             throw new ArgumentException("Job email addresses cannot be empty.", nameof(request));
 
         var now = timeProvider.GetUtcNow();
-        var jobId = Guid.NewGuid().ToString("N");
+        var jobId = string.IsNullOrWhiteSpace(request.JobId)
+            ? Guid.NewGuid().ToString("N")
+            : request.JobId.Trim();
+        if (jobId.Length > 128 || jobId.Any(character => character is not
+                (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
+            throw new ArgumentException("JobId is invalid.", nameof(request));
         var job = new ValidationJobSnapshot(jobId, now, ValidationJobState.Requested,
             request.Emails.Count, 0, 0, 0, 0, now, EnableSmtp: request.EnableSmtp);
         var items = request.Emails.Select((email, position) =>

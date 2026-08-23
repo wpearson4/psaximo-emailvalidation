@@ -167,6 +167,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ValidationJobMetrics>();
         services.AddSingleton<IValidationJobMetrics>(provider => provider.GetRequiredService<ValidationJobMetrics>());
         services.AddSingleton<IValidationJobInfrastructureInitializer, ValidationJobInfrastructureInitializer>();
+        services.AddSingleton<MongoCommercialResourceStore>();
+        services.AddSingleton<InMemoryCommercialResourceStore>();
+        services.AddSingleton<ICommercialResourceStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoCommercialResourceStore>()
+            : provider.GetRequiredService<InMemoryCommercialResourceStore>());
+        services.AddSingleton<ICommercialResourceInfrastructureInitializer>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoCommercialResourceStore>()
+            : provider.GetRequiredService<InMemoryCommercialResourceStore>());
         services.AddSingleton<EmailValidator>();
         services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
         services.AddSingleton<IntelligenceEmailValidator>();

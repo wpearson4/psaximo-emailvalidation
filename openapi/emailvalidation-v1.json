@@ -1,0 +1,867 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "Email Validation API",
+    "description": "Secure commercial REST boundary for canonical email validation and durable jobs.",
+    "version": "v1"
+  },
+  "paths": {
+    "/v1/email-validations": {
+      "post": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Validate one email address",
+        "description": "Runs the shared validation engine and returns the canonical final or provisional validation resource. Mailbox invalidity is a successful HTTP operation.",
+        "operationId": "CreateEmailValidationV1",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailValidation.Api.ValidateEmailV1Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.EmailValidationV1Response"
+                },
+                "examples": {
+                  "finalValid": {
+                    "summary": "Final valid",
+                    "value": {
+                      "validationId": "01J...",
+                      "email": "person@example.com",
+                      "lifecycleState": "Final",
+                      "resultState": "Final",
+                      "status": "Valid",
+                      "subStatus": "MailboxAccepted",
+                      "confidence": 0.94,
+                      "provider": "Microsoft365",
+                      "source": "LiveValidation",
+                      "retryScheduled": false,
+                      "attemptNumber": 1,
+                      "maxAttempts": 2
+                    }
+                  },
+                  "finalInvalid": {
+                    "summary": "Final invalid",
+                    "value": {
+                      "validationId": "01J...",
+                      "email": "missing@example.com",
+                      "lifecycleState": "Final",
+                      "resultState": "Final",
+                      "status": "Invalid",
+                      "subStatus": "MailboxNotFound",
+                      "confidence": 0.99,
+                      "provider": "Unknown",
+                      "source": "LiveValidation",
+                      "retryScheduled": false,
+                      "attemptNumber": 1,
+                      "maxAttempts": 2
+                    }
+                  },
+                  "provisionalRetry": {
+                    "summary": "Provisional retry scheduled",
+                    "value": {
+                      "validationId": "01J...",
+                      "email": "person@example.com",
+                      "lifecycleState": "RetryScheduled",
+                      "resultState": "Provisional",
+                      "status": "Unknown",
+                      "subStatus": "TemporaryFailure",
+                      "confidence": 0.82,
+                      "provider": "Microsoft365",
+                      "source": "LiveValidation",
+                      "retryScheduled": true,
+                      "retryAtUtc": "2026-08-23T18:30:00Z",
+                      "attemptNumber": 1,
+                      "maxAttempts": 2
+                    }
+                  },
+                  "unknown": {
+                    "summary": "Final unknown",
+                    "value": {
+                      "validationId": "01J...",
+                      "email": "person@example.com",
+                      "lifecycleState": "Final",
+                      "resultState": "Final",
+                      "status": "Unknown",
+                      "subStatus": "VerificationBlocked",
+                      "confidence": 0.88,
+                      "provider": "Google",
+                      "source": "LiveValidation",
+                      "retryScheduled": false,
+                      "attemptNumber": 2,
+                      "maxAttempts": 2
+                    }
+                  },
+                  "risky": {
+                    "summary": "Risky mailbox",
+                    "value": {
+                      "validationId": "01J...",
+                      "email": "person@example.com",
+                      "lifecycleState": "Final",
+                      "resultState": "Final",
+                      "status": "Risky",
+                      "subStatus": "MailboxFull",
+                      "confidence": 0.9,
+                      "provider": "Unknown",
+                      "source": "LiveValidation",
+                      "retryScheduled": false,
+                      "attemptNumber": 1,
+                      "maxAttempts": 2
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "Unauthorized": {
+                    "summary": "Unauthorized",
+                    "value": {
+                      "type": "https://httpstatuses.com/401",
+                      "title": "Unauthorized",
+                      "status": 401,
+                      "detail": "A bearer token is required.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "Forbidden": {
+                    "summary": "Forbidden",
+                    "value": {
+                      "type": "https://httpstatuses.com/403",
+                      "title": "Forbidden",
+                      "status": 403,
+                      "detail": "The token does not contain the required scope.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "Ratelimitexceeded": {
+                    "summary": "Rate limit exceeded",
+                    "value": {
+                      "type": "https://httpstatuses.com/429",
+                      "title": "Rate limit exceeded",
+                      "status": 429,
+                      "detail": "Retry later.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.validate"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/email-validations/{validationId}": {
+      "get": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Get canonical validation status",
+        "description": "Reads canonical lifecycle state without starting a new SMTP validation.",
+        "operationId": "GetEmailValidationV1",
+        "parameters": [
+          {
+            "name": "validationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationStatusV1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/email-validation-jobs": {
+      "post": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Create a durable bulk validation job",
+        "description": "Persists a bulk job and submits it to the existing Service Bus worker. Idempotency-Key is supported and scoped to the authenticated consumer.",
+        "operationId": "CreateEmailValidationJobV1",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailValidation.Api.CreateValidationJobV1Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobV1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.jobs.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/email-validation-jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Get a durable validation job",
+        "operationId": "GetEmailValidationJobV1",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobV1Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.jobs.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/email-validation-jobs/{jobId}/results": {
+      "get": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Get an ordered page of job results",
+        "description": "Returns a bounded result page. Use nextSkip to request the next page.",
+        "operationId": "GetEmailValidationJobResultsV1",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobResultsPageV1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.jobs.read"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EmailValidation.Api.CreateValidationJobV1Request": {
+        "type": "object",
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enableSmtp": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.EmailValidationV1Response": {
+        "type": "object",
+        "properties": {
+          "validationId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "lifecycleState": {
+            "type": "string"
+          },
+          "resultState": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subStatus": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "confidenceReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string"
+          },
+          "validatedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "source": {
+            "type": "string"
+          },
+          "retryScheduled": {
+            "type": "boolean"
+          },
+          "retryAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "attemptNumber": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "finalizedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "checks": {
+            "$ref": "#/components/schemas/EmailValidation.Api.ValidationChecksV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidateEmailV1Request": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "enableSmtp": {
+            "type": "boolean"
+          },
+          "verbose": {
+            "type": "boolean"
+          },
+          "validationId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidationChecksV1": {
+        "type": "object",
+        "properties": {
+          "syntaxValid": {
+            "type": "boolean"
+          },
+          "domainExists": {
+            "type": "boolean"
+          },
+          "mxPresent": {
+            "type": "boolean"
+          },
+          "disposable": {
+            "type": "boolean"
+          },
+          "roleAddress": {
+            "type": "boolean"
+          },
+          "catchAll": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidationJobResultV1Response": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "email": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/EmailValidation.Api.EmailValidationV1Response"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidationJobResultsPageV1Response": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "skip": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "take": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobResultV1Response"
+            }
+          },
+          "nextSkip": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidationJobV1Response": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "type": "string"
+          },
+          "totalItems": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "processedItems": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "finalItems": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "provisionalItems": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failedItems": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enableSmtp": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.ValidationStatusV1Response": {
+        "type": "object",
+        "properties": {
+          "validationId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lifecycleState": {
+            "type": "string"
+          },
+          "resultState": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "subStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "confidenceReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "attemptNumber": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "retryScheduled": {
+            "type": "boolean"
+          },
+          "retryAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "statusMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "requestedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "validatedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "finalizedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Microsoft.AspNetCore.Mvc.ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "nullable": true
+          },
+          "instance": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": { }
+      }
+    },
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "description": "OAuth 2.0 bearer access token. Commercial integrations normally use client credentials.",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "https://identity.example.invalid/connect/token",
+            "scopes": {
+              "emailvalidation.validate": "Validate one email address.",
+              "emailvalidation.read": "Read a validation resource.",
+              "emailvalidation.jobs.write": "Create durable validation jobs.",
+              "emailvalidation.jobs.read": "Read validation jobs and results.",
+              "emailvalidation.stream": "Subscribe to validation lifecycle streams.",
+              "emailvalidation.admin": "Administrative access; not intended for ordinary consumers."
+            }
+          },
+          "authorizationCode": {
+            "authorizationUrl": "https://identity.example.invalid/authorize",
+            "tokenUrl": "https://identity.example.invalid/connect/token",
+            "scopes": {
+              "emailvalidation.validate": "Validate one email address.",
+              "emailvalidation.read": "Read a validation resource.",
+              "emailvalidation.jobs.write": "Create durable validation jobs.",
+              "emailvalidation.jobs.read": "Read validation jobs and results.",
+              "emailvalidation.stream": "Subscribe to validation lifecycle streams.",
+              "emailvalidation.admin": "Administrative access; not intended for ordinary consumers."
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Email Validation v1"
+    }
+  ]
+}

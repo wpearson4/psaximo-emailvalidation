@@ -35,6 +35,7 @@ public enum ValidationProgressStage
 public record ValidationStatusSnapshot
 {
     public required string ValidationId { get; init; }
+    public string? Email { get; init; }
     public required ValidationLifecycleState LifecycleState { get; init; }
     public ValidationProgressStage CurrentStage { get; init; }
     public EmailValidationStatus? Status { get; init; }
@@ -76,6 +77,7 @@ public static class ValidationStatusMapper
         return new()
         {
             ValidationId = lifecycle.ValidationId,
+            Email = lifecycle.NormalizedEmail,
             LifecycleState = state,
             CurrentStage = ResolveStage(lifecycle.CurrentStage, state),
             Status = hasResult ? result.Status : null,
@@ -113,6 +115,7 @@ public static class ValidationStatusMapper
         return new()
         {
             ValidationId = snapshot.ValidationId,
+            Email = snapshot.Email,
             LifecycleState = snapshot.LifecycleState,
             CurrentStage = snapshot.CurrentStage,
             Status = snapshot.Status,

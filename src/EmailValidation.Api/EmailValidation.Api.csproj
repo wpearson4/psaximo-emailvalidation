@@ -3,13 +3,25 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateOpenApi>false</GenerateOpenApi>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\EmailValidation.Application\EmailValidation.Application.csproj" />
     <ProjectReference Include="..\EmailValidation.Core\EmailValidation.Core.csproj" />
     <ProjectReference Include="..\EmailValidation.Infrastructure\EmailValidation.Infrastructure.csproj" />
+    <ProjectReference Include="..\EmailValidation.Grpc\EmailValidation.Grpc.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
+    <PackageReference Include="Grpc.AspNetCore.Server.Reflection" Version="2.80.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
   <ItemGroup>
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="GenerateEmailValidationOpenApi" AfterTargets="Build" Condition="'$(GenerateOpenApi)' == 'true'">
+    <MakeDir Directories="$(MSBuildProjectDirectory)/../../openapi" />
+    <Exec Command="dotnet &quot;$(TargetPath)&quot; --export-openapi &quot;$(MSBuildProjectDirectory)/../../openapi/emailvalidation-v1.json&quot;"
+          EnvironmentVariables="ASPNETCORE_ENVIRONMENT=Testing" />
+  </Target>
 </Project>

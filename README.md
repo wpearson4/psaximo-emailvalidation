@@ -1,6 +1,12 @@
-# Email Validation Service prototype
+# Email Validation Service
 
-A standalone .NET 10 console prototype whose validation engine is isolated from its host. It gathers structured evidence and returns `Valid`, `LikelyValid`, `CatchAll`, `Risky`, `LikelyInvalid`, `Invalid`, or `Unknown`; it does not claim that SMTP can always prove mailbox existence.
+A .NET 10 email-validation platform whose validation engine is isolated from its Console, Worker, REST, and gRPC hosts. It gathers structured evidence and returns `Valid`, `LikelyValid`, `CatchAll`, `Risky`, `LikelyInvalid`, `Invalid`, or `Unknown`; it does not claim that SMTP can always prove mailbox existence.
+
+## Production API host
+
+`EmailValidation.Api` is the secure, versioned commercial REST and gRPC integration host. It reuses the same validation core, canonical lifecycle, Mongo persistence, Service Bus retry/job workers, and status subscriptions used elsewhere in the solution.
+
+See [API operations and deployment](docs/api-deployment.md) for OAuth scopes, REST/gRPC usage, OpenAPI/Swagger, Docker, health checks, and the 10.10.252.31 deployment. The discovery record is in [production API gap analysis](docs/production-api-gap-analysis.md).
 
 ## Projects
 
@@ -10,8 +16,8 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 - `src/EmailValidation.Infrastructure` — MX/DNS, SMTP, catch-all probing, throttling, caching, provider detection, and domain intelligence.
 - `src/EmailValidation.Console` — command parsing, configuration, batch ingestion, output, diagnostics, and logging bootstrap.
 - `src/EmailValidation.Worker` — Azure Service Bus receive adapter and durable revalidation outbox publisher.
-- `src/EmailValidation.Api` — versioned REST validation, canonical status, and asynchronous job adapter.
-- `src/EmailValidation.Grpc` — versioned current-status and server-streaming lifecycle adapter.
+- `src/EmailValidation.Api` — production composition host for versioned REST/gRPC, OAuth scopes, OpenAPI, health, and deployment controls.
+- `src/EmailValidation.Grpc` — reusable versioned unary validation/status and server-streaming transport contracts hosted by the API.
 - `tests/EmailValidation.Core.Tests` — offline unit tests using fakes.
 - `tests/EmailValidation.Grpc.Tests` — protobuf contract mapping tests.
 - `tests/EmailValidation.IntegrationTests` — opt-in live network tests.

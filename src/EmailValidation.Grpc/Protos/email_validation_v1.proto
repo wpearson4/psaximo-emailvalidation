@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package emailvalidation.v1;
+option csharp_namespace = "EmailValidation.V1";
+
+import "google/protobuf/timestamp.proto";
+
+service EmailValidationService {
+  rpc ValidateEmail(ValidateEmailRequest) returns (EmailValidationResponse);
+  rpc GetValidation(GetValidationRequest) returns (EmailValidationResponse);
+}
+
+message ValidateEmailRequest {
+  string email = 1;
+  optional bool enable_smtp = 2;
+  bool verbose = 3;
+  optional string validation_id = 4;
+}
+
+message GetValidationRequest {
+  string validation_id = 1;
+}
+
+message EmailValidationResponse {
+  string validation_id = 1;
+  string email = 2;
+  string lifecycle_state = 3;
+  string result_state = 4;
+  optional string status = 5;
+  optional string sub_status = 6;
+  optional double confidence = 7;
+  optional string confidence_reason = 8;
+  optional string provider = 9;
+  bool retry_scheduled = 10;
+  google.protobuf.Timestamp retry_at_utc = 11;
+  int32 attempt_number = 12;
+  int32 maximum_attempts = 13;
+  google.protobuf.Timestamp validated_at_utc = 14;
+  optional string source = 15;
+  int64 sequence = 16;
+}

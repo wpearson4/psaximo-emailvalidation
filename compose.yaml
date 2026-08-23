@@ -1,0 +1,51 @@
+name: emailvalidation
+
+services:
+  emailvalidation-api:
+    image: emailvalidation-api:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emailvalidation-api
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Kestrel__Endpoints__Http__Url: http://${API_BIND_ADDRESS:-127.0.0.1}:${REST_PORT:-8080}
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://${API_BIND_ADDRESS:-127.0.0.1}:${GRPC_PORT:-8081}
+      Kestrel__Endpoints__Grpc__Protocols: Http2
+      EMAILVALIDATION_HEALTHCHECK_URL: http://${API_BIND_ADDRESS:-127.0.0.1}:${REST_PORT:-8080}/health/live
+      Azure__AppConfigurationEndpoint: ${AZURE_APPCONFIG_ENDPOINT:-https://appcs-p-ometa-dsi-scus.azconfig.io}
+      Azure__AppConfigurationLabel: ${AZURE_APPCONFIG_LABEL:-Production}
+      Azure__AppConfigurationConnectionStringFile: /run/secrets/azure_app_configuration_connection_string
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:?set AZURE_TENANT_ID}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?set AZURE_CLIENT_ID}
+      AZURE_CLIENT_CERTIFICATE_PATH: /run/secrets/azure_client_certificate
+      Authentication__Authority: ${AUTHORITY:?set AUTHORITY}
+      Authentication__Audience: ${AUDIENCE:-emailvalidation-api}
+      Authentication__RequireHttpsMetadata: "true"
+      Api__OpenApi__ExposeInProduction: "false"
+    secrets:
+      - azure_app_configuration_connection_string
+      - azure_client_certificate
+    healthcheck:
+      test: ["CMD", "dotnet", "EmailValidation.Api.dll", "--healthcheck"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 45s
+
+secrets:
+  azure_app_configuration_connection_string:
+    file: ${AZURE_APPCONFIG_SECRET_FILE:?set AZURE_APPCONFIG_SECRET_FILE}
+  azure_client_certificate:
+    file: ${AZURE_CLIENT_CERTIFICATE_FILE:?set AZURE_CLIENT_CERTIFICATE_FILE}

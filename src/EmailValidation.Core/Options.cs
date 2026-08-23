@@ -107,6 +107,7 @@ public sealed class PersistenceOptions
     public string DomainCollection { get; set; } = "EmailValidationDomainIntelligence";
     public string MailboxCollection { get; set; } = "EmailValidationMailboxIntelligence";
     public string LifecycleCollection { get; set; } = "EmailValidationLifecycle";
+    public string CommercialResourceCollection { get; set; } = "EmailValidationCommercialResources";
 }
 
 public sealed class ResultReuseOptions

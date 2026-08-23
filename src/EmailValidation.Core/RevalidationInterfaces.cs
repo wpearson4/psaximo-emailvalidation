@@ -124,7 +124,10 @@ public interface IValidationStatusQueryService
         CancellationToken cancellationToken = default);
 }
 
-public sealed record ValidationAccessContext(string? Subject, string? TenantId);
+public sealed record ValidationAccessContext(
+    string? Subject,
+    string? TenantId,
+    IReadOnlySet<string>? Scopes = null);
 
 public interface IValidationAccessPolicy
 {
