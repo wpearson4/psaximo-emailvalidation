@@ -17,8 +17,6 @@ if (args.Contains("--healthcheck", StringComparer.Ordinal))
 
 var builder = WebApplication.CreateBuilder(args);
 var exportingOpenApi = args.Length >= 2 && string.Equals(args[0], "--export-openapi", StringComparison.Ordinal);
-builder.Configuration.AddJsonFile(
-    Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
 if (!builder.Environment.IsEnvironment("Testing") &&
     builder.Configuration.GetValue("Azure:AppConfigurationEnabled", true))
     builder.Configuration.AddEmailValidationAzureAppConfiguration(builder.Environment);

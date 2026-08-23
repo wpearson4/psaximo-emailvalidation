@@ -33,6 +33,7 @@ services:
       Authentication__Authority: ${AUTHORITY:?set AUTHORITY}
       Authentication__Audience: ${AUDIENCE:-emailvalidation-api}
       Authentication__RequireHttpsMetadata: "true"
+      Api__Cors__AllowedOrigins__0: https://app.digitalwarehouse.io
       Api__OpenApi__ExposeInProduction: "false"
     secrets:
       - azure_app_configuration_connection_string
@@ -82,7 +83,7 @@ services:
       - letsencrypt:/etc/letsencrypt:ro
       - certbot_www:/var/www/certbot:ro
     healthcheck:
-      test: ["CMD", "wget", "--no-check-certificate", "--quiet", "--output-document=/dev/null", "https://127.0.0.1/health/live"]
+      test: ["CMD", "wget", "--no-check-certificate", "--header=Host: email.digitalwarehouse.io", "--quiet", "--output-document=/dev/null", "https://127.0.0.1/health/live"]
       interval: 30s
       timeout: 6s
       retries: 3

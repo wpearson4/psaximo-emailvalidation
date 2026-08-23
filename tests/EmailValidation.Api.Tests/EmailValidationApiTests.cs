@@ -169,6 +169,23 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public async Task Cors_AllowsOnlyTheProductionBrowserOrigin()
+    {
+        using var client = _factory.CreateClient();
+        using var allowedRequest = CreatePreflightRequest("https://app.digitalwarehouse.io");
+        using var allowed = await client.SendAsync(allowedRequest);
+
+        Assert.Equal(HttpStatusCode.NoContent, allowed.StatusCode);
+        Assert.True(allowed.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowedOrigins),
+            $"The allowed preflight omitted Access-Control-Allow-Origin. Headers: {allowed.Headers}");
+        Assert.Equal("https://app.digitalwarehouse.io", Assert.Single(allowedOrigins));
+
+        using var deniedRequest = CreatePreflightRequest("https://unapproved.example");
+        using var denied = await client.SendAsync(deniedRequest);
+        Assert.False(denied.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
     public async Task Swagger_IsRestrictedOutsideDevelopmentAndContractHasScopes()
     {
         using var anonymous = _factory.CreateClient();
@@ -187,6 +204,15 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.True(schemes.TryGetProperty("oauth2", out _));
         Assert.Equal(EmailValidationScopes.Validate,
             path.GetProperty("post").GetProperty("security")[0].GetProperty("oauth2")[0].GetString());
+    }
+
+    private static HttpRequestMessage CreatePreflightRequest(string origin)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Options, "/v1/email-validations");
+        request.Headers.Add("Origin", origin);
+        request.Headers.Add("Access-Control-Request-Method", "POST");
+        request.Headers.Add("Access-Control-Request-Headers", "authorization,content-type");
+        return request;
     }
 }
 
@@ -231,6 +257,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
             new Dictionary<string, string?>
             {
                 ["Api:OpenApi:ExposeInProduction"] = "true",
+                ["Api:Cors:AllowedOrigins:0"] = "https://app.digitalwarehouse.io",
                 ["EmailValidation:Persistence:Enabled"] = "false",
                 ["EmailValidation:Persistence:Provider"] = "Json",
                 ["EmailValidation:Persistence:StoragePath"] = "test-data",

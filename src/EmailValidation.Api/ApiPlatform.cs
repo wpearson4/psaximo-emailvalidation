@@ -21,8 +21,6 @@ public static class ApiRateLimitPolicies
 
 public static class ApiPlatformExtensions
 {
-    private const string CorsPolicy = "api-cors";
-
     public static IServiceCollection AddEmailValidationApiPlatform(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -74,13 +72,7 @@ public static class ApiPlatformExtensions
                 }));
         });
 
-        services.AddCors(options => options.AddPolicy(CorsPolicy, policy =>
-        {
-            if (hostOptions.Cors.AllowedOrigins.Length > 0)
-                policy.WithOrigins(hostOptions.Cors.AllowedOrigins)
-                    .WithMethods("GET", "POST")
-                    .WithHeaders("Authorization", "Content-Type", "Idempotency-Key", "traceparent");
-        }));
+        services.AddCors();
 
         services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])
@@ -99,8 +91,11 @@ public static class ApiPlatformExtensions
             await next(context).ConfigureAwait(false);
         });
         app.UseExceptionHandler();
-        if (app.Configuration.GetSection("Api:Cors:AllowedOrigins").Get<string[]>()?.Length > 0)
-            app.UseCors(CorsPolicy);
+        var allowedOrigins = app.Configuration.GetSection("Api:Cors:AllowedOrigins").Get<string[]>();
+        if (allowedOrigins?.Length > 0)
+            app.UseCors(policy => policy.WithOrigins(allowedOrigins)
+                .WithMethods("GET", "POST")
+                .WithHeaders("Authorization", "Content-Type", "Idempotency-Key", "traceparent"));
         app.UseAuthentication();
         app.UseMiddleware<ApiRequestTelemetryMiddleware>();
         app.UseRateLimiter();

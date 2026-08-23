@@ -27,7 +27,7 @@ All business operations deny unauthenticated callers. Tokens must be issued by `
 
 Provide non-secret settings through configuration and secrets through user secrets. Azure App Configuration is skipped only by the automated `Testing` environment.
 
-The host exposes HTTP/1 REST/health on loopback port 8080 and cleartext HTTP/2 gRPC on loopback port 8081. The Compose stack terminates public HTTPS and HTTP/2 TLS at Nginx on ports 80/443 and obtains certificates for `email.digitalwarehouse.io` with Certbot and Let's Encrypt. Bearer tokens never cross the untrusted network in plaintext, and certificates are kept in persistent volumes rather than application images.
+The host exposes HTTP/1 REST/health on loopback port 8080 and cleartext HTTP/2 gRPC on loopback port 8081. The Compose stack terminates public HTTPS and HTTP/2 TLS at Nginx on ports 80/443 and obtains certificates for `email.digitalwarehouse.io` with Certbot and Let's Encrypt. Unknown hostnames are rejected rather than routed to the API. Bearer tokens never cross the untrusted network in plaintext, and certificates are kept in persistent volumes rather than application images.
 
 Swagger UI and JSON are available in Development. Outside Development they are absent by default. `Api:OpenApi:ExposeInProduction=true` exposes them only to `emailvalidation.admin`.
 
@@ -57,9 +57,13 @@ Existing App Configuration/Key Vault keys remain authoritative for MongoDB, Serv
 
 A read-only host preflight was completed on 2026-08-23. The target is AlmaLinux 8.10 on x86-64 with Docker 29.7.2 and Docker Compose 5.5.0. Ports 80, 443, 8080, and 8081 were unused, and no nginx, httpd, HAProxy, or Caddy service was active. The production image was built on the host and passed isolated health, HTTP/2, non-root, hardening, authorization, and graceful-shutdown checks. The validation container was removed; the image remains tagged `emailvalidation-api:host-validation`.
 
-Public DNS for `email.digitalwarehouse.io` resolved to `172.106.108.81` during that preflight, but a public port 80 connection timed out. Before requesting a certificate, route public TCP 80 and 443 for that address to `10.10.252.31` and permit both ports through every upstream firewall/NAT layer. HTTP-01 issuance cannot succeed until Let's Encrypt can reach port 80.
+Public DNS for `email.digitalwarehouse.io` resolves to `64.182.20.183`. The address is not assigned directly to a host interface; the server has only `10.10.252.31/24`, so the public address must be routed or NATed upstream. Public connections to ports 80 and 443 timed out during the 2026-08-23 preflight. A temporary local Nginx listener returned HTTP 200 on port 80 while the same public probe still timed out, confirming that the remaining block is upstream of the host. Before requesting a certificate, route public TCP 80 and 443 for `64.182.20.183` to `10.10.252.31` and permit both ports through every upstream firewall/NAT layer. HTTP-01 issuance cannot succeed until Let's Encrypt can reach port 80.
 
-MongoDB 4.4.31 is active with authorization enabled. Contrary to the safer loopback-only assumption, the existing `mongod.conf` binds port 27017 to `0.0.0.0`; the host input policy was also observed as accepting traffic. Deployment of this API does not require changing that existing service and must not publish MongoDB through Docker. Review MongoDB network exposure separately with the host owner before changing its bind address or firewall rules.
+MongoDB 4.4.31 is active with authorization enabled. Contrary to the safer loopback-only assumption, the existing `mongod.conf` binds port 27017 to `0.0.0.0`; the host input policy was also observed as accepting traffic. Active clients were observed on the private `10.10.252.0/24` and administrative `10.254.2.0/24` networks, so do not change the bind address without coordinating those consumers. Docker must never publish MongoDB. Restrict port 27017 to the required private source networks at the host and provider firewalls.
+
+The administrative SSH daemon listens on TCP 2020, not the default TCP 22. `firewalld` was enabled on 2026-08-23 with the public `eth0` zone admitting only HTTP/HTTPS (plus the distribution's DHCPv6 client service). TCP 2020 and MongoDB 27017 are admitted only from `10.0.0.0/8`; fresh private SSH and existing Mongo connections were verified after activation. Pre-existing provider-management addresses remain in the trusted zone. Do not add TCP 2020 or 27017 to the public zone.
+
+SELinux was already disabled before this deployment work. It was not disabled as a proxy workaround. Re-enabling SELinux is a separate host-hardening change that requires policy validation and a coordinated reboot; do not make it incidental to an ingress release.
 
 To repeat the read-only preflight:
 
@@ -94,7 +98,7 @@ Give the production host only pull access. Prefer an ACR scope-map token or serv
 
 ## Let's Encrypt bootstrap and deployment
 
-Create an uncommitted `.env` on the host containing the non-secret settings, selected `IMAGE_TAG`, and paths to the two source secret files. Confirm public ports 80 and 443 reach this host, authenticate Docker to ACR, and pull the application image:
+Create an uncommitted `.env` on the host containing the non-secret settings, selected `IMAGE_TAG`, and paths to the two source secret files. Compose explicitly allows the sole browser origin `https://app.digitalwarehouse.io`; do not replace it with a wildcard. Confirm public ports 80 and 443 reach this host, authenticate Docker to ACR, and pull the application image:
 
 ```bash
 docker compose config --quiet
