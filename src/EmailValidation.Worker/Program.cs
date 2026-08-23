@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using EmailValidation.Core;
+using EmailValidation.Application;
 using EmailValidation.Infrastructure;
 using EmailValidation.Worker;
 using Microsoft.Extensions.Configuration;
@@ -26,12 +27,14 @@ builder.Services.PostConfigure<EmailValidationOptions>(options =>
 builder.Services.AddEmailValidation();
 builder.Services.AddHostedService<ServiceBusRevalidationWorker>();
 builder.Services.AddHostedService<RevalidationOutboxPublisherService>();
+builder.Services.AddHostedService<ServiceBusValidationJobWorker>();
 
 using var host = builder.Build();
 try
 {
     await host.Services.GetRequiredService<IEmailValidationPersistenceInitializer>().InitializeAsync();
     await host.Services.GetRequiredService<IRevalidationInfrastructureInitializer>().InitializeAsync();
+    await host.Services.GetRequiredService<IValidationJobInfrastructureInitializer>().InitializeAsync();
     await host.RunAsync();
     return 0;
 }

@@ -20,7 +20,8 @@ public static class ValidationEvidenceAssessment
         if (category == SmtpResponseCategory.LocalCooldown ||
             probe.Disposition is SmtpProbeDisposition.LocalCooldown or SmtpProbeDisposition.NotAttempted)
             return EvidenceQuality.NotAttempted;
-        if (category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown ||
+        if (category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown or
+            SmtpResponseCategory.SmtpUtf8Unsupported ||
             probe.Disposition == SmtpProbeDisposition.RemoteBlocked)
             return EvidenceQuality.Blocked;
         if (category is SmtpResponseCategory.Greylisted or SmtpResponseCategory.RateLimited or

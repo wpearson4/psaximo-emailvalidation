@@ -152,6 +152,21 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IValidationLifecycleCoordinator, ValidationLifecycleCoordinator>();
         services.AddSingleton<IEmailRevalidationProcessor, EmailRevalidationProcessor>();
         services.AddSingleton<IRevalidationInfrastructureInitializer, RevalidationInfrastructureInitializer>();
+        services.AddSingleton<MongoValidationJobStore>();
+        services.AddSingleton<InMemoryValidationJobStore>();
+        services.AddSingleton<IValidationJobStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationJobStore>()
+            : provider.GetRequiredService<InMemoryValidationJobStore>());
+        services.AddSingleton<AzureServiceBusValidationJobDispatcher>();
+        services.AddSingleton<DisabledValidationJobDispatcher>();
+        services.AddSingleton<IValidationJobDispatcher>(provider => provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Jobs.Enabled
+            ? provider.GetRequiredService<AzureServiceBusValidationJobDispatcher>()
+            : provider.GetRequiredService<DisabledValidationJobDispatcher>());
+        services.AddSingleton<IValidationJobService, ValidationJobService>();
+        services.AddSingleton<IValidationJobProcessor, ValidationJobProcessor>();
+        services.AddSingleton<ValidationJobMetrics>();
+        services.AddSingleton<IValidationJobMetrics>(provider => provider.GetRequiredService<ValidationJobMetrics>());
+        services.AddSingleton<IValidationJobInfrastructureInitializer, ValidationJobInfrastructureInitializer>();
         services.AddSingleton<EmailValidator>();
         services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
         services.AddSingleton<IntelligenceEmailValidator>();

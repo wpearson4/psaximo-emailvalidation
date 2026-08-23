@@ -167,6 +167,10 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
                 return Result(EmailValidationStatus.Unknown, 0.87, reasons, contributions,
                     "Provider verification unavailable", 0.22);
+            case SmtpResponseCategory.SmtpUtf8Unsupported:
+                reasons.Add(ReasonCode.SmtpUtf8Unsupported);
+                return Result(EmailValidationStatus.Unknown, 0.95, reasons, contributions,
+                    "Destination does not support SMTPUTF8", 0.22);
             case SmtpResponseCategory.LocalCooldown:
                 reasons.Add(ReasonCode.LocalCooldown);
                 reasons.Add(ReasonCode.RetryRecommended);

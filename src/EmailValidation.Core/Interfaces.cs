@@ -451,6 +451,7 @@ public interface IValidationPersistenceMetrics
     void RecordCatchAllDiscovered();
     void RecordCatchAllReuse(bool catchAllProbeAvoided, bool mailboxProbeAvoided);
     void RecordCatchAllRefreshed(bool expired, bool classificationChanged);
+    void RecordSmtpUtf8(bool required, bool supported);
     ValidationPersistenceSnapshot GetSnapshot();
 }
 

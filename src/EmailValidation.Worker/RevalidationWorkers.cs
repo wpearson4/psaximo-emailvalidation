@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using System.Diagnostics;
 using EmailValidation.Core;
+using EmailValidation.Application;
 using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Worker;
@@ -104,6 +105,61 @@ public sealed class ServiceBusRevalidationWorker(
     private static string Truncate(string? value) => string.IsNullOrWhiteSpace(value)
         ? "No additional detail."
         : value.Length <= 1024 ? value : value[..1024];
+}
+
+public sealed class ServiceBusValidationJobWorker(
+    IOptions<EmailValidationOptions> options,
+    IValidationJobProcessor processor,
+    ILogger<ServiceBusValidationJobWorker> logger) : BackgroundService
+{
+    private readonly ValidationJobsOptions _options = options.Value.Jobs;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!_options.Enabled) return;
+        await using var client = new ServiceBusClient(_options.ServiceBusConnectionString);
+        await using var receiver = client.CreateProcessor(_options.QueueName, new ServiceBusProcessorOptions
+        {
+            AutoCompleteMessages = false,
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            MaxConcurrentCalls = _options.MaxConcurrentCalls,
+            MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(_options.MaxAutoLockRenewalMinutes)
+        });
+        receiver.ProcessMessageAsync += async args =>
+        {
+            var jobId = args.Message.Body.ToString();
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                await args.DeadLetterMessageAsync(args.Message, "invalid_job_id", cancellationToken: args.CancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+            try
+            {
+                await processor.ProcessAsync(jobId, args.CancellationToken).ConfigureAwait(false);
+                await args.CompleteMessageAsync(args.Message, args.CancellationToken).ConfigureAwait(false);
+            }
+            catch (ValidationJobNotFoundException exception)
+            {
+                await args.DeadLetterMessageAsync(args.Message, "unknown_job", exception.Message, args.CancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Validation job {JobId} processing failed", jobId);
+                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken).ConfigureAwait(false);
+            }
+        };
+        receiver.ProcessErrorAsync += args =>
+        {
+            logger.LogError(args.Exception, "Validation job Service Bus receiver failure");
+            return Task.CompletedTask;
+        };
+        await receiver.StartProcessingAsync(stoppingToken).ConfigureAwait(false);
+        try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        await receiver.StopProcessingAsync(CancellationToken.None).ConfigureAwait(false);
+    }
 }
 
 public sealed class RevalidationOutboxPublisherService(

@@ -198,6 +198,10 @@ public sealed class EmailValidator(
             ProbeAttempted = mailbox.ProbeAttempted,
             ProbeDisposition = mailbox.Disposition,
             RetryAfter = mailbox.RetryAfter,
+            RequiresSmtpUtf8 = normalized.RequiresSmtpUtf8,
+            SmtpUtf8Supported = mailbox.SessionEvidence is null
+                ? null
+                : mailbox.SessionEvidence.SmtpUtf8Advertised,
             Checks = checks,
             MailProvider = domainData.Provider.Provider,
             Provider = effectiveProvider,
@@ -286,6 +290,9 @@ public sealed class EmailValidator(
             SubStatus = subStatus,
             SubStatuses = result.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
+        persistenceMetrics.RecordSmtpUtf8(
+            result.RequiresSmtpUtf8,
+            result.SmtpUtf8Supported is not false);
         await RecordObservationsAsync(domainData, mailbox, providerValidation, selectedMx, catchAllProbes, cancellationToken);
         logger.LogInformation(
             "Validation ended with {Status}, confidence {Confidence}, in {DurationMs} ms",
@@ -466,7 +473,7 @@ public sealed class EmailValidator(
         SmtpResponseCategory.MailboxFull => SmtpMailboxStatus.MailboxFull,
         SmtpResponseCategory.TemporaryFailure or SmtpResponseCategory.Greylisted or SmtpResponseCategory.RateLimited =>
             SmtpMailboxStatus.TemporaryFailure,
-        SmtpResponseCategory.VerificationBlocked => SmtpMailboxStatus.Blocked,
+        SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.SmtpUtf8Unsupported => SmtpMailboxStatus.Blocked,
         SmtpResponseCategory.LocalCooldown => SmtpMailboxStatus.NotAttempted,
         SmtpResponseCategory.ConnectionRejected => SmtpMailboxStatus.ConnectionFailure,
         SmtpResponseCategory.Timeout => SmtpMailboxStatus.Timeout,

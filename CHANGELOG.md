@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Completed the P0 commercialization gap review and documented repository evidence for persistent intelligence,
+  result reuse, single-flight, durable retries, REST, async jobs, international addresses, CSV, and canonical status.
+- Added `EmailValidation.Api` with versioned validation/status endpoints and durable asynchronous-job endpoints that
+  delegate to the existing canonical validation and lifecycle services.
+- Added Mongo-backed job headers and ordered job items, identifier-only Azure Service Bus messages, bounded chunk
+  execution, idempotent progress updates, partial-error completion, and job telemetry.
+- Added explicit international-address transport handling: IDN domains remain platform-normalized, Unicode local
+  parts declare `RequiresSmtpUtf8`, EHLO advertises transport support, and unsupported destinations return explicit
+  inconclusive evidence without sending an invalid SMTP envelope.
+- Added the persisted and published `RetryScheduled` lifecycle transition and mapped it through the existing gRPC v1
+  contract while preserving all previously persisted enum values.
+- Added API, async-job, SMTPUTF8, lifecycle, and gRPC coverage. The full solution now passes 341 tests.
 - Completed an architecture guardrail review covering layering, shared orchestration, evidence/reuse, SMTP and sender policy, retry/lifecycle authority, risk/confidence boundaries, async safety, and commercial extensibility.
 - Moved bounded domain scheduling from the Console host into Application, added asynchronous channel backpressure, and removed the duplicate legacy domain-intelligence workflow from `EmailValidator`.
 - Preserved compatible historical catch-all evidence across inconclusive refreshes, including records written before richer provider fingerprints, while retaining topology/provider invalidation.

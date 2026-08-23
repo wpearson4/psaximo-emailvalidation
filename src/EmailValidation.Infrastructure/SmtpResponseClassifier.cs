@@ -50,7 +50,7 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseClassifier
         SmtpResponseCategory.RecipientRejected => SmtpMailboxStatus.Rejected,
         SmtpResponseCategory.MailboxFull => SmtpMailboxStatus.MailboxFull,
         SmtpResponseCategory.TemporaryFailure or SmtpResponseCategory.Greylisted or SmtpResponseCategory.RateLimited => SmtpMailboxStatus.TemporaryFailure,
-        SmtpResponseCategory.VerificationBlocked => SmtpMailboxStatus.Blocked,
+        SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.SmtpUtf8Unsupported => SmtpMailboxStatus.Blocked,
         SmtpResponseCategory.ConnectionRejected => SmtpMailboxStatus.ConnectionFailure,
         SmtpResponseCategory.Timeout => SmtpMailboxStatus.Timeout,
         _ => SmtpMailboxStatus.Unknown

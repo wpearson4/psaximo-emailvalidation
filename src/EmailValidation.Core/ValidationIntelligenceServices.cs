@@ -209,6 +209,8 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private long _catchAllRefreshedCount;
     private long _catchAllExpiredCount;
     private long _catchAllClassificationChangedCount;
+    private readonly Counter<long> _smtpUtf8Required;
+    private readonly Counter<long> _smtpUtf8Unsupported;
 
     public ValidationPersistenceMetrics()
     {
@@ -238,6 +240,8 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         _catchAllRefreshed = _meter.CreateCounter<long>("email_validation.catch_all.intelligence_refreshed");
         _catchAllExpired = _meter.CreateCounter<long>("email_validation.catch_all.intelligence_expired");
         _catchAllClassificationChanged = _meter.CreateCounter<long>("email_validation.catch_all.classification_changed");
+        _smtpUtf8Required = _meter.CreateCounter<long>("email_validation.smtp_utf8.required");
+        _smtpUtf8Unsupported = _meter.CreateCounter<long>("email_validation.smtp_utf8.unsupported");
         _queryLatency = _meter.CreateHistogram<double>("email_validation.persistence.query.duration", "ms");
     }
 
@@ -245,6 +249,13 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     {
         _validationRequests.Add(1);
         Interlocked.Increment(ref _validationRequestCount);
+    }
+
+    public void RecordSmtpUtf8(bool required, bool supported)
+    {
+        if (!required) return;
+        _smtpUtf8Required.Add(1);
+        if (!supported) _smtpUtf8Unsupported.Add(1);
     }
 
     public void RecordRead(string recordType, bool found, TimeSpan elapsed)

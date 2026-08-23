@@ -171,8 +171,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 SmtpResponseTextClassification.Success, connectionWatch.Elapsed));
             currentCommand = SmtpCommand.Greeting;
             await using var stream = client.GetStream();
-            using var reader = new StreamReader(stream, System.Text.Encoding.ASCII, false, 1024, leaveOpen: true);
-            await using var writer = new StreamWriter(stream, System.Text.Encoding.ASCII, 1024, leaveOpen: true)
+            var utf8 = new System.Text.UTF8Encoding(false, true);
+            using var reader = new StreamReader(stream, utf8, false, 1024, leaveOpen: true);
+            await using var writer = new StreamWriter(stream, utf8, 1024, leaveOpen: true)
             {
                 NewLine = "\r\n",
                 AutoFlush = true
@@ -194,6 +195,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             stageWatch.Stop();
             var ehloEvidence = RecordStage(SmtpCommand.Ehlo, ehlo, stageWatch.Elapsed, provider, mxHost, attempt, stages);
             tlsAdvertised = ehlo.Text.Contains("STARTTLS", StringComparison.OrdinalIgnoreCase);
+            var smtpUtf8Advertised = HasEhloCapability(ehlo.Text, "SMTPUTF8");
             if (ehlo.Code / 100 != 2)
             {
                 currentCommand = SmtpCommand.Helo;
@@ -206,9 +208,24 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 return BuildResult(ehloEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, currentCommand, banner, ehloHost, tlsAdvertised, probeSender);
 
+            var requiresSmtpUtf8 = recipient.Any(character => !char.IsAscii(character));
+            if (requiresSmtpUtf8 && !smtpUtf8Advertised)
+            {
+                var unsupported = ehloEvidence with
+                {
+                    Category = SmtpResponseCategory.SmtpUtf8Unsupported,
+                    TextClassification = SmtpResponseTextClassification.VerificationUnavailable,
+                    SanitizedResponse = "The destination MX did not advertise SMTPUTF8; the internationalized recipient was not probed."
+                };
+                return BuildResult(unsupported, connectionWatch.Elapsed, operationWatch.Elapsed,
+                    provider, mxHost, attempt, stages, SmtpCommand.RcptTo, banner, ehloHost,
+                    tlsAdvertised, probeSender, smtpUtf8Advertised, requiresSmtpUtf8);
+            }
+
             currentCommand = SmtpCommand.MailFrom;
             stageWatch.Restart();
-            var sender = await CommandAsync(writer, reader, $"MAIL FROM:<{probeSender}>", cancellationToken);
+            var sender = await CommandAsync(writer, reader,
+                MailFromCommand(probeSender, requiresSmtpUtf8), cancellationToken);
             stageWatch.Stop();
             var senderEvidence = RecordStage(SmtpCommand.MailFrom, sender, stageWatch.Elapsed, provider, mxHost, attempt, stages);
             if (sender.Code / 100 != 2)
@@ -237,7 +254,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             return BuildResult(recipientEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                 provider, mxHost, attempt, stages,
                 recipientEvidence.Category == SmtpResponseCategory.Accepted ? null : SmtpCommand.RcptTo,
-                banner, ehloHost, tlsAdvertised, probeSender);
+                banner, ehloHost, tlsAdvertised, probeSender, smtpUtf8Advertised, requiresSmtpUtf8);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -323,11 +340,14 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         string? banner,
         string? ehloHost,
         bool tlsAdvertised,
-        string probeSender)
+        string probeSender,
+        bool smtpUtf8Advertised = false,
+        bool smtpUtf8Required = false)
     {
         var session = new SmtpSessionEvidence(
             failedStage, stages.ToArray(), mxHost, elapsed, probeSender,
-            SanitizeSessionText(banner), ehloHost, tlsAdvertised, false);
+            SanitizeSessionText(banner), ehloHost, tlsAdvertised, false,
+            smtpUtf8Advertised, smtpUtf8Required);
         return new SmtpProbeResult(
             SmtpResponseClassifier.ToMailboxStatus(evidence.Category),
             evidence.ResponseCode,
@@ -337,7 +357,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             evidence,
             session)
         {
-            Disposition = evidence.Category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.RateLimited
+            Disposition = evidence.Category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.RateLimited or
+                SmtpResponseCategory.SmtpUtf8Unsupported
                 ? SmtpProbeDisposition.RemoteBlocked
                 : SmtpProbeDisposition.Completed
         };
@@ -390,6 +411,17 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
 
     private static string? SanitizeSessionText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? value : value.Length <= 300 ? value : value[..300];
+
+    internal static bool HasEhloCapability(string response, string capability) =>
+        response.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Length > 4 && int.TryParse(line[..3], out _) ? line[4..].Trim() : line.Trim())
+            .Any(line => string.Equals(
+                line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(),
+                capability,
+                StringComparison.OrdinalIgnoreCase));
+
+    internal static string MailFromCommand(string sender, bool requiresSmtpUtf8) =>
+        $"MAIL FROM:<{sender}>{(requiresSmtpUtf8 ? " SMTPUTF8" : string.Empty)}";
 
     private static bool IsTransient(SmtpMailboxStatus status) =>
         status is SmtpMailboxStatus.TemporaryFailure or SmtpMailboxStatus.Timeout or SmtpMailboxStatus.ConnectionFailure;

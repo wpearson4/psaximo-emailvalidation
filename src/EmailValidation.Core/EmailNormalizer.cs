@@ -47,7 +47,8 @@ public sealed class EmailNormalizer : IEmailNormalizer
             return Failure(original, ReasonCode.InvalidSyntax);
         }
 
-        return new(true, original, normalized, local, domain, null);
+        return new(true, original, normalized, local, domain, null,
+            local.Any(character => !char.IsAscii(character)), rawDomain);
     }
 
     private static bool IsDomainValid(string domain)

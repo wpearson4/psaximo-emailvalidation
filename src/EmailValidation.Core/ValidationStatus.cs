@@ -11,7 +11,8 @@ public enum ValidationLifecycleState
     RetryWaiting = 4,
     Revalidating = 5,
     Final = 6,
-    Failed = 7
+    Failed = 7,
+    RetryScheduled = 8
 }
 
 public enum ValidationProgressStage
@@ -27,7 +28,8 @@ public enum ValidationProgressStage
     RetryWaiting = 8,
     Revalidating = 9,
     Final = 10,
-    Failed = 11
+    Failed = 11,
+    RetryScheduled = 12
 }
 
 public record ValidationStatusSnapshot
@@ -162,6 +164,7 @@ public static class ValidationStatusMapper
             ValidationLifecycleState.Requested => ValidationProgressStage.Requested,
             ValidationLifecycleState.Validating => ValidationProgressStage.Started,
             ValidationLifecycleState.Provisional => ValidationProgressStage.Provisional,
+            ValidationLifecycleState.RetryScheduled => ValidationProgressStage.RetryScheduled,
             ValidationLifecycleState.RetryWaiting => ValidationProgressStage.RetryWaiting,
             ValidationLifecycleState.Revalidating => ValidationProgressStage.Revalidating,
             ValidationLifecycleState.Final => ValidationProgressStage.Final,
@@ -175,6 +178,7 @@ public static class ValidationStatusMapper
         ValidationLifecycleState.Requested => "Validation requested.",
         ValidationLifecycleState.Validating => "Validation started.",
         ValidationLifecycleState.Provisional when !retryScheduled => "Validation is provisional.",
+        ValidationLifecycleState.RetryScheduled => "Automatic revalidation is being scheduled.",
         ValidationLifecycleState.RetryWaiting => "Validation is waiting for automatic revalidation.",
         ValidationLifecycleState.Revalidating => "Automatic revalidation started.",
         ValidationLifecycleState.Final => "Validation completed.",

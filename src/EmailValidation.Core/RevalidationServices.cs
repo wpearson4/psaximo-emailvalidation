@@ -134,6 +134,7 @@ public sealed class RevalidationOutboxDispatcher(
         if (pending is null) return null;
         try
         {
+            await ReportRetrySchedulingAsync(validationId, cancellationToken).ConfigureAwait(false);
             var result = await scheduler.ScheduleAsync(
                 new(pending.Message, pending.ScheduledAt), cancellationToken).ConfigureAwait(false);
             if (!result.Succeeded)
@@ -195,6 +196,38 @@ public sealed class RevalidationOutboxDispatcher(
 
     private static MailProvider ParseProvider(string? value) =>
         Enum.TryParse<MailProvider>(value, true, out var provider) ? provider : MailProvider.Unknown;
+
+    private async Task ReportRetrySchedulingAsync(string validationId, CancellationToken cancellationToken)
+    {
+        if (lifecycleStore is null) return;
+        var current = await lifecycleStore.GetAsync(validationId, cancellationToken).ConfigureAwait(false);
+        if (current is null || current.ResultState == ValidationResultState.Final || current.PendingRevalidation is null)
+            return;
+        var now = (timeProvider ?? TimeProvider.System).GetUtcNow();
+        var scheduling = current with
+        {
+            LifecycleState = ValidationLifecycleState.RetryScheduled,
+            CurrentStage = ValidationProgressStage.RetryScheduled,
+            LastUpdatedAt = now,
+            StatusMessage = "Automatic revalidation is being scheduled.",
+            Sequence = current.Sequence + 1,
+            Version = current.Version + 1
+        };
+        var saved = await lifecycleStore.TrySaveAsync(scheduling, current.Version, cancellationToken)
+            .ConfigureAwait(false);
+        if (!saved.Applied || statusPublisher is null) return;
+        try
+        {
+            await statusPublisher.PublishAsync(
+                ValidationStatusMapper.ToEvent(saved.Lifecycle!, now), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Lifecycle {ValidationId} was persisted but its retry-scheduled status could not be published",
+                validationId);
+        }
+    }
 
     private async Task ReportSchedulingFailureAsync(string validationId)
     {

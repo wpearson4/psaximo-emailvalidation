@@ -18,7 +18,8 @@ public enum SmtpResponseCategory
     ProtocolFailure,
     Unknown,
     MailboxFull,
-    LocalCooldown
+    LocalCooldown,
+    SmtpUtf8Unsupported
 }
 
 public enum SmtpResponseTextClassification
@@ -94,7 +95,9 @@ public sealed record SmtpSessionEvidence(
     string? ServerBanner = null,
     string? EhloHost = null,
     bool TlsAdvertised = false,
-    bool TlsUsed = false)
+    bool TlsUsed = false,
+    bool SmtpUtf8Advertised = false,
+    bool SmtpUtf8Required = false)
 {
     public SmtpStageResult? MailFrom => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.MailFrom);
     public SmtpStageResult? RcptTo => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.RcptTo);

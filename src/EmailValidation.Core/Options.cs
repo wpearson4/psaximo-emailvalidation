@@ -18,6 +18,24 @@ public sealed class EmailValidationOptions
     public ResultReuseOptions ResultReuse { get; set; } = new();
     public ValidationPolicyOptions Policy { get; set; } = new();
     public RevalidationOptions Revalidation { get; set; } = new();
+    public ValidationJobsOptions Jobs { get; set; } = new();
+}
+
+public sealed class ValidationJobsOptions
+{
+    public bool Enabled { get; set; }
+    public string QueueName { get; set; } = "email-validation-jobs";
+    public string ServiceBusConnectionString { get; set; } = string.Empty;
+    public bool ProvisionQueue { get; set; }
+    public int MaximumItemsPerJob { get; set; } = 100_000;
+    public int ChunkSize { get; set; } = 100;
+    public int MaximumConcurrency { get; set; } = 8;
+    public int MaximumResultPageSize { get; set; } = 1_000;
+    public int MaxConcurrentCalls { get; set; } = 2;
+    public int MaxAutoLockRenewalMinutes { get; set; } = 30;
+    public string JobCollection { get; set; } = "EmailValidationJobs";
+    public string ItemCollection { get; set; } = "EmailValidationJobItems";
+    public bool EnableSmtpByDefault { get; set; } = true;
 }
 
 public sealed class DomainIntelligenceOptions

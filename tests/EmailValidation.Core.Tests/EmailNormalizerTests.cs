@@ -26,6 +26,30 @@ public sealed class EmailNormalizerTests
     }
 
     [Theory]
+    [InlineData("user@example.com", false, "user@example.com")]
+    [InlineData("user@例子.公司", false, "user@xn--fsqu00a.xn--55qx5d")]
+    [InlineData("用户@example.com", true, "用户@example.com")]
+    [InlineData("用户@例子.公司", true, "用户@xn--fsqu00a.xn--55qx5d")]
+    public void Normalize_SeparatesIdnDomainFromSmtpUtf8LocalPart(
+        string input, bool requiresSmtpUtf8, string expected)
+    {
+        var result = _normalizer.Normalize(input);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(expected, result.NormalizedEmail);
+        Assert.Equal(requiresSmtpUtf8, result.RequiresSmtpUtf8);
+    }
+
+    [Fact]
+    public void Normalize_RejectsInvalidUnicodeDomain()
+    {
+        var result = _normalizer.Normalize("user@\uD800.example");
+
+        Assert.False(result.IsValid);
+        Assert.Equal(ReasonCode.InvalidDomain, result.FailureReason);
+    }
+
+    [Theory]
     [InlineData("", ReasonCode.EmptyInput)]
     [InlineData("user", ReasonCode.MissingDomain)]
     [InlineData("@example.com", ReasonCode.MissingLocalPart)]

@@ -43,6 +43,8 @@ public static class EvidenceConfidenceExplainer
                 : "Live SMTP verification was not attempted because a local MX-scoped cooldown is active; retry is recommended.",
             SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown =>
                 "High confidence that validation is inconclusive because the provider blocked mailbox verification.",
+            SmtpResponseCategory.SmtpUtf8Unsupported =>
+                "High confidence that validation is inconclusive because the destination does not advertise SMTPUTF8 required by this address.",
             SmtpResponseCategory.Greylisted =>
                 "High confidence that validation is inconclusive because the provider temporarily greylisted the probe.",
             SmtpResponseCategory.RateLimited =>

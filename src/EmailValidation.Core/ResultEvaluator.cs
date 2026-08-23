@@ -99,6 +99,7 @@ public sealed class ResultEvaluator : IResultEvaluator
             SmtpResponseCategory.Greylisted => DetailedStatus.Greylisted,
             SmtpResponseCategory.RateLimited => DetailedStatus.RateLimited,
             SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.MailboxUnknown => DetailedStatus.VerificationBlocked,
+            SmtpResponseCategory.SmtpUtf8Unsupported => DetailedStatus.SmtpUtf8Unsupported,
             SmtpResponseCategory.LocalCooldown => DetailedStatus.LocalCooldown,
             SmtpResponseCategory.TemporaryFailure => DetailedStatus.TemporaryFailure,
             SmtpResponseCategory.Timeout => DetailedStatus.Timeout,

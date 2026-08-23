@@ -42,7 +42,8 @@ public enum DetailedStatus
     LocalCooldown,
     CatchAllConfirmed,
     CatchAllGatewayAmbiguous,
-    CatchAllHistorical
+    CatchAllHistorical,
+    SmtpUtf8Unsupported
 }
 
 public enum EvidenceSource

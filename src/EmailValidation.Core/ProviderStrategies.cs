@@ -55,6 +55,7 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
                 SmtpResponseCategory.Greylisted => "The provider temporarily greylisted verification.",
                 SmtpResponseCategory.RateLimited => "The provider rate-limited verification.",
                 SmtpResponseCategory.VerificationBlocked => "The provider blocked recipient verification.",
+                SmtpResponseCategory.SmtpUtf8Unsupported => "The destination does not advertise SMTPUTF8 required by the recipient.",
                 SmtpResponseCategory.LocalCooldown => "The SMTP probe was deferred because a local MX-scoped cooldown is active.",
                 SmtpResponseCategory.Timeout => "The SMTP operation timed out.",
                 _ => "The provider did not return conclusive mailbox evidence."
@@ -144,6 +145,9 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
             case SmtpResponseCategory.VerificationBlocked:
             case SmtpResponseCategory.MailboxUnknown:
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
+                break;
+            case SmtpResponseCategory.SmtpUtf8Unsupported:
+                reasons.Add(ReasonCode.SmtpUtf8Unsupported);
                 break;
             case SmtpResponseCategory.LocalCooldown:
                 reasons.Add(ReasonCode.LocalCooldown);
@@ -260,6 +264,9 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
             case SmtpResponseCategory.VerificationBlocked:
             case SmtpResponseCategory.MailboxUnknown:
                 reasons.Add(ReasonCode.ProviderVerificationBlocked);
+                break;
+            case SmtpResponseCategory.SmtpUtf8Unsupported:
+                reasons.Add(ReasonCode.SmtpUtf8Unsupported);
                 break;
             case SmtpResponseCategory.LocalCooldown:
                 reasons.Add(ReasonCode.LocalCooldown);

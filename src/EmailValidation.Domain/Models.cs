@@ -29,7 +29,7 @@ public enum ReasonCode
     SuggestedDomainCorrection, TemporaryFailure, Timeout, Alias, AlternateAddress,
     SenderIdentityRejected, SenderDomainRejected, PolicyBlock, AuthenticationRequired,
     RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
-    LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous
+    LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -418,6 +418,8 @@ public sealed record EmailValidationResult
     public DateTimeOffset? FirstValidatedAt { get; init; }
     public DateTimeOffset? LastValidatedAt { get; init; }
     public DateTimeOffset? FinalizedAt { get; init; }
+    public bool RequiresSmtpUtf8 { get; init; }
+    public bool? SmtpUtf8Supported { get; init; }
 }
 
 public sealed record MailboxValidationDetails(
@@ -433,7 +435,9 @@ public sealed record NormalizationResult(
     string? NormalizedEmail,
     string? LocalPart,
     string? Domain,
-    ReasonCode? FailureReason);
+    ReasonCode? FailureReason,
+    bool RequiresSmtpUtf8 = false,
+    string? OriginalDomain = null);
 
 public sealed record ClassificationResult(
     EmailValidationStatus Status,

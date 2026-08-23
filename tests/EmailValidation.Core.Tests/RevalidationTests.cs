@@ -305,6 +305,41 @@ public sealed class RevalidationTests
         Assert.Equal(Now.AddMinutes(20), store.Value!.NextRetryAt);
     }
 
+    [Fact]
+    public async Task OutboxDispatcher_PersistsRetryScheduledBeforeServiceBusAndThenRetryWaiting()
+    {
+        var message = Message("validation-123", 2);
+        var lifecycle = Lifecycle(ValidationResultState.Provisional, 1) with
+        {
+            LifecycleState = ValidationLifecycleState.Provisional,
+            CurrentStage = ValidationProgressStage.Provisional,
+            Sequence = 3,
+            PendingRevalidation = new PendingRevalidation(message, Now, message.ScheduledRetryAt)
+        };
+        var store = new MemoryLifecycleStore(lifecycle);
+        var outbox = new LifecycleOutbox(store);
+        var publisher = new RecordingPublisher(store);
+        using var metrics = new RevalidationMetrics();
+        var dispatcher = new RevalidationOutboxDispatcher(
+            outbox,
+            new StateObservingScheduler(store),
+            metrics,
+            Options(true),
+            NullLogger<RevalidationOutboxDispatcher>.Instance,
+            store,
+            publisher,
+            new FixedTimeProvider(Now));
+
+        var result = await dispatcher.DispatchAsync(lifecycle.ValidationId);
+
+        Assert.True(result!.Succeeded);
+        Assert.Equal(ValidationLifecycleState.RetryWaiting, store.Value!.LifecycleState);
+        Assert.Equal(
+            [ValidationLifecycleState.RetryScheduled, ValidationLifecycleState.RetryWaiting],
+            publisher.Events.Select(value => value.LifecycleState));
+        Assert.Equal([4L, 5L], publisher.Events.Select(value => value.Sequence));
+    }
+
     private static ValidationLifecycleCoordinator Coordinator(
         IValidationLifecycleStore store,
         IRevalidationOutboxDispatcher dispatcher,
@@ -393,6 +428,42 @@ public sealed class RevalidationTests
             Task.FromResult<RevalidationScheduleResult?>(new(succeeds, $"{validationId}:2", Now.AddMinutes(5)));
         public Task<int> DispatchPendingAsync(int maximumCount, CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    private sealed class StateObservingScheduler(MemoryLifecycleStore store) : IRevalidationScheduler
+    {
+        public Task<RevalidationScheduleResult> ScheduleAsync(
+            RevalidationRequest request, CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(ValidationLifecycleState.RetryScheduled, store.Value!.LifecycleState);
+            return Task.FromResult(new RevalidationScheduleResult(
+                true, request.Message.MessageId, request.ScheduledAt, 42));
+        }
+    }
+
+    private sealed class LifecycleOutbox(MemoryLifecycleStore store) : IRevalidationOutbox
+    {
+        public Task<PendingRevalidation?> TryClaimAsync(string validationId, TimeSpan lease,
+            CancellationToken cancellationToken = default) => Task.FromResult(store.Value?.PendingRevalidation);
+        public Task<IReadOnlyList<string>> GetPendingValidationIdsAsync(int maximumCount,
+            CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>([]);
+        public async Task<bool> MarkScheduledAsync(string validationId, string messageId,
+            RevalidationScheduleResult result, CancellationToken cancellationToken = default)
+        {
+            var current = store.Value!;
+            var waiting = current with
+            {
+                RetryScheduled = true,
+                PendingRevalidation = null,
+                LifecycleState = ValidationLifecycleState.RetryWaiting,
+                CurrentStage = ValidationProgressStage.RetryWaiting,
+                Sequence = current.Sequence + 1,
+                Version = current.Version + 1
+            };
+            return (await store.TrySaveAsync(waiting, current.Version, cancellationToken)).Applied;
+        }
+        public Task ReleaseAsync(string validationId, string messageId, string? errorCode,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class MemoryLifecycleStore : IValidationLifecycleStore

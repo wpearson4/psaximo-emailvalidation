@@ -40,4 +40,21 @@ public sealed class ValidationStatusGrpcMapperTests
         Assert.Equal("Microsoft365", response.Provider);
         Assert.Equal(2, response.MaximumAttempts);
     }
+
+    [Fact]
+    public void MapsRetryScheduledAsDistinctCanonicalState()
+    {
+        var response = ValidationStatusGrpcMapper.Map(new ValidationStatusChanged
+        {
+            ValidationId = "validation-scheduling",
+            LifecycleState = ValidationLifecycleState.RetryScheduled,
+            CurrentStage = ValidationProgressStage.RetryScheduled,
+            ResultState = ValidationResultState.Provisional,
+            Sequence = 4,
+            OccurredAt = Now
+        });
+
+        Assert.Equal(Status.V1.ValidationLifecycleState.RetryScheduled, response.LifecycleState);
+        Assert.Equal(Status.V1.ValidationProgressStage.RetryScheduled, response.CurrentStage);
+    }
 }

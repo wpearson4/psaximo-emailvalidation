@@ -10,6 +10,7 @@ A standalone .NET 10 console prototype whose validation engine is isolated from 
 - `src/EmailValidation.Infrastructure` — MX/DNS, SMTP, catch-all probing, throttling, caching, provider detection, and domain intelligence.
 - `src/EmailValidation.Console` — command parsing, configuration, batch ingestion, output, diagnostics, and logging bootstrap.
 - `src/EmailValidation.Worker` — Azure Service Bus receive adapter and durable revalidation outbox publisher.
+- `src/EmailValidation.Api` — versioned REST validation, canonical status, and asynchronous job adapter.
 - `src/EmailValidation.Grpc` — versioned current-status and server-streaming lifecycle adapter.
 - `tests/EmailValidation.Core.Tests` — offline unit tests using fakes.
 - `tests/EmailValidation.Grpc.Tests` — protobuf contract mapping tests.
@@ -49,7 +50,26 @@ dotnet run --project src/EmailValidation.Console -- file emails.csv --column BUS
 dotnet run --project src/EmailValidation.Console -- interactive
 dotnet run --project src/EmailValidation.Console -- diagnostics smtp
 dotnet run --project src/EmailValidation.Grpc
+dotnet run --project src/EmailValidation.Api
 ```
+
+## REST and asynchronous jobs
+
+The API exposes `POST /v1/email/validate`, `GET /v1/email-validations/{validationId}`,
+`POST /v1/email-validation/jobs`, `GET /v1/email-validation/jobs/{jobId}`, and
+`GET /v1/email-validation/jobs/{jobId}/results`. Endpoints are transport adapters over the same canonical
+validator used by CSV and workers. A provisional validation returns immediately; its durable retry continues
+independently.
+
+When `EmailValidation:Jobs:Enabled` is true, Mongo stores job headers and ordered item results in
+`EmailValidationJobs` and `EmailValidationJobItems`. Service Bus queue `email-validation-jobs` receives only a
+job identifier. `ChunkSize` and `MaximumConcurrency` bound execution; original positions are retained for ordered
+result retrieval. The connection string is resolved through the existing App Configuration/Key Vault path.
+
+Unicode domains are normalized with the platform IDNA implementation. Unicode local parts remain valid and are
+marked `RequiresSmtpUtf8`. SMTP probes parse EHLO capabilities and do not send an internationalized recipient when
+the destination does not advertise `SMTPUTF8`; the result records explicit inconclusive evidence instead of
+classifying the mailbox or domain as invalid.
 
 DNS/MX lookup is part of normal validation. SMTP mailbox and catch-all probing require the explicit `--live` switch:
 
