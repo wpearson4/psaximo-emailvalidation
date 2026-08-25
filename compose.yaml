@@ -2,7 +2,7 @@ name: emailvalidation
 
 services:
   emailvalidation-api:
-    image: ${CONTAINER_REGISTRY:-acrpometadsiscussrch.azurecr.io}/emailvalidation-api:${IMAGE_TAG:-latest}
+    image: ${CONTAINER_REGISTRY:-acrpometadsiscussrch.azurecr.io}/emailvalidation-api:${RELEASE_TAG:?set RELEASE_TAG}
     pull_policy: ${IMAGE_PULL_POLICY:-always}
     build:
       context: .
@@ -62,7 +62,7 @@ services:
     stop_grace_period: 45s
 
   emailvalidation-worker:
-    image: ${CONTAINER_REGISTRY:-acrpometadsiscussrch.azurecr.io}/emailvalidation-worker:${WORKER_IMAGE_TAG:-latest}
+    image: ${CONTAINER_REGISTRY:-acrpometadsiscussrch.azurecr.io}/emailvalidation-worker:${RELEASE_TAG:?set RELEASE_TAG}
     pull_policy: ${IMAGE_PULL_POLICY:-always}
     build:
       context: .

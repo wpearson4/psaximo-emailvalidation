@@ -123,7 +123,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (string.IsNullOrWhiteSpace(jobs.ServiceBusConnectionString) || string.IsNullOrWhiteSpace(jobs.QueueName))
                 failures.Add("EmailValidation job Service Bus connection string and queue name are required.");
             if (jobs.MaximumItemsPerJob < 1 || jobs.ChunkSize < 1 || jobs.MaximumConcurrency < 1 ||
-                jobs.MaximumResultPageSize < 1 || jobs.MaxConcurrentCalls < 1 || jobs.MaxAutoLockRenewalMinutes < 1)
+                jobs.MaximumResultPageSize < 1 || jobs.MaxConcurrentCalls < 1 || jobs.MaxAutoLockRenewalMinutes < 1 ||
+                jobs.MaxDeliveryCount < 1)
                 failures.Add("EmailValidation job limits and concurrency settings must be positive.");
             if (string.IsNullOrWhiteSpace(jobs.JobCollection) || string.IsNullOrWhiteSpace(jobs.ItemCollection) ||
                 string.Equals(jobs.JobCollection, jobs.ItemCollection, StringComparison.OrdinalIgnoreCase))

@@ -162,12 +162,22 @@ public static class ApiEndpoints
             !ValidOptionalMetadata(input.EmailColumn, 256))
             return ValidationError("source", "Source file metadata contains unsupported characters or is too long.");
         var consumer = consumers.GetRequiredConsumer();
+        var sourceFileId = input.SourceFileId?.Trim();
+        ValidationJobSnapshot? sourceJob = null;
+        if (!string.IsNullOrWhiteSpace(sourceFileId))
+        {
+            sourceJob = await jobs.GetBySourceFileIdAsync(sourceFileId, cancellationToken).ConfigureAwait(false);
+            if (sourceJob?.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
+                return Problem(StatusCodes.Status409Conflict, "File already validated",
+                    "This source file already has a completed validation job.");
+        }
         var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
         if (!string.IsNullOrEmpty(key) && (key.Length > limits.MaximumIdempotencyKeyLength ||
                 key.Any(character => char.IsControl(character))))
             return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
 
-        var hash = IdempotencyRequestHasher.HashJobRequest(input.Emails, input.EnableSmtp);
+        var hash = IdempotencyRequestHasher.HashJobRequest(
+            input.Emails, input.EnableSmtp, sourceFileId, input.EmailColumn);
         if (!string.IsNullOrEmpty(key))
         {
             var existing = await resources.GetIdempotentOperationAsync(
@@ -178,14 +188,27 @@ public static class ApiEndpoints
                     return Problem(StatusCodes.Status409Conflict, "Idempotency conflict",
                         "The Idempotency-Key was already used with a different request.");
                 var existingJob = await jobs.GetAsync(existing.ResourceId, cancellationToken).ConfigureAwait(false);
-                return existingJob is null
-                    ? Problem(StatusCodes.Status409Conflict, "Job creation in progress",
-                        "The idempotent operation is still being created. Retry shortly.")
-                    : Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}", ApiContractMapper.Map(existingJob));
+                if (existingJob is null)
+                    return Problem(StatusCodes.Status409Conflict, "Job creation in progress",
+                        "The idempotent operation is still being created. Retry shortly.");
+                if (existingJob.State == ValidationJobState.Failed && !string.IsNullOrWhiteSpace(sourceFileId))
+                {
+                    existingJob = await jobs.CreateAsync(new CreateValidationJobRequest(
+                        input.Emails,
+                        input.EnableSmtp,
+                        existingJob.JobId,
+                        sourceFileId,
+                        input.SourceFileName?.Trim(),
+                        input.EmailColumn?.Trim()), CancellationToken.None).ConfigureAwait(false);
+                }
+                return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
+                    ApiContractMapper.Map(existingJob));
             }
         }
 
-        var jobId = Guid.NewGuid().ToString("N");
+        var jobId = string.IsNullOrWhiteSpace(sourceFileId)
+            ? Guid.NewGuid().ToString("N")
+            : sourceJob?.JobId ?? ValidationJobIdentity.FromSourceFileId(sourceFileId);
         if (!string.IsNullOrEmpty(key))
         {
             var saved = await resources.TrySaveIdempotentOperationAsync(new IdempotentOperation(
@@ -203,7 +226,7 @@ public static class ApiEndpoints
                     input.Emails,
                     input.EnableSmtp,
                     jobId,
-                    input.SourceFileId?.Trim(),
+                    sourceFileId,
                     input.SourceFileName?.Trim(),
                     input.EmailColumn?.Trim()),
                 CancellationToken.None)
@@ -220,6 +243,14 @@ public static class ApiEndpoints
         catch (ArgumentException exception)
         {
             return ValidationError("emails", exception.Message);
+        }
+        catch (ValidationJobSourceFileCompletedException exception)
+        {
+            return Problem(StatusCodes.Status409Conflict, "File already validated", exception.Message);
+        }
+        catch (ValidationJobSourceFileActiveException exception)
+        {
+            return Problem(StatusCodes.Status409Conflict, "File validation already in progress", exception.Message);
         }
     }
 

@@ -110,6 +110,7 @@ public sealed class ServiceBusRevalidationWorker(
 public sealed class ServiceBusValidationJobWorker(
     IOptions<EmailValidationOptions> options,
     IValidationJobProcessor processor,
+    IValidationJobStore store,
     ILogger<ServiceBusValidationJobWorker> logger) : BackgroundService
 {
     private readonly ValidationJobsOptions _options = options.Value.Jobs;
@@ -147,7 +148,27 @@ public sealed class ServiceBusValidationJobWorker(
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 logger.LogError(exception, "Validation job {JobId} processing failed", jobId);
-                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken).ConfigureAwait(false);
+                if (args.Message.DeliveryCount >= _options.MaxDeliveryCount)
+                {
+                    const string failureReason = "Validation could not be completed after repeated worker failures.";
+                    try
+                    {
+                        await store.TrySetFailedAsync(jobId, failureReason, args.CancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception persistenceException) when (persistenceException is not OperationCanceledException)
+                    {
+                        logger.LogError(persistenceException,
+                            "Validation job {JobId} terminal failure status could not be persisted", jobId);
+                    }
+                    await args.DeadLetterMessageAsync(args.Message, "processing_failed", failureReason,
+                        args.CancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
         };
         receiver.ProcessErrorAsync += args =>

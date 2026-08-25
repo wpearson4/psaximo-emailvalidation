@@ -120,6 +120,24 @@ public sealed class EmailValidationOptionsValidatorTests
     }
 
     [Fact]
+    public void JobConfiguration_RejectsInvalidDeliveryCount()
+    {
+        var options = ValidOptions();
+        options.Jobs = new ValidationJobsOptions
+        {
+            Enabled = true,
+            ServiceBusConnectionString = "Endpoint=sb://example.invalid/;SharedAccessKeyName=test;SharedAccessKey=test",
+            QueueName = "email-validation-jobs",
+            MaxDeliveryCount = 0
+        };
+
+        var result = new EmailValidationOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, failure => failure.Contains("job limits", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void AzureBootstrap_UsesConfiguredEndpointAndEnvironmentLabel()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>

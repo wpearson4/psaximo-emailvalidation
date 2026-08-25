@@ -33,6 +33,7 @@ public sealed class ValidationJobsOptions
     public int MaximumResultPageSize { get; set; } = 1_000;
     public int MaxConcurrentCalls { get; set; } = 2;
     public int MaxAutoLockRenewalMinutes { get; set; } = 30;
+    public int MaxDeliveryCount { get; set; } = 10;
     public string JobCollection { get; set; } = "EmailValidationJobs";
     public string ItemCollection { get; set; } = "EmailValidationJobItems";
     public bool EnableSmtpByDefault { get; set; } = true;

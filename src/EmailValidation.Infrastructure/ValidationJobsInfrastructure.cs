@@ -31,6 +31,12 @@ public sealed class MongoValidationJobStore : IValidationJobStore
         await _jobs.Indexes.CreateOneAsync(new CreateIndexModel<JobDocument>(
             Builders<JobDocument>.IndexKeys.Descending(value => value.CreatedAtUtc),
             new CreateIndexOptions { Name = "ix_job_created" }), cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _jobs.Indexes.CreateOneAsync(new CreateIndexModel<JobDocument>(
+            Builders<JobDocument>.IndexKeys.Ascending(value => value.SourceFileId)
+                .Ascending(value => value.State)
+                .Descending(value => value.CreatedAtUtc),
+            new CreateIndexOptions { Name = "ix_job_source_file_state_created", Sparse = true }),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         await _items.Indexes.CreateOneAsync(new CreateIndexModel<ItemDocument>(
             Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.Position),
             new CreateIndexOptions { Name = "ux_job_item_position", Unique = true }),
@@ -59,6 +65,25 @@ public sealed class MongoValidationJobStore : IValidationJobStore
     public async Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
         (await _jobs.Find(value => value.Id == jobId).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false))?.ToModel();
 
+    public async Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        CancellationToken cancellationToken = default)
+    {
+        var successfulStates = new[]
+        {
+            ValidationJobState.Completed,
+            ValidationJobState.CompletedWithErrors
+        };
+        var successful = await _jobs.Find(value =>
+                value.SourceFileId == sourceFileId && successfulStates.Contains(value.State))
+            .SortByDescending(value => value.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var latest = successful ?? await _jobs.Find(value => value.SourceFileId == sourceFileId)
+            .SortByDescending(value => value.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        return latest?.ToModel();
+    }
+
     public async Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
         (await _items.Find(value => value.JobId == jobId).SortBy(value => value.Position).Skip(skip).Limit(take)
             .ToListAsync(cancellationToken).ConfigureAwait(false)).Select(value => value.ToModel()).ToArray();
@@ -74,6 +99,26 @@ public sealed class MongoValidationJobStore : IValidationJobStore
                 .Set(value => value.FailureReason, failureReason)
                 .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
             cancellationToken: cancellationToken);
+
+    public async Task<bool> TrySetFailedAsync(
+        string jobId,
+        string failureReason,
+        CancellationToken cancellationToken = default)
+    {
+        var activeStates = new[]
+        {
+            ValidationJobState.Requested,
+            ValidationJobState.Queued,
+            ValidationJobState.Processing
+        };
+        var updated = await _jobs.UpdateOneAsync(
+            value => value.Id == jobId && activeStates.Contains(value.State),
+            Builders<JobDocument>.Update.Set(value => value.State, ValidationJobState.Failed)
+                .Set(value => value.FailureReason, failureReason)
+                .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return updated.ModifiedCount > 0;
+    }
 
     public async Task SaveResultAsync(string jobId, int position, EmailValidationResult? result, string? failureReason, CancellationToken cancellationToken = default)
     {
@@ -95,6 +140,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore
             .ConfigureAwait(false);
     }
 
+    [BsonIgnoreExtraElements]
     internal sealed class JobDocument
     {
         [BsonId] public string Id { get; set; } = string.Empty;
@@ -126,6 +172,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore
             SourceFileId, SourceFileName, EmailColumn);
     }
 
+    [BsonIgnoreExtraElements]
     internal sealed class ItemDocument
     {
         [BsonId] public string Id { get; set; } = string.Empty;
@@ -160,6 +207,14 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
     }
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_jobs.GetValueOrDefault(jobId));
+    public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(_jobs.Values
+            .Where(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal))
+            .OrderByDescending(job => job.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
+            .ThenByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefault());
     public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<ValidationJobItem>>(_items.GetValueOrDefault(jobId)?.Values.OrderBy(value => value.Position).Skip(skip).Take(take).ToArray() ?? []);
     public Task<IReadOnlyList<ValidationJobItem>> GetPendingAsync(string jobId, int take, CancellationToken cancellationToken = default) =>
@@ -168,6 +223,25 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
     {
         if (_jobs.TryGetValue(jobId, out var job)) _jobs[jobId] = job with { State = state, UpdatedAtUtc = timeProvider.GetUtcNow(), FailureReason = failureReason };
         return Task.CompletedTask;
+    }
+    public Task<bool> TrySetFailedAsync(
+        string jobId,
+        string failureReason,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_sync)
+        {
+            if (!_jobs.TryGetValue(jobId, out var job) || job.State is
+                ValidationJobState.Completed or ValidationJobState.CompletedWithErrors or ValidationJobState.Failed)
+                return Task.FromResult(false);
+            _jobs[jobId] = job with
+            {
+                State = ValidationJobState.Failed,
+                FailureReason = failureReason,
+                UpdatedAtUtc = timeProvider.GetUtcNow()
+            };
+            return Task.FromResult(true);
+        }
     }
     public Task SaveResultAsync(string jobId, int position, EmailValidationResult? result, string? failureReason, CancellationToken cancellationToken = default)
     {
@@ -201,7 +275,7 @@ public sealed class AzureServiceBusValidationJobDispatcher(IOptions<EmailValidat
         _sender ??= _client.CreateSender(_options.QueueName);
         await _sender.SendMessageAsync(new ServiceBusMessage(BinaryData.FromString(jobId))
         {
-            MessageId = jobId,
+            MessageId = Guid.NewGuid().ToString("N"),
             CorrelationId = jobId,
             Subject = "email-validation-job",
             ContentType = "text/plain"
@@ -237,7 +311,7 @@ public sealed class ValidationJobInfrastructureInitializer(
         {
             await administration.CreateQueueAsync(new CreateQueueOptions(_options.Jobs.QueueName)
             {
-                MaxDeliveryCount = 10,
+                MaxDeliveryCount = _options.Jobs.MaxDeliveryCount,
                 RequiresDuplicateDetection = true,
                 DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
             }, cancellationToken).ConfigureAwait(false);

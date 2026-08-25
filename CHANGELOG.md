@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Prevented API/worker release skew with one immutable Compose release tag, made Mongo job documents tolerant of
+  additive fields, persisted terminal status before dead-lettering exhausted jobs, and added durable source-file
+  deduplication so completed files cannot be validated again while failed jobs can resume safely.
 - Completed the P0 commercialization gap review and documented repository evidence for persistent intelligence,
   result reuse, single-flight, durable retries, REST, async jobs, international addresses, CSV, and canonical status.
 - Added `EmailValidation.Api` with versioned validation/status endpoints and durable asynchronous-job endpoints that

@@ -165,6 +165,24 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public async Task CompletedSourceFile_CannotBeValidatedAgain()
+    {
+        var sourceFileId = $"completed-source-{Guid.NewGuid():N}";
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead]);
+        var request = new { emails = OneEmail, sourceFileId, sourceFileName = "completed.csv" };
+        var first = await client.PostAsJsonAsync("/v1/email-validation-jobs", request);
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        _factory.JobService.CompleteSourceFile(sourceFileId);
+
+        var duplicate = await client.PostAsJsonAsync("/v1/email-validation-jobs", request);
+
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        using var problem = JsonDocument.Parse(await duplicate.Content.ReadAsStringAsync());
+        Assert.Equal("File already validated", problem.RootElement.GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task ReadScope_CannotCreateJob()
     {
         using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsRead]);
@@ -254,6 +272,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
     public ApiValidator Validator { get; } = new();
     public InMemoryCommercialResourceStore Resources { get; } = new();
     private readonly ApiJobService _jobs = new();
+    public ApiJobService JobService => _jobs;
 
     public EmailValidationApiFactory()
     {
@@ -432,6 +451,27 @@ public sealed class ApiJobService : IValidationJobService
 
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
         Task.FromResult<ValidationJobSnapshot?>(_jobs.TryGetValue(jobId, out var value) ? value.Job : null);
+
+    public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<ValidationJobSnapshot?>(_jobs.Values
+            .Select(value => value.Job)
+            .OrderByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefault(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal)));
+
+    public void CompleteSourceFile(string sourceFileId)
+    {
+        var pair = _jobs.First(entry => string.Equals(
+            entry.Value.Job.SourceFileId, sourceFileId, StringComparison.Ordinal));
+        _jobs[pair.Key] = (pair.Value.Job with
+        {
+            State = ValidationJobState.Completed,
+            ProcessedItems = pair.Value.Job.TotalItems,
+            FinalItems = pair.Value.Job.TotalItems,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        }, pair.Value.Items);
+    }
 
     public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(
         string jobId, int skip, int take, CancellationToken cancellationToken = default) =>

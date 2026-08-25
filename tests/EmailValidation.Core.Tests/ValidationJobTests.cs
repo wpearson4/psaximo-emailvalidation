@@ -66,6 +66,70 @@ public sealed class ValidationJobTests
         Assert.Equal(ValidationJobItemState.Failed, results[1].State);
     }
 
+    [Fact]
+    public async Task Create_RejectsSourceFileThatAlreadyCompleted()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var request = new CreateValidationJobRequest(
+            ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
+        var job = await service.CreateAsync(request);
+        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(),
+            NullLogger<ValidationJobProcessor>.Instance);
+        await processor.ProcessAsync(job.JobId);
+
+        await Assert.ThrowsAsync<ValidationJobSourceFileCompletedException>(() => service.CreateAsync(request));
+    }
+
+    [Fact]
+    public async Task Create_RequeuesFailedSourceFileWithoutDuplicatingIt()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var dispatcher = new RecordingDispatcher();
+        var service = new ValidationJobService(store, dispatcher, Options(), TimeProvider.System);
+        var request = new CreateValidationJobRequest(
+            ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
+        var job = await service.CreateAsync(request);
+        await store.TrySetFailedAsync(job.JobId, "worker failure");
+
+        var retried = await service.CreateAsync(request);
+
+        Assert.Equal(job.JobId, retried.JobId);
+        Assert.Equal(ValidationJobState.Queued, retried.State);
+        Assert.Equal(2, dispatcher.EnqueueCount);
+    }
+
+    [Fact]
+    public async Task TerminalFailure_DoesNotOverwriteCompletedJob()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
+        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(),
+            NullLogger<ValidationJobProcessor>.Instance);
+        await processor.ProcessAsync(job.JobId);
+
+        var changed = await store.TrySetFailedAsync(job.JobId, "late broker failure");
+
+        Assert.False(changed);
+        Assert.Equal(ValidationJobState.Completed, (await store.GetAsync(job.JobId))!.State);
+    }
+
+    [Fact]
+    public async Task TerminalFailure_MarksQueuedJobFailed()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
+
+        var changed = await store.TrySetFailedAsync(job.JobId, "repeated worker failures");
+
+        var failed = await store.GetAsync(job.JobId);
+        Assert.True(changed);
+        Assert.Equal(ValidationJobState.Failed, failed!.State);
+        Assert.Equal("repeated worker failures", failed.FailureReason);
+    }
+
     private static IOptions<EmailValidationOptions> Options(int maximumConcurrency = 2) =>
         Microsoft.Extensions.Options.Options.Create(new EmailValidationOptions
         {
@@ -81,9 +145,11 @@ public sealed class ValidationJobTests
     private sealed class RecordingDispatcher : IValidationJobDispatcher
     {
         public string? JobId { get; private set; }
+        public int EnqueueCount { get; private set; }
         public Task EnqueueAsync(string jobId, CancellationToken cancellationToken = default)
         {
             JobId = jobId;
+            EnqueueCount++;
             return Task.CompletedTask;
         }
     }

@@ -39,8 +39,8 @@ through public address `64.182.20.183`. DNS, HTTP-to-HTTPS redirection, the
 public readiness endpoint, and the Let's Encrypt HTTP-01 renewal path were
 verified externally. The initial certificate for `email.digitalwarehouse.io`
 expires November 23, 2026; the Certbot service checks for renewal every 12
-hours. The deployed ACR image is
-`acrpometadsiscussrch.azurecr.io/emailvalidation-api:deploy-20260825-ssl`.
+hours. API and worker images use the same immutable Git revision as their
+release tag.
 
 Durable front-end jobs require both `emailvalidation-api` and
 `emailvalidation-worker`. They share MongoDB job storage and use the
@@ -50,6 +50,14 @@ The queue credential is mounted from
 container environment variable. Production App Configuration enables
 `EmailValidation:Jobs:Enabled` and stores the connection setting as a Key Vault
 reference matched by `AZURE_JOBS_SERVICE_BUS_SECRET_URI`.
+
+Compose requires one `RELEASE_TAG` for both application images, preventing an
+API/worker schema mismatch. Mongo job documents tolerate additive fields from
+newer releases. When repeated processing failures exhaust `MaxDeliveryCount`,
+the worker persists a terminal `Failed` status before explicitly dead-lettering
+the message, so users do not see a job remain queued indefinitely. A durable
+source-file lookup prevents a completed file from being submitted again; failed
+jobs resume under their existing job identifier.
 
 Production endpoints:
 
@@ -124,11 +132,18 @@ The application image defaults to `acrpometadsiscussrch.azurecr.io/emailvalidati
 Build in Azure and store an immutable tag directly in the registry:
 
 ```bash
-IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+RELEASE_TAG="$(git rev-parse HEAD)"
 az acr build \
   --registry acrpometadsiscussrch \
-  --image "emailvalidation-api:${IMAGE_TAG}" \
+  --file Dockerfile \
+  --image "emailvalidation-api:${RELEASE_TAG}" \
   --image emailvalidation-api:latest \
+  .
+az acr build \
+  --registry acrpometadsiscussrch \
+  --file Dockerfile.worker \
+  --image "emailvalidation-worker:${RELEASE_TAG}" \
+  --image emailvalidation-worker:latest \
   .
 ```
 
@@ -136,18 +151,23 @@ Give the production host only pull access. Prefer an ACR scope-map token or serv
 
 ## Let's Encrypt bootstrap and deployment
 
-Create an uncommitted `.env` on the host containing the non-secret settings, selected `IMAGE_TAG`, and paths to the two source secret files. Compose explicitly allows the sole browser origin `https://app.digitalwarehouse.io`; do not replace it with a wildcard. Confirm public ports 80 and 443 reach this host, authenticate Docker to ACR, and pull the application image:
+Create an uncommitted `.env` on the host containing the non-secret settings,
+selected `RELEASE_TAG`, and paths to the source secret files. The release tag
+must identify both the API and worker images. Compose explicitly allows the sole
+browser origin `https://app.digitalwarehouse.io`; do not replace it with a
+wildcard. Confirm public ports 80 and 443 reach this host, authenticate Docker
+to ACR, and pull both application images:
 
 ```bash
 docker compose config --quiet
-docker compose pull emailvalidation-api nginx certbot
+docker compose pull emailvalidation-api emailvalidation-worker nginx certbot
 export LETSENCRYPT_EMAIL=operations@digitalwarehouse.io
 ./deploy/letsencrypt/bootstrap.sh
 docker compose ps
 curl --fail --silent http://127.0.0.1:8080/health/live
 curl --fail --silent http://127.0.0.1:8080/health/ready
 curl --fail --silent https://email.digitalwarehouse.io/health/ready
-docker compose logs --tail=200 emailvalidation-api nginx certbot
+docker compose logs --tail=200 emailvalidation-api emailvalidation-worker nginx certbot
 ```
 
 Replace the example Let's Encrypt contact address with the monitored operational address. For a rate-limit-safe rehearsal, set `LETSENCRYPT_STAGING=true`; remove the staging certificate volume before the first production issuance because staging certificates are not trusted. The bootstrap script briefly reserves host port 80 with Certbot's standalone HTTP-01 server, then starts Nginx and the renewal service.

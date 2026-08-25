@@ -1,13 +1,50 @@
+using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
 
 namespace EmailValidation.Core.Tests;
 
 public sealed class MongoDocumentMappingTests
 {
+    [Fact]
+    public void ValidationJobDocuments_IgnoreFieldsAddedByNewerReleases()
+    {
+        var timestamp = new BsonArray { DateTimeOffset.UtcNow.Ticks, 0 };
+        var job = new BsonDocument
+        {
+            ["_id"] = "job-1",
+            ["CreatedAtUtc"] = timestamp,
+            ["State"] = (int)ValidationJobState.Queued,
+            ["TotalItems"] = 1,
+            ["ProcessedItems"] = 0,
+            ["FinalItems"] = 0,
+            ["ProvisionalItems"] = 0,
+            ["FailedItems"] = 0,
+            ["UpdatedAtUtc"] = timestamp,
+            ["FieldFromFutureRelease"] = "ignored"
+        };
+        var item = new BsonDocument
+        {
+            ["_id"] = "job-1:0",
+            ["JobId"] = "job-1",
+            ["Position"] = 0,
+            ["Email"] = "person@example.test",
+            ["State"] = (int)ValidationJobItemState.Pending,
+            ["FieldFromFutureRelease"] = "ignored"
+        };
+
+        var restoredJob = BsonSerializer.Deserialize<MongoValidationJobStore.JobDocument>(job);
+        var restoredItem = BsonSerializer.Deserialize<MongoValidationJobStore.ItemDocument>(item);
+
+        Assert.Equal("job-1", restoredJob.Id);
+        Assert.Equal("job-1:0", restoredItem.Id);
+    }
+
     [Fact]
     public void DomainDocument_MapsStructuredIntelligenceAndDropsProbePayloads()
     {

@@ -3,6 +3,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace EmailValidation.Application;
 
@@ -11,6 +13,22 @@ public enum ValidationJobItemState { Pending, Processing, Completed, Failed }
 
 public sealed class ValidationJobNotFoundException(string jobId)
     : Exception($"Validation job '{jobId}' does not exist.");
+
+public sealed class ValidationJobSourceFileCompletedException()
+    : Exception("This source file already has a completed validation job.");
+
+public sealed class ValidationJobSourceFileActiveException()
+    : Exception("This source file already has a validation job in progress.");
+
+public static class ValidationJobIdentity
+{
+    public static string FromSourceFileId(string sourceFileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceFileId);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFileId.Trim()));
+        return $"file_{Convert.ToHexStringLower(hash)}";
+    }
+}
 
 public sealed record CreateValidationJobRequest(
     IReadOnlyList<string> Emails,
@@ -48,9 +66,11 @@ public interface IValidationJobStore
 {
     Task CreateAsync(ValidationJobSnapshot job, IReadOnlyList<ValidationJobItem> items, CancellationToken cancellationToken = default);
     Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default);
+    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(string sourceFileId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetPendingAsync(string jobId, int take, CancellationToken cancellationToken = default);
     Task SetStateAsync(string jobId, ValidationJobState state, string? failureReason = null, CancellationToken cancellationToken = default);
+    Task<bool> TrySetFailedAsync(string jobId, string failureReason, CancellationToken cancellationToken = default);
     Task SaveResultAsync(string jobId, int position, EmailValidationResult? result, string? failureReason, CancellationToken cancellationToken = default);
 }
 
@@ -63,6 +83,7 @@ public interface IValidationJobService
 {
     Task<ValidationJobSnapshot> CreateAsync(CreateValidationJobRequest request, CancellationToken cancellationToken = default);
     Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default);
+    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(string sourceFileId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default);
 }
 
@@ -125,21 +146,40 @@ public sealed class ValidationJobService(
             throw new ArgumentException("Job email addresses cannot be empty.", nameof(request));
 
         var now = timeProvider.GetUtcNow();
-        var jobId = string.IsNullOrWhiteSpace(request.JobId)
-            ? Guid.NewGuid().ToString("N")
-            : request.JobId.Trim();
+        var sourceFileId = request.SourceFileId?.Trim();
+        var existing = string.IsNullOrWhiteSpace(sourceFileId)
+            ? null
+            : await store.GetBySourceFileIdAsync(sourceFileId, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+            return await ResolveExistingSourceFileAsync(existing, cancellationToken).ConfigureAwait(false);
+
+        var jobId = !string.IsNullOrWhiteSpace(sourceFileId)
+            ? ValidationJobIdentity.FromSourceFileId(sourceFileId)
+            : string.IsNullOrWhiteSpace(request.JobId)
+                ? Guid.NewGuid().ToString("N")
+                : request.JobId.Trim();
         if (jobId.Length > 128 || jobId.Any(character => character is not
                 (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
             throw new ArgumentException("JobId is invalid.", nameof(request));
         var job = new ValidationJobSnapshot(jobId, now, ValidationJobState.Requested,
             request.Emails.Count, 0, 0, 0, 0, now,
             EnableSmtp: request.EnableSmtp,
-            SourceFileId: request.SourceFileId,
+            SourceFileId: sourceFileId,
             SourceFileName: request.SourceFileName,
             EmailColumn: request.EmailColumn);
         var items = request.Emails.Select((email, position) =>
             new ValidationJobItem(jobId, position, email, ValidationJobItemState.Pending)).ToArray();
-        await store.CreateAsync(job, items, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await store.CreateAsync(job, items, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            var concurrentlyCreated = await store.GetAsync(jobId, CancellationToken.None).ConfigureAwait(false);
+            if (concurrentlyCreated is not null)
+                return await ResolveExistingSourceFileAsync(concurrentlyCreated, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
         metrics?.RecordCreated(items.Length);
         try
         {
@@ -159,9 +199,29 @@ public sealed class ValidationJobService(
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
         store.GetAsync(jobId, cancellationToken);
 
+    public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        CancellationToken cancellationToken = default) =>
+        store.GetBySourceFileIdAsync(sourceFileId.Trim(), cancellationToken);
+
     public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(
         string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
         store.GetResultsAsync(jobId, Math.Max(0, skip), Math.Clamp(take, 1, _options.MaximumResultPageSize), cancellationToken);
+
+    private async Task<ValidationJobSnapshot> ResolveExistingSourceFileAsync(
+        ValidationJobSnapshot existing,
+        CancellationToken cancellationToken)
+    {
+        if (existing.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
+            throw new ValidationJobSourceFileCompletedException();
+        if (existing.State is not ValidationJobState.Failed)
+            throw new ValidationJobSourceFileActiveException();
+
+        await queue.EnqueueAsync(existing.JobId, cancellationToken).ConfigureAwait(false);
+        await store.SetStateAsync(existing.JobId, ValidationJobState.Queued,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return (await store.GetAsync(existing.JobId, cancellationToken).ConfigureAwait(false))!;
+    }
 }
 
 public sealed class ValidationJobProcessor(
