@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using EmailValidation.Application;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -48,8 +49,18 @@ public static class ApiSecurityExtensions
                 .Build())
             .AddScopePolicy(EmailValidationPolicies.Validate, EmailValidationScopes.Validate)
             .AddScopePolicy(EmailValidationPolicies.Read, EmailValidationScopes.Read)
-            .AddScopePolicy(EmailValidationPolicies.JobsWrite, EmailValidationScopes.JobsWrite)
-            .AddScopePolicy(EmailValidationPolicies.JobsRead, EmailValidationScopes.JobsRead)
+            .AddScopePolicy(
+                EmailValidationPolicies.JobsWrite,
+                EmailValidationScopes.JobsWrite,
+                "search:execute",
+                "match:execute",
+                "openmeta.write")
+            .AddScopePolicy(
+                EmailValidationPolicies.JobsRead,
+                EmailValidationScopes.JobsRead,
+                "search:read",
+                "match:read",
+                "openmeta.read")
             .AddScopePolicy(EmailValidationPolicies.Stream, EmailValidationScopes.Stream)
             .AddScopePolicy(EmailValidationPolicies.Admin, EmailValidationScopes.Admin);
 
@@ -61,21 +72,54 @@ public static class ApiSecurityExtensions
     private static AuthorizationBuilder AddScopePolicy(
         this AuthorizationBuilder builder,
         string policy,
-        string requiredScope) =>
+        string requiredScope,
+        params string[] compatiblePermissions) =>
         builder.AddPolicy(policy, options => options
             .RequireAuthenticatedUser()
             .RequireAssertion(context => HasScope(context.User, requiredScope) ||
+                compatiblePermissions.Any(permission => HasScope(context.User, permission)) ||
                 HasScope(context.User, EmailValidationScopes.Admin)));
 
     public static bool HasScope(ClaimsPrincipal principal, string scope) =>
-        principal.FindAll("scope").Concat(principal.FindAll("scp"))
-            .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        GetAuthorizationValues(principal)
             .Contains(scope, StringComparer.Ordinal);
 
     public static IReadOnlySet<string> GetScopes(ClaimsPrincipal principal) =>
-        principal.FindAll("scope").Concat(principal.FindAll("scp"))
-            .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        GetAuthorizationValues(principal)
             .ToHashSet(StringComparer.Ordinal);
+
+    private static IEnumerable<string> GetAuthorizationValues(ClaimsPrincipal principal)
+    {
+        foreach (var claim in principal.FindAll("scope").Concat(principal.FindAll("scp")))
+        {
+            foreach (var value in claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                yield return value;
+        }
+
+        foreach (var claim in principal.FindAll("permissions"))
+        {
+            if (!claim.Value.TrimStart().StartsWith('['))
+            {
+                yield return claim.Value;
+                continue;
+            }
+
+            JsonDocument? document = null;
+            try
+            {
+                document = JsonDocument.Parse(claim.Value);
+                foreach (var item in document.RootElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } value)
+                        yield return value;
+                }
+            }
+            finally
+            {
+                document?.Dispose();
+            }
+        }
+    }
 }
 
 public sealed class HttpCurrentConsumerContext(IHttpContextAccessor accessor) : ICurrentConsumerContext

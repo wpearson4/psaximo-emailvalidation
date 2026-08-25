@@ -156,6 +156,18 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("search:execute")]
+    [InlineData("match:execute")]
+    [InlineData("openmeta.write")]
+    public async Task ExistingOpenMetaWritePermission_CanCreateJob(string permission)
+    {
+        using var client = _factory.CreateAuthenticatedClient([], permissions: [permission]);
+        var response = await client.PostAsJsonAsync("/v1/email-validation-jobs",
+            new { emails = OneEmail });
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
     [Fact]
     public async Task Health_IsAnonymousAndMinimal()
     {
@@ -244,13 +256,18 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
             DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
     }
 
-    public HttpClient CreateAuthenticatedClient(IReadOnlyList<string> scopes, string tenant = "tenant-a")
+    public HttpClient CreateAuthenticatedClient(
+        IReadOnlyList<string> scopes,
+        string tenant = "tenant-a",
+        IReadOnlyList<string>? permissions = null)
     {
         var client = CreateClient();
         client.DefaultRequestHeaders.Add("X-Test-Auth", "valid");
         client.DefaultRequestHeaders.Add("X-Test-Subject", "consumer-a");
         client.DefaultRequestHeaders.Add("X-Test-Tenant", tenant);
         client.DefaultRequestHeaders.Add("X-Test-Scopes", string.Join(' ', scopes));
+        if (permissions is { Count: > 0 })
+            client.DefaultRequestHeaders.Add("X-Test-Permissions", string.Join(',', permissions));
         return client;
     }
 
@@ -298,12 +315,15 @@ public sealed class TestAuthenticationHandler(
         if (string.IsNullOrWhiteSpace(state)) return Task.FromResult(AuthenticateResult.NoResult());
         if (state is "invalid" or "expired")
             return Task.FromResult(AuthenticateResult.Fail("The test access token is invalid."));
-        var claims = new[]
+        var claims = new List<Claim>
         {
             new Claim("sub", Request.Headers["X-Test-Subject"].FirstOrDefault() ?? "consumer-a"),
             new Claim("tenant_id", Request.Headers["X-Test-Tenant"].FirstOrDefault() ?? "tenant-a"),
             new Claim("scope", Request.Headers["X-Test-Scopes"].FirstOrDefault() ?? string.Empty)
         };
+        claims.AddRange(Request.Headers["X-Test-Permissions"].ToString()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(permission => new Claim("permissions", permission)));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
             new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationScheme)), AuthenticationScheme)));
     }
