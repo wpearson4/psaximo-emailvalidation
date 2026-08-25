@@ -74,8 +74,9 @@ public sealed class MongoValidationJobStore : IValidationJobStore
             ValidationJobState.Completed,
             ValidationJobState.CompletedWithErrors
         };
-        var successful = await _jobs.Find(value =>
-                value.SourceFileId == sourceFileId && successfulStates.Contains(value.State))
+        var successfulFilter = Builders<JobDocument>.Filter.Eq(value => value.SourceFileId, sourceFileId)
+            & Builders<JobDocument>.Filter.In(value => value.State, successfulStates);
+        var successful = await _jobs.Find(successfulFilter)
             .SortByDescending(value => value.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         var latest = successful ?? await _jobs.Find(value => value.SourceFileId == sourceFileId)
@@ -111,8 +112,10 @@ public sealed class MongoValidationJobStore : IValidationJobStore
             ValidationJobState.Queued,
             ValidationJobState.Processing
         };
+        var activeFilter = Builders<JobDocument>.Filter.Eq(value => value.Id, jobId)
+            & Builders<JobDocument>.Filter.In(value => value.State, activeStates);
         var updated = await _jobs.UpdateOneAsync(
-            value => value.Id == jobId && activeStates.Contains(value.State),
+            activeFilter,
             Builders<JobDocument>.Update.Set(value => value.State, ValidationJobState.Failed)
                 .Set(value => value.FailureReason, failureReason)
                 .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),

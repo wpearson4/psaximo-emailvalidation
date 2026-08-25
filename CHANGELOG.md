@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed production job creation by using native MongoDB `$in` filters for source-file deduplication and active-job
+  failure transitions, avoiding an unsupported LINQ partial-evaluation path in the MongoDB driver.
 - Prevented API/worker release skew with one immutable Compose release tag, made Mongo job documents tolerant of
   additive fields, persisted terminal status before dead-lettering exhausted jobs, and added durable source-file
   deduplication so completed files cannot be validated again while failed jobs can resume safely.
