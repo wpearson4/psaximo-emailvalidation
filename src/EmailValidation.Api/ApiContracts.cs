@@ -11,7 +11,10 @@ public sealed record ValidateEmailV1Request(
 
 public sealed record CreateValidationJobV1Request(
     IReadOnlyList<string> Emails,
-    bool EnableSmtp = true);
+    bool EnableSmtp = true,
+    string? SourceFileId = null,
+    string? SourceFileName = null,
+    string? EmailColumn = null);
 
 public sealed record ValidationChecksV1(
     bool SyntaxValid,
@@ -70,7 +73,16 @@ public sealed record ValidationJobV1Response(
     int ProvisionalItems,
     int FailedItems,
     DateTimeOffset UpdatedAtUtc,
-    bool EnableSmtp);
+    bool EnableSmtp,
+    string? SourceFileId,
+    string? SourceFileName,
+    string? EmailColumn);
+
+public sealed record ValidationJobPageV1Response(
+    int Skip,
+    int Take,
+    IReadOnlyList<ValidationJobV1Response> Items,
+    int? NextSkip);
 
 public sealed record ValidationJobResultV1Response(
     int Position,
@@ -143,7 +155,10 @@ public static class ApiContractMapper
         job.ProvisionalItems,
         job.FailedItems,
         job.UpdatedAtUtc,
-        job.EnableSmtp);
+        job.EnableSmtp,
+        job.SourceFileId,
+        job.SourceFileName,
+        job.EmailColumn);
 
     public static ValidationJobResultV1Response Map(ValidationJobItem item) => new(
         item.Position,

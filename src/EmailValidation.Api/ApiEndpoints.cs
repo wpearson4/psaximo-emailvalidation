@@ -52,6 +52,16 @@ public static class ApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
             .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests);
 
+        group.MapGet("/email-validation-jobs", ListJobsAsync)
+            .WithName("ListEmailValidationJobsV1")
+            .WithSummary("List validation job history for the authenticated consumer")
+            .WithDescription("Returns owned jobs in reverse chronological order for durable cross-browser history.")
+            .RequireAuthorization(EmailValidationPolicies.JobsRead)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests)
+            .Produces<ValidationJobPageV1Response>(StatusCodes.Status200OK)
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden);
+
         group.MapGet("/email-validation-jobs/{jobId}", GetJobAsync)
             .WithName("GetEmailValidationJobV1")
             .WithSummary("Get a durable validation job")
@@ -147,6 +157,10 @@ public static class ApiEndpoints
         if (input.Emails.Count > engineOptions.Value.Jobs.MaximumItemsPerJob)
             return ValidationError("emails",
                 $"A job may contain at most {engineOptions.Value.Jobs.MaximumItemsPerJob} items.");
+        if (!ValidOptionalMetadata(input.SourceFileId, 256) ||
+            !ValidOptionalMetadata(input.SourceFileName, 512) ||
+            !ValidOptionalMetadata(input.EmailColumn, 256))
+            return ValidationError("source", "Source file metadata contains unsupported characters or is too long.");
         var consumer = consumers.GetRequiredConsumer();
         var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
         if (!string.IsNullOrEmpty(key) && (key.Length > limits.MaximumIdempotencyKeyLength ||
@@ -185,7 +199,14 @@ public static class ApiEndpoints
         try
         {
             var job = await jobs.CreateAsync(
-                new CreateValidationJobRequest(input.Emails, input.EnableSmtp, jobId), CancellationToken.None)
+                new CreateValidationJobRequest(
+                    input.Emails,
+                    input.EnableSmtp,
+                    jobId,
+                    input.SourceFileId?.Trim(),
+                    input.SourceFileName?.Trim(),
+                    input.EmailColumn?.Trim()),
+                CancellationToken.None)
                 .ConfigureAwait(false);
             await resources.GrantAsync(new ResourceOwnership(
                 OwnedResourceType.ValidationJob,
@@ -200,6 +221,35 @@ public static class ApiEndpoints
         {
             return ValidationError("emails", exception.Message);
         }
+    }
+
+    private static async Task<IResult> ListJobsAsync(
+        int? skip,
+        int? take,
+        IValidationJobService jobs,
+        ICommercialResourceStore resources,
+        ICurrentConsumerContext consumers,
+        CancellationToken cancellationToken)
+    {
+        if (skip is < 0 || take is < 1)
+            return ValidationError("pagination", "skip must be non-negative and take must be positive.");
+        var actualSkip = skip ?? 0;
+        var actualTake = Math.Clamp(take ?? 25, 1, 100);
+        var consumer = consumers.GetRequiredConsumer();
+        var owned = await resources.ListOwnedAsync(
+            OwnedResourceType.ValidationJob,
+            consumer.PrincipalKey,
+            actualSkip,
+            actualTake + 1,
+            cancellationToken).ConfigureAwait(false);
+        var pageReferences = owned.Take(actualTake).ToArray();
+        var snapshots = await Task.WhenAll(pageReferences.Select(reference =>
+            jobs.GetAsync(reference.ResourceId, cancellationToken))).ConfigureAwait(false);
+        var items = snapshots.Where(snapshot => snapshot is not null)
+            .Select(snapshot => ApiContractMapper.Map(snapshot!))
+            .ToArray();
+        var nextSkip = owned.Count > actualTake ? actualSkip + actualTake : (int?)null;
+        return Results.Ok(new ValidationJobPageV1Response(actualSkip, actualTake, items, nextSkip));
     }
 
     private static async Task<IResult> GetJobAsync(
@@ -260,4 +310,8 @@ public static class ApiEndpoints
     private static bool ValidIdentifier(string value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength &&
         value.All(character => character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_');
+
+    private static bool ValidOptionalMetadata(string? value, int maximumLength) =>
+        string.IsNullOrWhiteSpace(value) ||
+        value.Length <= maximumLength && value.All(character => !char.IsControl(character));
 }

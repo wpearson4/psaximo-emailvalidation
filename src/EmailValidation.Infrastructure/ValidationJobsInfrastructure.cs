@@ -108,16 +108,22 @@ public sealed class MongoValidationJobStore : IValidationJobStore
         public DateTimeOffset UpdatedAtUtc { get; set; }
         public string? FailureReason { get; set; }
         public bool EnableSmtp { get; set; }
+        public string? SourceFileId { get; set; }
+        public string? SourceFileName { get; set; }
+        public string? EmailColumn { get; set; }
         public static JobDocument FromModel(ValidationJobSnapshot value) => new()
         {
             Id = value.JobId, CreatedAtUtc = value.CreatedAtUtc, State = value.State,
             TotalItems = value.TotalItems, ProcessedItems = value.ProcessedItems,
             FinalItems = value.FinalItems, ProvisionalItems = value.ProvisionalItems,
             FailedItems = value.FailedItems, UpdatedAtUtc = value.UpdatedAtUtc,
-            FailureReason = value.FailureReason, EnableSmtp = value.EnableSmtp
+            FailureReason = value.FailureReason, EnableSmtp = value.EnableSmtp,
+            SourceFileId = value.SourceFileId, SourceFileName = value.SourceFileName,
+            EmailColumn = value.EmailColumn
         };
         public ValidationJobSnapshot ToModel() => new(Id, CreatedAtUtc, State, TotalItems, ProcessedItems,
-            FinalItems, ProvisionalItems, FailedItems, UpdatedAtUtc, FailureReason, EnableSmtp);
+            FinalItems, ProvisionalItems, FailedItems, UpdatedAtUtc, FailureReason, EnableSmtp,
+            SourceFileId, SourceFileName, EmailColumn);
     }
 
     internal sealed class ItemDocument

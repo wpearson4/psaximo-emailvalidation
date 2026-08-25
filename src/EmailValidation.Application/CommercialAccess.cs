@@ -56,6 +56,10 @@ public sealed record ResourceOwnership(
     string? TenantId,
     DateTimeOffset CreatedAtUtc);
 
+public sealed record OwnedResourceReference(
+    string ResourceId,
+    DateTimeOffset CreatedAtUtc);
+
 public sealed record IdempotentOperation(
     string PrincipalKey,
     string Operation,
@@ -71,6 +75,12 @@ public interface ICommercialResourceStore
         OwnedResourceType resourceType,
         string resourceId,
         string principalKey,
+        CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<OwnedResourceReference>> ListOwnedAsync(
+        OwnedResourceType resourceType,
+        string principalKey,
+        int skip,
+        int take,
         CancellationToken cancellationToken = default);
     Task<IdempotentOperation?> GetIdempotentOperationAsync(
         string principalKey,

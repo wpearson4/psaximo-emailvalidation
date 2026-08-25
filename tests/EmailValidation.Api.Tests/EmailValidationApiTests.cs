@@ -123,7 +123,13 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         using var writer = _factory.CreateAuthenticatedClient(
             [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead], tenant: "tenant-a");
         writer.DefaultRequestHeaders.Add("Idempotency-Key", "job-request-1");
-        var request = new { emails = new[] { "one@example.com", "two@example.com" } };
+        var request = new
+        {
+            emails = new[] { "one@example.com", "two@example.com" },
+            sourceFileId = "search-42",
+            sourceFileName = "customers.csv",
+            emailColumn = "Business Email"
+        };
 
         var first = await writer.PostAsJsonAsync("/v1/email-validation-jobs", request);
         var second = await writer.PostAsJsonAsync("/v1/email-validation-jobs", request);
@@ -132,6 +138,14 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         var firstJob = await first.Content.ReadFromJsonAsync<ValidationJobV1Response>();
         var secondJob = await second.Content.ReadFromJsonAsync<ValidationJobV1Response>();
         Assert.Equal(firstJob!.JobId, secondJob!.JobId);
+        Assert.Equal("search-42", firstJob.SourceFileId);
+        Assert.Equal("customers.csv", firstJob.SourceFileName);
+
+        var history = await writer.GetFromJsonAsync<ValidationJobPageV1Response>(
+            "/v1/email-validation-jobs?skip=0&take=25");
+        var historyItem = Assert.Single(history!.Items);
+        Assert.Equal(firstJob.JobId, historyItem.JobId);
+        Assert.Equal("Business Email", historyItem.EmailColumn);
 
         var page = await writer.GetFromJsonAsync<ValidationJobResultsPageV1Response>(
             $"/v1/email-validation-jobs/{firstJob.JobId}/results?skip=0&take=1");
@@ -141,6 +155,9 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         using var otherTenant = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsRead], tenant: "tenant-b");
         Assert.Equal(HttpStatusCode.Forbidden,
             (await otherTenant.GetAsync($"/v1/email-validation-jobs/{firstJob.JobId}")).StatusCode);
+        var otherHistory = await otherTenant.GetFromJsonAsync<ValidationJobPageV1Response>(
+            "/v1/email-validation-jobs");
+        Assert.Empty(otherHistory!.Items);
 
         var conflict = await writer.PostAsJsonAsync("/v1/email-validation-jobs",
             new { emails = DifferentEmail });
@@ -395,7 +412,19 @@ public sealed class ApiJobService : IValidationJobService
     {
         var now = DateTimeOffset.UtcNow;
         var id = request.JobId ?? Guid.NewGuid().ToString("N");
-        var job = new ValidationJobSnapshot(id, now, ValidationJobState.Queued, request.Emails.Count, 0, 0, 0, 0, now);
+        var job = new ValidationJobSnapshot(
+            id,
+            now,
+            ValidationJobState.Queued,
+            request.Emails.Count,
+            0,
+            0,
+            0,
+            0,
+            now,
+            SourceFileId: request.SourceFileId,
+            SourceFileName: request.SourceFileName,
+            EmailColumn: request.EmailColumn);
         _jobs[id] = (job, request.Emails.Select((email, position) =>
             new ValidationJobItem(id, position, email, ValidationJobItemState.Pending)).ToArray());
         return Task.FromResult(job);

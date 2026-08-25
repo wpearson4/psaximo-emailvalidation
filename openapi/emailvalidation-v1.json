@@ -353,6 +353,71 @@
             ]
           }
         ]
+      },
+      "get": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "List validation job history for the authenticated consumer",
+        "description": "Returns owned jobs in reverse chronological order for durable cross-browser history.",
+        "operationId": "ListEmailValidationJobsV1",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobPageV1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.jobs.read"
+            ]
+          }
+        ]
       }
     },
     "/v1/email-validation-jobs/{jobId}": {
@@ -512,6 +577,18 @@
           },
           "enableSmtp": {
             "type": "boolean"
+          },
+          "sourceFileId": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceFileName": {
+            "type": "string",
+            "nullable": true
+          },
+          "emailColumn": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -626,6 +703,31 @@
         },
         "additionalProperties": false
       },
+      "EmailValidation.Api.ValidationJobPageV1Response": {
+        "type": "object",
+        "properties": {
+          "skip": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "take": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobV1Response"
+            }
+          },
+          "nextSkip": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "EmailValidation.Api.ValidationJobResultV1Response": {
         "type": "object",
         "properties": {
@@ -716,6 +818,18 @@
           },
           "enableSmtp": {
             "type": "boolean"
+          },
+          "sourceFileId": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceFileName": {
+            "type": "string",
+            "nullable": true
+          },
+          "emailColumn": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false

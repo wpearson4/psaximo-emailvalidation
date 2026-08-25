@@ -49,6 +49,17 @@ public sealed class MongoCommercialResourceStore :
                     Name = "ux_commercial_idempotency",
                     Unique = true,
                     PartialFilterExpression = Builders<Document>.Filter.Eq(value => value.Kind, IdempotencyKind)
+                }),
+            new CreateIndexModel<Document>(
+                Builders<Document>.IndexKeys
+                    .Ascending(value => value.Kind)
+                    .Ascending(value => value.ResourceType)
+                    .Ascending(value => value.PrincipalKey)
+                    .Descending(value => value.CreatedAtUtc),
+                new CreateIndexOptions<Document>
+                {
+                    Name = "ix_commercial_owner_history",
+                    PartialFilterExpression = Builders<Document>.Filter.Eq(value => value.Kind, OwnershipKind)
                 })
         };
         await _collection.Indexes.CreateManyAsync(indexes, cancellationToken).ConfigureAwait(false);
@@ -74,6 +85,23 @@ public sealed class MongoCommercialResourceStore :
                 value.ResourceType == resourceType && value.ResourceId == resourceId &&
                 value.PrincipalKey == principalKey)
             .AnyAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<OwnedResourceReference>> ListOwnedAsync(
+        OwnedResourceType resourceType,
+        string principalKey,
+        int skip,
+        int take,
+        CancellationToken cancellationToken = default) =>
+        (await _collection.Find(value => value.Kind == OwnershipKind &&
+                value.ResourceType == resourceType && value.PrincipalKey == principalKey)
+            .SortByDescending(value => value.CreatedAtUtc)
+            .Skip(skip)
+            .Limit(take)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false))
+        .Where(value => !string.IsNullOrWhiteSpace(value.ResourceId))
+        .Select(value => new OwnedResourceReference(value.ResourceId!, value.CreatedAtUtc))
+        .ToArray();
 
     public async Task<IdempotentOperation?> GetIdempotentOperationAsync(
         string principalKey,
@@ -175,6 +203,23 @@ public sealed class InMemoryCommercialResourceStore :
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(_ownership.ContainsKey((resourceType, resourceId, principalKey)));
+    }
+
+    public Task<IReadOnlyList<OwnedResourceReference>> ListOwnedAsync(
+        OwnedResourceType resourceType,
+        string principalKey,
+        int skip,
+        int take,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<OwnedResourceReference>>(_ownership.Values
+            .Where(value => value.ResourceType == resourceType && value.PrincipalKey == principalKey)
+            .OrderByDescending(value => value.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .Select(value => new OwnedResourceReference(value.ResourceId, value.CreatedAtUtc))
+            .ToArray());
     }
 
     public Task<IdempotentOperation?> GetIdempotentOperationAsync(

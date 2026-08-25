@@ -9,6 +9,7 @@ REST resources and scopes:
 - `POST /v1/email-validations` — `emailvalidation.validate`
 - `GET /v1/email-validations/{validationId}` — `emailvalidation.read`
 - `POST /v1/email-validation-jobs` — `emailvalidation.jobs.write`
+- `GET /v1/email-validation-jobs?skip=0&take=25` — `emailvalidation.jobs.read`
 - `GET /v1/email-validation-jobs/{jobId}` — `emailvalidation.jobs.read`
 - `GET /v1/email-validation-jobs/{jobId}/results?skip=0&take=100` — `emailvalidation.jobs.read`
 
@@ -22,6 +23,8 @@ gRPC methods and scopes:
 All business operations deny unauthenticated callers. Tokens must be issued by `Authentication:Authority`, target `Authentication:Audience`, and pass standard issuer, audience, signature, expiration, and not-before validation. OAuth client credentials is the normal server-to-server flow. Tokens may carry space-delimited `scope`/`scp` claims or Auth0's standard `permissions` claim. During the shared OpenMeta audience migration, Search or Match read/execute permissions (and the legacy `openmeta.read`/`openmeta.write` scopes) authorize the corresponding job read/write operation. The dedicated Email Validation permissions remain canonical. Persisted tenant/subject grants protect validation and job identifiers.
 
 `Idempotency-Key` is optional on job creation. A key is scoped to the authenticated tenant, or subject when there is no tenant. The same body returns the original job; a different body returns `409`.
+
+Job creation may include `sourceFileId`, `sourceFileName`, and `emailColumn`. These non-secret display fields are stored with the durable job so the owner-scoped history endpoint can support cross-browser status and validated-file downloads. History is ordered newest first and never relies on browser storage for authorization or discovery.
 
 ## Development and contracts
 

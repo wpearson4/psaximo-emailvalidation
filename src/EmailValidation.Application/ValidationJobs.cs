@@ -15,7 +15,10 @@ public sealed class ValidationJobNotFoundException(string jobId)
 public sealed record CreateValidationJobRequest(
     IReadOnlyList<string> Emails,
     bool EnableSmtp = true,
-    string? JobId = null);
+    string? JobId = null,
+    string? SourceFileId = null,
+    string? SourceFileName = null,
+    string? EmailColumn = null);
 
 public sealed record ValidationJobSnapshot(
     string JobId,
@@ -28,7 +31,10 @@ public sealed record ValidationJobSnapshot(
     int FailedItems,
     DateTimeOffset UpdatedAtUtc,
     string? FailureReason = null,
-    bool EnableSmtp = true);
+    bool EnableSmtp = true,
+    string? SourceFileId = null,
+    string? SourceFileName = null,
+    string? EmailColumn = null);
 
 public sealed record ValidationJobItem(
     string JobId,
@@ -126,7 +132,11 @@ public sealed class ValidationJobService(
                 (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
             throw new ArgumentException("JobId is invalid.", nameof(request));
         var job = new ValidationJobSnapshot(jobId, now, ValidationJobState.Requested,
-            request.Emails.Count, 0, 0, 0, 0, now, EnableSmtp: request.EnableSmtp);
+            request.Emails.Count, 0, 0, 0, 0, now,
+            EnableSmtp: request.EnableSmtp,
+            SourceFileId: request.SourceFileId,
+            SourceFileName: request.SourceFileName,
+            EmailColumn: request.EmailColumn);
         var items = request.Emails.Select((email, position) =>
             new ValidationJobItem(jobId, position, email, ValidationJobItemState.Pending)).ToArray();
         await store.CreateAsync(job, items, cancellationToken).ConfigureAwait(false);
