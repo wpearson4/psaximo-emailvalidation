@@ -18,11 +18,11 @@ The pipeline has scoped access to the active `OpenMeta Prod` Azure service conne
 
 Production was deployed directly to `esdata03` on 2026-08-25 with the immutable API and worker images for application commit `64694cf7bd8fe16acbc280883c47daf6cdac0a0d`. The public readiness endpoint is healthy and the recovered 150-row job completed with no dead-lettered messages.
 
-Automated deployment remains gated on registering a Linux agent on `esdata03` in `OMetaSearchPool`. The existing `Default`-pool agent is hosted on `10.10.252.34`; a verified connection attempt from that agent to SSH on `10.10.252.31` was refused, and the public address timed out. Do not point this pipeline at `Default`: deploy locally on `esdata03` after completing the agent setup below.
+The Linux automation agent `esdata03-emailvalidation` is registered and online in `OMetaSearchPool` on `10.10.252.31`. Its systemd service runs as `gwadmin`, and the deployment job demands that exact agent name so another machine cannot receive a host-local deployment accidentally. The separate `EmailValidation Production` deployment group remains available for Classic releases; YAML deployment continues through `OMetaSearchPool` because Azure DevOps deployment groups are not YAML execution pools.
 
 ## Self-hosted agent
 
-Add one Linux agent to the existing `OMetaSearchPool` and run it on `esdata03` (`10.10.252.31`) as an unprivileged account such as `gwadmin`, never as root. In Azure DevOps, open **Organization settings → Agent pools → OMetaSearchPool → New agent**, select Linux x64, and use the displayed current download URL and checksum. Configure it with a short-lived PAT that has only **Agent Pools: Read & manage**:
+The registered Linux agent runs on `esdata03` (`10.10.252.31`) as the unprivileged `gwadmin` account. To replace or rebuild it, open **Organization settings → Agent pools → OMetaSearchPool → New agent**, select Linux x64, and use the displayed current download URL and checksum. Configure it with a short-lived PAT that has only **Agent Pools: Read & manage**:
 
 ```bash
 mkdir -p /home/gwadmin/azagent

@@ -137,6 +137,7 @@ stages:
               name: OMetaSearchPool
               demands:
                 - Agent.OS -equals Linux
+                - Agent.Name -equals esdata03-emailvalidation
             environment: emailvalidation-production
             strategy:
               runOnce:
