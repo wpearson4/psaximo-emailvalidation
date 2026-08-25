@@ -20,6 +20,9 @@ public static class EmailValidationAzureConfiguration
     public const string MongoConnectionStringKey = "EmailValidation:Persistence:ConnectionString";
     public const string ServiceBusSecretUriKey = "Azure:ServiceBusConnectionSecretUri";
     public const string ServiceBusConnectionStringKey = "EmailValidation:Revalidation:ServiceBus:ConnectionString";
+    public const string JobsServiceBusSecretUriKey = "Azure:JobsServiceBusConnectionSecretUri";
+    public const string JobsServiceBusConnectionStringFileKey = "Azure:JobsServiceBusConnectionStringFile";
+    public const string JobsServiceBusConnectionStringKey = "EmailValidation:Jobs:ServiceBusConnectionString";
     public const string LabelKey = "Azure:AppConfigurationLabel";
     public const string EndpointEnvironmentVariable = "AZURE_APPCONFIG_ENDPOINT";
 
@@ -38,6 +41,12 @@ public static class EmailValidationAzureConfiguration
         var mongoSecretUri = bootstrap[MongoSecretUriKey]?.Trim() ?? string.Empty;
         var localServiceBusConnectionString = bootstrap[ServiceBusConnectionStringKey]?.Trim() ?? string.Empty;
         var serviceBusSecretUri = bootstrap[ServiceBusSecretUriKey]?.Trim() ?? string.Empty;
+        var localJobsServiceBusConnectionString = ResolveSecret(
+            bootstrap,
+            JobsServiceBusConnectionStringKey,
+            JobsServiceBusConnectionStringFileKey,
+            "validation jobs Service Bus connection string");
+        var jobsServiceBusSecretUri = bootstrap[JobsServiceBusSecretUriKey]?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(endpoint) && string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException(
                 $"Azure App Configuration bootstrap is missing. Configure {ConnectionStringKey}, {EndpointKey}, or {EndpointEnvironmentVariable}.");
@@ -61,7 +70,9 @@ public static class EmailValidationAzureConfiguration
                             !string.IsNullOrWhiteSpace(mongoSecretUri);
                         var hasServiceBusOverride = !string.IsNullOrWhiteSpace(localServiceBusConnectionString) &&
                             !string.IsNullOrWhiteSpace(serviceBusSecretUri);
-                        if (!hasMongoOverride && !hasServiceBusOverride)
+                        var hasJobsServiceBusOverride = !string.IsNullOrWhiteSpace(localJobsServiceBusConnectionString) &&
+                            !string.IsNullOrWhiteSpace(jobsServiceBusSecretUri);
+                        if (!hasMongoOverride && !hasServiceBusOverride && !hasJobsServiceBusOverride)
                         {
                             keyVault.SetCredential(credential);
                             return;
@@ -73,6 +84,8 @@ public static class EmailValidationAzureConfiguration
                                 return localMongoConnectionString;
                             if (MatchesSecret(secretUri, serviceBusSecretUri))
                                 return localServiceBusConnectionString;
+                            if (MatchesSecret(secretUri, jobsServiceBusSecretUri))
+                                return localJobsServiceBusConnectionString;
                             var segments = secretUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
                             if (segments.Length < 2 || !string.Equals(segments[0], "secrets", StringComparison.OrdinalIgnoreCase))
                                 throw new InvalidOperationException("The Azure Key Vault reference URI is invalid.");

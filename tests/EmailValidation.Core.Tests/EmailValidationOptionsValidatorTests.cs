@@ -192,6 +192,33 @@ public sealed class EmailValidationOptionsValidatorTests
         }
     }
 
+    [Fact]
+    public void AzureBootstrap_ReadsJobsServiceBusConnectionStringFromDockerSecretFile()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=jobs;SharedAccessKey=test\n");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [EmailValidationAzureConfiguration.JobsServiceBusConnectionStringFileKey] = path
+                }).Build();
+
+            Assert.StartsWith(
+                "Endpoint=sb://example.servicebus.windows.net/",
+                EmailValidationAzureConfiguration.ResolveSecret(
+                    configuration,
+                    EmailValidationAzureConfiguration.JobsServiceBusConnectionStringKey,
+                    EmailValidationAzureConfiguration.JobsServiceBusConnectionStringFileKey,
+                    "validation jobs Service Bus connection string"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static EmailValidationOptions ValidOptions() => new()
     {
         ProbeSenderSource = new ProbeSenderSourceOptions

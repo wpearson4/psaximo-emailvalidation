@@ -95,7 +95,12 @@ public static class ApiPlatformExtensions
         if (allowedOrigins?.Length > 0)
             app.UseCors(policy => policy.WithOrigins(allowedOrigins)
                 .WithMethods("GET", "POST")
-                .WithHeaders("Authorization", "Content-Type", "Idempotency-Key", "traceparent"));
+                .WithHeaders(
+                    "Authorization",
+                    "Content-Type",
+                    "Idempotency-Key",
+                    "X-Correlation-ID",
+                    "traceparent"));
         app.UseAuthentication();
         app.UseMiddleware<ApiRequestTelemetryMiddleware>();
         app.UseRateLimiter();

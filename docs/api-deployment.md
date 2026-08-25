@@ -39,6 +39,15 @@ expires November 23, 2026; the Certbot service checks for renewal every 12
 hours. The deployed ACR image is
 `acrpometadsiscussrch.azurecr.io/emailvalidation-api:deploy-20260825-ssl`.
 
+Durable front-end jobs require both `emailvalidation-api` and
+`emailvalidation-worker`. They share MongoDB job storage and use the
+`email-validation-jobs` queue in the existing production Service Bus namespace.
+The queue credential is mounted from
+`/run/secrets/jobs_service_bus_connection_string`; it is never placed in a
+container environment variable. Production App Configuration enables
+`EmailValidation:Jobs:Enabled` and stores the connection setting as a Key Vault
+reference matched by `AZURE_JOBS_SERVICE_BUS_SECRET_URI`.
+
 Production endpoints:
 
 - Swagger UI: `https://email.digitalwarehouse.io/swagger`

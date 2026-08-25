@@ -29,6 +29,7 @@ variables:
   acrName: acrpometadsiscussrch
   acrLoginServer: acrpometadsiscussrch.azurecr.io
   imageRepository: emailvalidation-api
+  workerImageRepository: emailvalidation-worker
   buildConfiguration: Release
 
 stages:
@@ -65,6 +66,10 @@ stages:
               AUTHORITY: https://identity.example.invalid
               AZURE_APPCONFIG_SECRET_FILE: /tmp/emailvalidation-placeholder-appconfig
               AZURE_CLIENT_CERTIFICATE_FILE: /tmp/emailvalidation-placeholder-cert
+              MONGO_CONNECTION_SECRET_FILE: /tmp/emailvalidation-placeholder-mongo
+              AZURE_MONGO_SECRET_URI: https://example.vault.azure.net/secrets/mongo
+              JOBS_SERVICE_BUS_CONNECTION_SECRET_FILE: /tmp/emailvalidation-placeholder-servicebus
+              AZURE_JOBS_SERVICE_BUS_SECRET_URI: https://example.vault.azure.net/secrets/servicebus
 
           - bash: |
               set -euo pipefail
@@ -109,6 +114,12 @@ stages:
                   --file Dockerfile \
                   --image "$(imageRepository):$(Build.SourceVersion)" \
                   --image "$(imageRepository):latest" \
+                  "$(Build.SourcesDirectory)"
+                az acr build \
+                  --registry "$(acrName)" \
+                  --file Dockerfile.worker \
+                  --image "$(workerImageRepository):$(Build.SourceVersion)" \
+                  --image "$(workerImageRepository):latest" \
                   "$(Build.SourcesDirectory)"
 
   - ${{ if eq(parameters.deployProduction, true) }}:
@@ -169,15 +180,18 @@ stages:
 
                           cd /opt/emailvalidation
                           export IMAGE_TAG="$(Build.SourceVersion)"
-                          sudo --preserve-env=IMAGE_TAG docker compose config --quiet
-                          sudo --preserve-env=IMAGE_TAG docker compose pull emailvalidation-api nginx certbot
-                          sudo --preserve-env=IMAGE_TAG docker compose up -d emailvalidation-api
+                          export WORKER_IMAGE_TAG="$(Build.SourceVersion)"
+                          sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose config --quiet
+                          sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose pull \
+                            emailvalidation-api emailvalidation-worker nginx certbot
+                          sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose up -d \
+                            emailvalidation-api emailvalidation-worker
 
                           if [[ "${BOOTSTRAP_LETSENCRYPT,,}" == "true" ]]; then
-                            sudo --preserve-env=IMAGE_TAG,LETSENCRYPT_EMAIL \
+                            sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG,LETSENCRYPT_EMAIL \
                               ./deploy/letsencrypt/bootstrap.sh
                           else
-                            sudo --preserve-env=IMAGE_TAG docker compose up -d nginx certbot
+                            sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose up -d nginx certbot
                           fi
 
                           for attempt in {1..30}; do
@@ -187,15 +201,15 @@ stages:
                               break
                             fi
                             if [[ "$attempt" == 30 ]]; then
-                              sudo --preserve-env=IMAGE_TAG docker compose ps
-                              sudo --preserve-env=IMAGE_TAG docker compose logs --tail=200 \
-                                emailvalidation-api nginx certbot
+                              sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose ps
+                              sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose logs --tail=200 \
+                                emailvalidation-api emailvalidation-worker nginx certbot
                               exit 1
                             fi
                             sleep 2
                           done
 
-                          sudo --preserve-env=IMAGE_TAG docker compose ps
+                          sudo --preserve-env=IMAGE_TAG,WORKER_IMAGE_TAG docker compose ps
                       env:
                         BOOTSTRAP_LETSENCRYPT: ${{ parameters.bootstrapLetsEncrypt }}
                         LETSENCRYPT_EMAIL: ${{ parameters.letsencryptEmail }}

@@ -179,6 +179,8 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.True(allowed.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowedOrigins),
             $"The allowed preflight omitted Access-Control-Allow-Origin. Headers: {allowed.Headers}");
         Assert.Equal("https://app.digitalwarehouse.io", Assert.Single(allowedOrigins));
+        Assert.True(allowed.Headers.TryGetValues("Access-Control-Allow-Headers", out var allowedHeaders));
+        Assert.Contains("X-Correlation-ID", Assert.Single(allowedHeaders), StringComparison.OrdinalIgnoreCase);
 
         using var deniedRequest = CreatePreflightRequest("https://unapproved.example");
         using var denied = await client.SendAsync(deniedRequest);
@@ -211,7 +213,9 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         var request = new HttpRequestMessage(HttpMethod.Options, "/v1/email-validations");
         request.Headers.Add("Origin", origin);
         request.Headers.Add("Access-Control-Request-Method", "POST");
-        request.Headers.Add("Access-Control-Request-Headers", "authorization,content-type");
+        request.Headers.Add(
+            "Access-Control-Request-Headers",
+            "authorization,content-type,idempotency-key,x-correlation-id");
         return request;
     }
 }

@@ -156,6 +156,7 @@ public sealed class ServiceBusValidationJobWorker(
             return Task.CompletedTask;
         };
         await receiver.StartProcessingAsync(stoppingToken).ConfigureAwait(false);
+        logger.LogInformation("Listening for validation jobs on queue {QueueName}", _options.QueueName);
         try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false); }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         await receiver.StopProcessingAsync(CancellationToken.None).ConfigureAwait(false);
