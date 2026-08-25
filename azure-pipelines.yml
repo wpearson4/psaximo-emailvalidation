@@ -132,9 +132,9 @@ stages:
           - deployment: DeployEmailValidation
             displayName: Deploy to esdata03
             pool:
-              # The production deployment agent is registered in the shared
-              # Default pool and has private-network access to esdata03.
-              name: Default
+              # Deployment runs on esdata03 itself. The shared Default-pool
+              # frontend agent cannot reach this host over SSH.
+              name: OMetaSearchPool
               demands:
                 - Agent.OS -equals Linux
             environment: emailvalidation-production
