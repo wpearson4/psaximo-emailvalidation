@@ -165,6 +165,33 @@ public sealed class EmailValidationOptionsValidatorTests
         }
     }
 
+    [Fact]
+    public void AzureBootstrap_ReadsMongoConnectionStringFromDockerSecretFile()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "mongodb://container-secret\n");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [EmailValidationAzureConfiguration.MongoConnectionStringFileKey] = path
+                }).Build();
+
+            Assert.Equal(
+                "mongodb://container-secret",
+                EmailValidationAzureConfiguration.ResolveSecret(
+                    configuration,
+                    EmailValidationAzureConfiguration.MongoConnectionStringKey,
+                    EmailValidationAzureConfiguration.MongoConnectionStringFileKey,
+                    "MongoDB connection string"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static EmailValidationOptions ValidOptions() => new()
     {
         ProbeSenderSource = new ProbeSenderSourceOptions

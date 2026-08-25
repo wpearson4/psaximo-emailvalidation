@@ -16,6 +16,7 @@ public static class EmailValidationAzureConfiguration
     public const string ConnectionStringKey = "Azure:AppConfigurationConnectionString";
     public const string ConnectionStringFileKey = "Azure:AppConfigurationConnectionStringFile";
     public const string MongoSecretUriKey = "Azure:MongoConnectionSecretUri";
+    public const string MongoConnectionStringFileKey = "Azure:MongoConnectionStringFile";
     public const string MongoConnectionStringKey = "EmailValidation:Persistence:ConnectionString";
     public const string ServiceBusSecretUriKey = "Azure:ServiceBusConnectionSecretUri";
     public const string ServiceBusConnectionStringKey = "EmailValidation:Revalidation:ServiceBus:ConnectionString";
@@ -29,7 +30,11 @@ public static class EmailValidationAzureConfiguration
         var bootstrap = builder.Build();
         var endpoint = ResolveEndpoint(bootstrap);
         var connectionString = ResolveConnectionString(bootstrap);
-        var localMongoConnectionString = bootstrap[MongoConnectionStringKey]?.Trim() ?? string.Empty;
+        var localMongoConnectionString = ResolveSecret(
+            bootstrap,
+            MongoConnectionStringKey,
+            MongoConnectionStringFileKey,
+            "MongoDB connection string");
         var mongoSecretUri = bootstrap[MongoSecretUriKey]?.Trim() ?? string.Empty;
         var localServiceBusConnectionString = bootstrap[ServiceBusConnectionStringKey]?.Trim() ?? string.Empty;
         var serviceBusSecretUri = bootstrap[ServiceBusSecretUriKey]?.Trim() ?? string.Empty;
@@ -107,10 +112,21 @@ public static class EmailValidationAzureConfiguration
     }
 
     public static string ResolveConnectionString(IConfiguration configuration)
+        => ResolveSecret(
+            configuration,
+            ConnectionStringKey,
+            ConnectionStringFileKey,
+            "Azure App Configuration bootstrap secret");
+
+    public static string ResolveSecret(
+        IConfiguration configuration,
+        string valueKey,
+        string fileKey,
+        string description)
     {
-        var configured = configuration[ConnectionStringKey]?.Trim();
+        var configured = configuration[valueKey]?.Trim();
         if (!string.IsNullOrWhiteSpace(configured)) return configured;
-        var path = configuration[ConnectionStringFileKey]?.Trim();
+        var path = configuration[fileKey]?.Trim();
         if (string.IsNullOrWhiteSpace(path)) return string.Empty;
         try
         {
@@ -119,7 +135,7 @@ public static class EmailValidationAzureConfiguration
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             throw new InvalidOperationException(
-                $"Azure App Configuration bootstrap secret file '{path}' could not be read.", exception);
+                $"{description} file '{path}' could not be read.", exception);
         }
     }
 

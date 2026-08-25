@@ -29,7 +29,33 @@ Provide non-secret settings through configuration and secrets through user secre
 
 The host exposes HTTP/1 REST/health on loopback port 8080 and cleartext HTTP/2 gRPC on loopback port 8081. The Compose stack terminates public HTTPS and HTTP/2 TLS at Nginx on ports 80/443 and obtains certificates for `email.digitalwarehouse.io` with Certbot and Let's Encrypt. Unknown hostnames are rejected rather than routed to the API. Bearer tokens never cross the untrusted network in plaintext, and certificates are kept in persistent volumes rather than application images.
 
+### Current production deployment
+
+The production stack was deployed to `10.10.252.31` on August 25, 2026,
+through public address `64.182.20.183`. DNS, HTTP-to-HTTPS redirection, the
+public readiness endpoint, and the Let's Encrypt HTTP-01 renewal path were
+verified externally. The initial certificate for `email.digitalwarehouse.io`
+expires November 23, 2026; the Certbot service checks for renewal every 12
+hours. The deployed ACR image is
+`acrpometadsiscussrch.azurecr.io/emailvalidation-api:deploy-20260825-ssl`.
+
+Production endpoints:
+
+- Swagger UI: `https://email.digitalwarehouse.io/swagger`
+- Readiness: `https://email.digitalwarehouse.io/health/ready`
+
+An unauthenticated Swagger request returns `401`. Supply a bearer token with
+the `emailvalidation.admin` scope to use the production documentation endpoint.
+
 Swagger UI and JSON are available in Development. Outside Development they are absent by default. `Api:OpenApi:ExposeInProduction=true` exposes them only to `emailvalidation.admin`.
+The production Compose deployment maps `OPENAPI_EXPOSE_IN_PRODUCTION`,
+`OPENAPI_AUTHORIZATION_URL`, `OPENAPI_TOKEN_URL`, and
+`OPENAPI_SWAGGER_CLIENT_ID` into those API settings. Set the expose flag to
+`true` on the host when the authorized production documentation endpoint is
+required; the secure default remains `false` for other deployments.
+The production Compose defaults also select the existing private `zi-b2b`
+probe-sender source at `10.10.252.28:9200`; each value can be overridden with
+the corresponding `PROBE_SENDER_*` variable without changing an image.
 
 Generate the machine-readable contract with:
 
@@ -51,7 +77,7 @@ Swagger is anonymous only in Development. Business operations still require thei
 
 Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
 
-Existing App Configuration/Key Vault keys remain authoritative for MongoDB, Service Bus, Elasticsearch, and validation behavior. Compose mounts an App Configuration connection string at `/run/secrets/azure_app_configuration_connection_string` and a service-principal certificate at `/run/secrets/azure_client_certificate`. `DefaultAzureCredential` uses the non-secret tenant/client IDs and mounted certificate to resolve Key Vault references. This avoids production `az login` and keeps client secrets out of environment variables. Keep source secret files outside the repository.
+Existing App Configuration/Key Vault keys remain authoritative for MongoDB, Service Bus, Elasticsearch, and validation behavior. Compose mounts the App Configuration and MongoDB connection strings as Docker secrets at `/run/secrets/azure_app_configuration_connection_string` and `/run/secrets/mongo_connection_string`. Set `AZURE_MONGO_SECRET_URI` to the matching Key Vault reference URI so the application substitutes the mounted value when it loads App Configuration. A service-principal certificate remains available at `/run/secrets/azure_client_certificate.pem` for any other Key Vault references. This avoids production `az login` and keeps credentials out of environment variables. Keep source secret files outside the repository.
 
 ## AlmaLinux 8 / 10.10.252.31 networking
 
