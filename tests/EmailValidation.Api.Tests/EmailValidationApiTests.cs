@@ -87,6 +87,32 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public void ContractMapper_BackfillsUnknownContextForLegacyStoredResults()
+    {
+        var result = new EmailValidationResult
+        {
+            Email = "legacy@example.com",
+            Status = EmailValidationStatus.Unknown,
+            Confidence = .72,
+            Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true },
+            ValidationId = "validation-legacy",
+            ResultState = ValidationResultState.Final,
+            ReasonCodes = [ReasonCode.ProviderVerificationBlocked],
+            Diagnostics = new ValidationDiagnostics
+            {
+                SmtpResponseCategory = SmtpResponseCategory.VerificationBlocked
+            }
+        };
+
+        var response = ApiContractMapper.Map(result);
+
+        Assert.Equal("ProviderVerificationBlocked", response.UnknownContext?.Cause);
+        Assert.True(response.UnknownContext!.Retryable);
+        Assert.Contains("provider cooldown", response.UnknownContext.RecommendedAction,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task InvalidShape_ReturnsTraceableProblemDetails()
     {
         using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);

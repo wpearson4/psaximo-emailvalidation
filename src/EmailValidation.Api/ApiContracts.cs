@@ -123,7 +123,7 @@ public static class ApiContractMapper
         result.SubStatus.ToString(),
         result.Confidence,
         result.ConfidenceReason,
-        Map(result.UnknownContext),
+        Map(result.UnknownContext ?? UnknownValidationContextBuilder.Build(result)),
         result.MailProvider.ToString(),
         result.Metadata?.ValidatedAt ?? result.LastValidatedAt,
         result.Metadata?.ResultSource.ToString() ?? ValidationResultSource.LiveValidation.ToString(),

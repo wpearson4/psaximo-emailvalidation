@@ -7,6 +7,8 @@
 - Added structured `UnknownContext` to inconclusive results with a stable cause, plain-language summary,
   retryability, recommended action, SMTP stage/category/code, MX host, and retry time. REST, gRPC, lifecycle status,
   Console text/JSON/CSV, and file-processing CSV outputs expose the same context without changing classification.
+  REST responses also reconstruct the context for legacy stored Unknown results so existing jobs gain the explanation
+  when they are downloaded again.
 - Fixed production job creation by using native MongoDB `$in` filters for source-file deduplication and active-job
   failure transitions, avoiding an unsupported LINQ partial-evaluation path in the MongoDB driver.
 - Prevented API/worker release skew with one immutable Compose release tag, made Mongo job documents tolerant of
