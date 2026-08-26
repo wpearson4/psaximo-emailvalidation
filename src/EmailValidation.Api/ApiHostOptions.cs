@@ -6,6 +6,12 @@ public sealed class ApiHostOptions
     public ApiRateLimitOptions RateLimiting { get; set; } = new();
     public ApiCorsOptions Cors { get; set; } = new();
     public ApiOpenApiOptions OpenApi { get; set; } = new();
+    public OpenMetaSourceOptions OpenMeta { get; set; } = new();
+}
+
+public sealed class OpenMetaSourceOptions
+{
+    public string BaseUrl { get; set; } = "http://127.0.0.1:5058";
 }
 
 public sealed class ApiLimitsOptions

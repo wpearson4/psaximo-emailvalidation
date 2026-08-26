@@ -23,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\EmailValidation.Application\EmailValidation.Application.csproj" />
     <ProjectReference Include="..\..\src\EmailValidation.Core\EmailValidation.Core.csproj" />
     <ProjectReference Include="..\..\src\EmailValidation.Infrastructure\EmailValidation.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\EmailValidation.Console\EmailValidation.Console.csproj" />

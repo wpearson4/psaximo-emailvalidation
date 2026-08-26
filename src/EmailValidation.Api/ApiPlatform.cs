@@ -73,6 +73,7 @@ public static class ApiPlatformExtensions
         });
 
         services.AddCors();
+        services.AddHttpClient<IEmailValidationSourceFileClient, OpenMetaEmailValidationSourceFileClient>();
 
         services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])

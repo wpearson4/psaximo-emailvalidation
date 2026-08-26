@@ -19,6 +19,19 @@ public sealed class EmailValidationOptions
     public ValidationPolicyOptions Policy { get; set; } = new();
     public RevalidationOptions Revalidation { get; set; } = new();
     public ValidationJobsOptions Jobs { get; set; } = new();
+    public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
+}
+
+public sealed class EmailColumnDetectionOptions
+{
+    public int MaximumNonEmptySamplesPerColumn { get; set; } = 100;
+    public int MaximumRowsInspected { get; set; } = 10_000;
+    public int MinimumNonEmptySamples { get; set; } = 3;
+    public int MinimumEmailLikeSamples { get; set; } = 2;
+    public double MinimumEmailRatio { get; set; } = 0.60;
+    public double HeaderSupportedMinimumEmailRatio { get; set; } = 0.55;
+    public double InvalidEmailShapeWeight { get; set; } = 0.50;
+    public double HeaderConfidenceBoost { get; set; } = 0.05;
 }
 
 public sealed class ValidationJobsOptions

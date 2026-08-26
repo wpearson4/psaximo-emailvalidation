@@ -233,6 +233,34 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public async Task ColumnDetection_ReturnsOnlyDetectedColumnMetadataWithoutSamples()
+    {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsWrite]);
+
+        var response = await client.GetAsync("/v1/email-validation-files/search-42/columns");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var profile = await response.Content.ReadFromJsonAsync<EmailColumnProfileV1Response>();
+        var column = Assert.Single(profile!.Columns);
+        Assert.Equal("Contact", column.Name);
+        Assert.Equal("Email", column.DetectedType);
+        var payload = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("john@example.com", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("12345", payload, StringComparison.Ordinal);
+        Assert.Equal("search-42", _factory.SourceFiles.RequestedSourceFileIds.Single());
+    }
+
+    [Fact]
+    public async Task ColumnDetection_RequiresJobWritePermission()
+    {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsRead]);
+
+        var response = await client.GetAsync("/v1/email-validation-files/search-42/columns");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Health_IsAnonymousAndMinimal()
     {
         using var client = _factory.CreateClient();
@@ -300,6 +328,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
 {
     public ApiValidator Validator { get; } = new();
     public InMemoryCommercialResourceStore Resources { get; } = new();
+    public ApiSourceFileClient SourceFiles { get; } = new();
     private readonly ApiJobService _jobs = new();
     public ApiJobService JobService => _jobs;
 
@@ -359,11 +388,32 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<IValidationStatusQueryService>();
             services.RemoveAll<IValidationJobService>();
             services.RemoveAll<ICommercialResourceStore>();
+            services.RemoveAll<IEmailValidationSourceFileClient>();
             services.AddSingleton<IEmailValidator>(Validator);
             services.AddSingleton<IValidationStatusQueryService, ApiStatusService>();
             services.AddSingleton<IValidationJobService>(_jobs);
             services.AddSingleton<ICommercialResourceStore>(Resources);
+            services.AddSingleton<IEmailValidationSourceFileClient>(SourceFiles);
         });
+    }
+}
+
+public sealed class ApiSourceFileClient : IEmailValidationSourceFileClient
+{
+    public List<string> RequestedSourceFileIds { get; } = [];
+
+    public Task<EmailValidationSourceFile> OpenAsync(
+        string sourceFileId,
+        string? authorization,
+        CancellationToken cancellationToken = default)
+    {
+        RequestedSourceFileIds.Add(sourceFileId);
+        const string csv = "Contact,Email,CustomerName\n" +
+                           "john@example.com,12345,John\n" +
+                           "jane@example.org,67890,Jane\n" +
+                           "bob@example.net,ABC123,Bob\n";
+        var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv));
+        return Task.FromResult(new EmailValidationSourceFile(stream, "customers.csv"));
     }
 }
 

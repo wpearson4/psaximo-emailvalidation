@@ -26,6 +26,8 @@ All business operations deny unauthenticated callers. Tokens must be issued by `
 
 Job creation may include `sourceFileId`, `sourceFileName`, and `emailColumn`. These non-secret display fields are stored with the durable job so the owner-scoped history endpoint can support cross-browser status and validated-file downloads. History is ordered newest first and never relies on browser storage for authorization or discovery.
 
+Set `Api:OpenMeta:BaseUrl` to the OpenMeta API origin. Before job creation, the email-column endpoint forwards the caller's bearer token to the existing purchased-file download route and profiles a bounded stream identified only by `sourceFileId`. It returns detected column metadata without returning, persisting, or logging sampled values. Sampling limits and confidence policy are configured under `EmailValidation:ColumnDetection`.
+
 ## Development and contracts
 
 Provide non-secret settings through configuration and secrets through user secrets. Azure App Configuration is skipped only by the automated `Testing` environment.

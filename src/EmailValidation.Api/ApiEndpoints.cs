@@ -52,6 +52,22 @@ public static class ApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
             .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests);
 
+        group.MapGet("/email-validation-files/{sourceFileId}/columns", DetectEmailColumnsAsync)
+            .WithName("DetectEmailValidationColumnsV1")
+            .WithSummary("Detect email columns in a purchased file")
+            .WithDescription("Streams a bounded sample from the authorized source file and returns only columns confidently detected as email data.")
+            .RequireAuthorization(EmailValidationPolicies.JobsWrite)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests)
+            .Produces<EmailColumnProfileV1Response>(StatusCodes.Status200OK)
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)
+            .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status503ServiceUnavailable);
+
         group.MapGet("/email-validation-jobs", ListJobsAsync)
             .WithName("ListEmailValidationJobsV1")
             .WithSummary("List validation job history for the authenticated consumer")
@@ -83,6 +99,77 @@ public static class ApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status404NotFound);
 
         return endpoints;
+    }
+
+    private static async Task<IResult> DetectEmailColumnsAsync(
+        string sourceFileId,
+        HttpContext http,
+        IEmailValidationSourceFileClient sourceFiles,
+        IFileColumnProfiler profiler,
+        ILoggerFactory loggerFactory,
+        IOptions<ApiHostOptions> hostOptions,
+        CancellationToken cancellationToken)
+    {
+        if (!ValidIdentifier(sourceFileId, hostOptions.Value.Limits.MaximumIdentifierLength))
+            return ValidationError("sourceFileId", "SourceFileId is invalid.");
+
+        try
+        {
+            await using var source = await sourceFiles.OpenAsync(
+                sourceFileId,
+                http.Request.Headers.Authorization.ToString(),
+                cancellationToken).ConfigureAwait(false);
+            var profile = await profiler.ProfileAsync(
+                source.Content, source.FileName, cancellationToken).ConfigureAwait(false);
+            var detected = profile.Columns
+                .Where(column => column.DetectedType == DetectedColumnType.Email)
+                .Select(column => new DetectedEmailColumnV1Response(
+                    column.ColumnName,
+                    column.DetectedType.ToString(),
+                    Math.Round(column.Confidence, 4)))
+                .ToArray();
+
+            var logger = loggerFactory.CreateLogger("EmailValidation.ColumnDetection");
+            foreach (var column in profile.Columns)
+                logger.LogInformation(
+                    "Email column profile SourceFileId={SourceFileId} ColumnName={ColumnName} SampleCount={SampleCount} NonEmptySampleCount={NonEmptySampleCount} DetectedType={DetectedType} DetectionConfidence={DetectionConfidence:F4}",
+                    sourceFileId,
+                    column.ColumnName,
+                    column.SampleCount,
+                    column.NonEmptySampleCount,
+                    column.DetectedType,
+                    column.Confidence);
+
+            return Results.Ok(new EmailColumnProfileV1Response(
+                sourceFileId, source.FileName, detected));
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            return Results.Forbid();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return Results.Unauthorized();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Source file not found",
+                "The selected purchased file is no longer available.");
+        }
+        catch (SourceFileAccessException)
+        {
+            return Problem(StatusCodes.Status502BadGateway, "Source file unavailable",
+                "The purchased-file service could not provide the selected file.");
+        }
+        catch (HttpRequestException)
+        {
+            return Problem(StatusCodes.Status503ServiceUnavailable, "Source file service unavailable",
+                "The purchased-file service is temporarily unavailable.");
+        }
+        catch (InvalidDataException exception)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Source file could not be profiled", exception.Message);
+        }
     }
 
     private static async Task<IResult> ValidateEmailAsync(

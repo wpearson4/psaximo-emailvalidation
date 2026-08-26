@@ -16,6 +16,16 @@ public sealed record CreateValidationJobV1Request(
     string? SourceFileName = null,
     string? EmailColumn = null);
 
+public sealed record DetectedEmailColumnV1Response(
+    string Name,
+    string DetectedType,
+    double Confidence);
+
+public sealed record EmailColumnProfileV1Response(
+    string SourceFileId,
+    string FileName,
+    IReadOnlyList<DetectedEmailColumnV1Response> Columns);
+
 public sealed record ValidationChecksV1(
     bool SyntaxValid,
     bool DomainExists,

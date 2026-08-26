@@ -14,6 +14,8 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<IValidateOptions<EmailValidationOptions>, EmailValidationOptionsValidator>();
         services.AddSingleton<IEmailNormalizer, EmailNormalizer>();
+        services.AddSingleton<IColumnTypeDetectionPolicy, EmailColumnTypeDetectionPolicy>();
+        services.AddSingleton<IFileColumnProfiler, EmailFileColumnProfiler>();
         services.AddSingleton<IDnsMailResolver, MxDnsResolver>();
         services.AddSingleton<IMailRoutingAnalyzer, MailRoutingAnalyzer>();
         services.AddSingleton<IDnsWireQueryClient, DnsWireQueryClient>();

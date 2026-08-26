@@ -18,7 +18,19 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var revalidation = options.Revalidation;
         var domainIntelligence = options.DomainIntelligence;
         var jobs = options.Jobs;
+        var columnDetection = options.ColumnDetection;
         var failures = new List<string>();
+        if (columnDetection.MaximumNonEmptySamplesPerColumn < 1 ||
+            columnDetection.MaximumRowsInspected < columnDetection.MaximumNonEmptySamplesPerColumn ||
+            columnDetection.MinimumNonEmptySamples < 1 ||
+            columnDetection.MinimumEmailLikeSamples < 1)
+            failures.Add("EmailValidation:ColumnDetection sample and inspection limits are invalid.");
+        if (columnDetection.MinimumEmailRatio is <= 0 or > 1 ||
+            columnDetection.HeaderSupportedMinimumEmailRatio is <= 0 or > 1 ||
+            columnDetection.HeaderSupportedMinimumEmailRatio > columnDetection.MinimumEmailRatio ||
+            columnDetection.InvalidEmailShapeWeight is < 0 or > 1 ||
+            columnDetection.HeaderConfidenceBoost is < 0 or > 1)
+            failures.Add("EmailValidation:ColumnDetection confidence thresholds must be between zero and one.");
         if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
             failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
         if (!Uri.TryCreate(source.Endpoint, UriKind.Absolute, out var endpoint) ||
