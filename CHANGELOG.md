@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed the Azure DevOps `master` pipeline to deploy validated immutable API/worker images to production by
+  default; manually queued publish-only runs can explicitly set `deployProduction=false`.
 - Added structured `UnknownContext` to inconclusive results with a stable cause, plain-language summary,
   retryability, recommended action, SMTP stage/category/code, MX host, and retry time. REST, gRPC, lifecycle status,
   Console text/JSON/CSV, and file-processing CSV outputs expose the same context without changing classification.

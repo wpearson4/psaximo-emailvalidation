@@ -14,7 +14,9 @@ parameters:
   - name: deployProduction
     displayName: Deploy to 10.10.252.31
     type: boolean
-    default: false
+    # Master CI runs deploy by default. Manual runs can set this to false when
+    # only validation and immutable image publication are desired.
+    default: true
   - name: bootstrapLetsEncrypt
     displayName: Request the first Let's Encrypt certificate
     type: boolean

@@ -8,7 +8,10 @@
 - Production agent pool: `OMetaSearchPool`
 - Production environment: `emailvalidation-production`
 
-Every `master` update validates the .NET solution, Compose model, Nginx configuration, and Certbot image, then publishes both the immutable Git commit tag and `latest` to ACR. Production deployment is opt-in: manually run the pipeline with `deployProduction=true`. On the first deployment only, also set `bootstrapLetsEncrypt=true` and provide a monitored `letsencryptEmail` after confirming public ports 80 and 443 reach `10.10.252.31`.
+Every `master` update validates the .NET solution, Compose model, Nginx configuration, and Certbot image, publishes
+both the immutable Git commit tag and `latest` to ACR, and deploys that same immutable API/worker tag to production.
+Manual runs may set `deployProduction=false` when validation and image publication are desired without a rollout.
+Certificate bootstrap remains disabled by default and is only appropriate for a coordinated first deployment.
 
 ## Current rollout status
 
@@ -16,7 +19,10 @@ As of 2026-08-25, Azure DevOps pipeline `EmailValidation Production` (definition
 
 The pipeline has scoped access to the active `OpenMeta Prod` Azure service connection and production environment `emailvalidation-production` (environment ID 6). Do not switch it to the legacy `Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)` service connection; that connection references an Entra application that no longer exists.
 
-Production was deployed directly to `esdata03` on 2026-08-25 with the immutable API and worker images for application commit `64694cf7bd8fe16acbc280883c47daf6cdac0a0d`. The public readiness endpoint is healthy and the recovered 150-row job completed with no dead-lettered messages.
+Run 1313 deployed the immutable API and worker images for application commit
+`cf633e2f7cad1e31ae3b248e6a34583a691801b3` to `esdata03` on 2026-08-26 and passed the public readiness check. It was
+the final rollout that required manually setting `deployProduction=true`; subsequent `master` CI runs deploy by
+default. The earlier recovered 150-row job completed with no dead-lettered messages.
 
 The Linux automation agent `esdata03-emailvalidation` is registered and online in `OMetaSearchPool` on `10.10.252.31`. Its systemd service runs as `gwadmin`, and the deployment job demands that exact agent name so another machine cannot receive a host-local deployment accidentally. The separate `EmailValidation Production` deployment group remains available for Classic releases; YAML deployment continues through `OMetaSearchPool` because Azure DevOps deployment groups are not YAML execution pools.
 
