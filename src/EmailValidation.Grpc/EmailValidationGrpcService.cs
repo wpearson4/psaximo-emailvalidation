@@ -107,6 +107,8 @@ public sealed class EmailValidationGrpcService(
         };
         if (!string.IsNullOrWhiteSpace(result.ConfidenceReason))
             response.ConfidenceReason = result.ConfidenceReason;
+        if (result.UnknownContext is { } unknownContext)
+            response.UnknownContext = MapUnknownContext(unknownContext);
         if (result.RetryAfter is { } retryAt)
             response.RetryAtUtc = Timestamp.FromDateTimeOffset(retryAt);
         if ((result.Metadata?.ValidatedAt ?? result.LastValidatedAt) is { } validatedAt)
@@ -131,6 +133,8 @@ public sealed class EmailValidationGrpcService(
         if (snapshot.SubStatus is { } subStatus) response.SubStatus = subStatus.ToString();
         if (snapshot.Confidence is { } confidence) response.Confidence = confidence;
         if (!string.IsNullOrWhiteSpace(snapshot.ConfidenceReason)) response.ConfidenceReason = snapshot.ConfidenceReason;
+        if (snapshot.UnknownContext is { } unknownContext)
+            response.UnknownContext = MapUnknownContext(unknownContext);
         if (!string.IsNullOrWhiteSpace(snapshot.Provider)) response.Provider = snapshot.Provider;
         if (snapshot.RetryAt is { } retryAt) response.RetryAtUtc = Timestamp.FromDateTimeOffset(retryAt);
         if (snapshot.LastUpdatedAt is { } updated) response.ValidatedAtUtc = Timestamp.FromDateTimeOffset(updated);
@@ -143,6 +147,26 @@ public sealed class EmailValidationGrpcService(
             : result.RetryScheduled
                 ? ValidationLifecycleState.RetryScheduled.ToString()
                 : ValidationLifecycleState.Provisional.ToString();
+
+    private static global::EmailValidation.V1.UnknownValidationContext MapUnknownContext(
+        global::EmailValidation.Core.UnknownValidationContext context)
+    {
+        var response = new global::EmailValidation.V1.UnknownValidationContext
+        {
+            Cause = context.Cause.ToString(),
+            Summary = context.Summary,
+            Retryable = context.Retryable,
+            RecommendedAction = context.RecommendedAction,
+            SmtpCategory = context.SmtpCategory.ToString()
+        };
+        if (context.FailedStage is { } failedStage) response.FailedStage = failedStage.ToString();
+        if (context.ResponseCode is { } responseCode) response.ResponseCode = responseCode;
+        if (context.EnhancedStatusCode is { } enhancedStatus) response.EnhancedStatusCode = enhancedStatus;
+        if (context.MxHost is { } mxHost) response.MxHost = mxHost;
+        if (context.RetryAfter is { } retryAfter)
+            response.RetryAfterUtc = Timestamp.FromDateTimeOffset(retryAfter);
+        return response;
+    }
 
     private static bool ValidId(string value) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&

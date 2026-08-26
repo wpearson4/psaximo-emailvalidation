@@ -46,6 +46,9 @@ public sealed class EmailValidatorTests
         Assert.Equal(SmtpMailboxStatus.NotAttempted, result.Checks.Mailbox);
         Assert.Equal(EmailValidationStatus.Unknown, result.Status);
         Assert.Contains(ReasonCode.SmtpDisabled, result.ReasonCodes);
+        Assert.Equal(UnknownCause.LiveVerificationDisabled, result.UnknownContext?.Cause);
+        Assert.False(result.UnknownContext!.Retryable);
+        Assert.Contains("Enable live SMTP", result.UnknownContext.RecommendedAction, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -10,6 +10,26 @@ public enum EvidenceQuality { Unknown, Conclusive, Partial, Blocked, NotAttempte
 public enum CatchAllClassification { None, Confirmed, Likely, GatewayAmbiguous, Historical }
 // Distinguishes an observed remote result from work deliberately skipped by local scheduling policy.
 public enum SmtpProbeDisposition { Completed, RemoteBlocked, LocalCooldown, SessionBudgetExhausted, NotAttempted }
+// A stable, consumer-facing explanation of why a technically valid address could not be classified.
+public enum UnknownCause
+{
+    InsufficientEvidence,
+    LiveVerificationDisabled,
+    ProbeSenderUnavailable,
+    DnsTimeout,
+    DnsFailure,
+    LocalCooldown,
+    Greylisted,
+    RateLimited,
+    ProviderVerificationBlocked,
+    SmtpTimeout,
+    SmtpConnectionFailure,
+    TemporarySmtpFailure,
+    SmtpUtf8Unsupported,
+    ConflictingMxEvidence,
+    AmbiguousSmtpResponse,
+    ExecutionFailure
+}
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
 public enum ProbeSenderCandidateState { Candidate, Healthy, Active, CoolingDown, Invalid, Degraded, Retired }
 public enum ProbeSenderOutcomeKind { MailFromAccepted, RecipientOutcome, SenderInvalid, SenderTemporaryFailure, ProviderRestriction, Inconclusive }
@@ -124,6 +144,22 @@ public sealed record SmtpProbeResult(
     public DateTimeOffset? RetryAfter { get; init; }
     public bool ProbeAttempted => SessionEvidence is not null || Attempts > 0;
 }
+
+/// <summary>
+/// Structured context for an Unknown classification. Retryable means a later attempt may be useful;
+/// it does not imply that automatic revalidation is enabled or scheduled.
+/// </summary>
+public sealed record UnknownValidationContext(
+    UnknownCause Cause,
+    string Summary,
+    bool Retryable,
+    string RecommendedAction,
+    SmtpResponseCategory SmtpCategory = SmtpResponseCategory.NotAttempted,
+    SmtpCommand? FailedStage = null,
+    int? ResponseCode = null,
+    string? EnhancedStatusCode = null,
+    string? MxHost = null,
+    DateTimeOffset? RetryAfter = null);
 
 public sealed record ProbeSenderHealth(
     ProbeSenderHealthStatus Status,
@@ -378,6 +414,7 @@ public sealed record EmailValidationResult
     public bool ProbeAttempted { get; init; }
     public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;
     public DateTimeOffset? RetryAfter { get; init; }
+    public UnknownValidationContext? UnknownContext { get; init; }
     public string? ConfidenceReason { get; init; }
     public required EmailValidationChecks Checks { get; init; }
     public MailProvider MailProvider { get; init; }

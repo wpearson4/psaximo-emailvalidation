@@ -196,6 +196,8 @@ public sealed class DomainValidationScheduler(
         Status = EmailValidationStatus.Unknown,
         Confidence = 0,
         ConfidenceReason = "Validation could not be completed for this row.",
+        UnknownContext = UnknownValidationContextBuilder.ExecutionFailure(
+            "Validation could not be completed because an application or dependency operation failed."),
         Checks = new EmailValidationChecks()
     };
 }

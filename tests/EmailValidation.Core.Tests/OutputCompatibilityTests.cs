@@ -51,6 +51,35 @@ public sealed class OutputCompatibilityTests
         Assert.Contains("1/1", text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void UnknownOutputs_ExposeCauseRetryabilityAndRecommendedAction()
+    {
+        var unknown = Result() with
+        {
+            Status = EmailValidationStatus.Unknown,
+            UnknownContext = new(
+                UnknownCause.RateLimited,
+                "The destination rate-limited mailbox verification.",
+                true,
+                "Wait for the provider cooldown and retry.",
+                SmtpResponseCategory.RateLimited)
+        };
+
+        var json = ResultFormatter.Format([unknown], OutputFormat.Json, single: true);
+        var csv = ResultFormatter.Format([unknown], OutputFormat.Csv, single: false);
+        var text = ResultFormatter.Format([unknown], OutputFormat.Text, single: true);
+
+        Assert.Contains("\"unknownContext\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"cause\": \"rateLimited\"", json, StringComparison.Ordinal);
+        Assert.Contains("unknownCause,unknownSummary,unknownRetryable,recommendedAction", csv, StringComparison.Ordinal);
+        Assert.Contains("RateLimited", csv, StringComparison.Ordinal);
+        Assert.Contains("Unknown Cause:", text, StringComparison.Ordinal);
+        Assert.Contains("RateLimited", text, StringComparison.Ordinal);
+        Assert.Contains("Unknown Retryable:", text, StringComparison.Ordinal);
+        Assert.Contains("Recommended Action:", text, StringComparison.Ordinal);
+        Assert.Contains("Wait for the provider cooldown and retry.", text, StringComparison.Ordinal);
+    }
+
     private static EmailValidationResult Result() => new()
     {
         Email = "user@example.com",

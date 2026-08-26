@@ -31,6 +31,13 @@ public sealed class EmailValidationGrpcApiTests : IClassFixture<EmailValidationA
             Headers([EmailValidationScopes.Validate]));
         Assert.Equal("validation-final", response.ValidationId);
         Assert.Equal("Final", response.LifecycleState);
+
+        var provisional = await client.ValidateEmailAsync(
+            new ValidateEmailRequest { Email = "provisional@example.com", EnableSmtp = true },
+            Headers([EmailValidationScopes.Validate]));
+        Assert.Equal("TemporarySmtpFailure", provisional.UnknownContext.Cause);
+        Assert.True(provisional.UnknownContext.Retryable);
+        Assert.Equal("RcptTo", provisional.UnknownContext.FailedStage);
     }
 
     [Fact]
@@ -77,6 +84,7 @@ public sealed class EmailValidationGrpcApiTests : IClassFixture<EmailValidationA
             Headers([EmailValidationScopes.Read]));
         Assert.Equal(ValidationLifecycleState.RetryWaiting, current.LifecycleState);
         Assert.True(current.RetryScheduled);
+        Assert.Equal("TemporarySmtpFailure", current.UnknownContext.Cause);
     }
 
     private GrpcChannel CreateChannel() => GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions

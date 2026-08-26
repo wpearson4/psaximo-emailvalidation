@@ -32,6 +32,8 @@ public static class ValidationStatusGrpcMapper
         if (status.SubStatus is { } subStatus) response.SubStatus = subStatus.ToString();
         if (status.Confidence is { } confidence) response.Confidence = confidence;
         if (status.ConfidenceReason is not null) response.ConfidenceReason = status.ConfidenceReason;
+        if (status.UnknownContext is { } unknownContext)
+            response.UnknownContext = MapUnknownContext(unknownContext);
         if (status.RetryAt is { } retryAt) response.RetryAt = Timestamp.FromDateTimeOffset(retryAt);
         if (status.EstimatedRetryIn is { } retryIn) response.EstimatedRetryIn = Duration.FromTimeSpan(retryIn);
         if (status.Provider is not null) response.Provider = status.Provider;
@@ -43,6 +45,26 @@ public static class ValidationStatusGrpcMapper
         if (status.FirstValidatedAt is { } first) response.FirstValidatedAt = Timestamp.FromDateTimeOffset(first);
         if (status.LastUpdatedAt is { } updated) response.LastUpdatedAt = Timestamp.FromDateTimeOffset(updated);
         if (status.FinalizedAt is { } finalized) response.FinalizedAt = Timestamp.FromDateTimeOffset(finalized);
+        return response;
+    }
+
+    private static Status.V1.UnknownValidationContext MapUnknownContext(
+        CoreModel.UnknownValidationContext context)
+    {
+        var response = new Status.V1.UnknownValidationContext
+        {
+            Cause = context.Cause.ToString(),
+            Summary = context.Summary,
+            Retryable = context.Retryable,
+            RecommendedAction = context.RecommendedAction,
+            SmtpCategory = context.SmtpCategory.ToString()
+        };
+        if (context.FailedStage is { } failedStage) response.FailedStage = failedStage.ToString();
+        if (context.ResponseCode is { } responseCode) response.ResponseCode = responseCode;
+        if (context.EnhancedStatusCode is { } enhancedStatus) response.EnhancedStatusCode = enhancedStatus;
+        if (context.MxHost is { } mxHost) response.MxHost = mxHost;
+        if (context.RetryAfter is { } retryAfter)
+            response.RetryAfterUtc = Timestamp.FromDateTimeOffset(retryAfter);
         return response;
     }
 

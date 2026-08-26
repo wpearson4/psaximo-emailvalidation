@@ -22,6 +22,17 @@ public sealed class ValidationStatusGrpcMapperTests
             RetryReason = ReasonCode.ProviderVerificationBlocked.ToString(),
             Provider = MailProvider.Microsoft365.ToString(),
             Confidence = 0.25,
+            UnknownContext = new(
+                UnknownCause.ProviderVerificationBlocked,
+                "The provider blocked recipient verification.",
+                true,
+                "Wait for the provider cooldown and retry.",
+                SmtpResponseCategory.VerificationBlocked,
+                SmtpCommand.MailFrom,
+                550,
+                "5.7.1",
+                "mx.example.com",
+                Now.AddMinutes(45)),
             AttemptNumber = 1,
             MaximumAttempts = 2,
             Sequence = 9,
@@ -39,6 +50,11 @@ public sealed class ValidationStatusGrpcMapperTests
         Assert.Equal(0.25, response.Confidence);
         Assert.Equal("Microsoft365", response.Provider);
         Assert.Equal(2, response.MaximumAttempts);
+        Assert.Equal("ProviderVerificationBlocked", response.UnknownContext.Cause);
+        Assert.True(response.UnknownContext.Retryable);
+        Assert.Equal("MailFrom", response.UnknownContext.FailedStage);
+        Assert.Equal(550, response.UnknownContext.ResponseCode);
+        Assert.Equal(Now.AddMinutes(45), response.UnknownContext.RetryAfterUtc.ToDateTimeOffset());
     }
 
     [Fact]

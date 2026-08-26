@@ -115,8 +115,20 @@ public sealed class MongoDocumentMappingTests
         var now = DateTimeOffset.UtcNow;
         var result = Result() with
         {
+            Status = EmailValidationStatus.Unknown,
             ValidationId = "validation-123",
             ResultState = ValidationResultState.Provisional,
+            UnknownContext = new(
+                UnknownCause.TemporarySmtpFailure,
+                "The destination returned a temporary SMTP failure.",
+                true,
+                "Retry after the destination or provider cooldown clears.",
+                SmtpResponseCategory.TemporaryFailure,
+                SmtpCommand.RcptTo,
+                451,
+                "4.7.0",
+                "mx.example.test",
+                now.AddMinutes(5)),
             SmtpEvidence = new SmtpEvidence(
                 SmtpCommand.RcptTo, 451, "4.7.0", SmtpResponseCategory.TemporaryFailure,
                 SmtpResponseTextClassification.TemporaryCondition, 1, MailProvider.GenericSmtp,
@@ -155,6 +167,8 @@ public sealed class MongoDocumentMappingTests
 
         Assert.Single(restored.Attempts);
         Assert.Null(restored.CurrentResult.SmtpEvidence);
+        Assert.Equal(UnknownCause.TemporarySmtpFailure, restored.CurrentResult.UnknownContext?.Cause);
+        Assert.Equal(now.AddMinutes(5), restored.CurrentResult.UnknownContext?.RetryAfter);
         Assert.Empty(restored.CurrentResult.DomainIntelligence!.CatchAll.ProbeResults);
         Assert.DoesNotContain("raw lifecycle response", document.PayloadJson, StringComparison.Ordinal);
         Assert.DoesNotContain("raw catch-all response", document.PayloadJson, StringComparison.Ordinal);

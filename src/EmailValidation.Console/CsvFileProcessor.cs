@@ -22,7 +22,8 @@ internal sealed class CsvFileProcessor
 {
     internal static readonly string[] ResultColumns =
     [
-        "Status", "Classification Confidence", "Confidence Reason", "Evidence Quality",
+        "Status", "Classification Confidence", "Confidence Reason", "Unknown Cause",
+        "Unknown Summary", "Unknown Retryable", "Recommended Action", "Evidence Quality",
         "Confidence Type", "Deliverability Probability", "Catch-All Classification",
         "Probe Attempted", "Probe Disposition", "SMTP Response Category", "Retry After",
         "Validation Date/Time", "Validation ID", "Result State", "Attempt Number",
@@ -262,6 +263,12 @@ internal sealed class CsvFileProcessor
             values[legacyConfidenceIndex] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Confidence Reason"]] =
             row.Result.ConfidenceReason ?? "No confidence explanation was available.";
+        values[resultIndexes["Unknown Cause"]] = row.Result.UnknownContext?.Cause.ToString() ?? string.Empty;
+        values[resultIndexes["Unknown Summary"]] = row.Result.UnknownContext?.Summary ?? string.Empty;
+        values[resultIndexes["Unknown Retryable"]] = row.Result.UnknownContext is { } unknown
+            ? unknown.Retryable ? "Yes" : "No"
+            : string.Empty;
+        values[resultIndexes["Recommended Action"]] = row.Result.UnknownContext?.RecommendedAction ?? string.Empty;
         values[resultIndexes["Validation Date/Time"]] = (row.Result.Metadata?.ValidatedAt ?? row.CompletedAt).UtcDateTime.ToString(
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
         values[resultIndexes["Classification Confidence"]] = FormatConfidence(row.Result.ClassificationConfidence);

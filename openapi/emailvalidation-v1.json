@@ -76,6 +76,18 @@
                       "status": "Unknown",
                       "subStatus": "TemporaryFailure",
                       "confidence": 0.82,
+                      "unknownContext": {
+                        "cause": "TemporarySmtpFailure",
+                        "summary": "The destination returned a temporary SMTP failure.",
+                        "retryable": true,
+                        "recommendedAction": "Retry after the destination or provider cooldown clears.",
+                        "smtpCategory": "TemporaryFailure",
+                        "failedStage": "RcptTo",
+                        "responseCode": 451,
+                        "enhancedStatusCode": "4.7.1",
+                        "mxHost": "mx.example.com",
+                        "retryAfterUtc": "2026-08-23T18:30:00Z"
+                      },
                       "provider": "Microsoft365",
                       "source": "LiveValidation",
                       "retryScheduled": true,
@@ -94,6 +106,17 @@
                       "status": "Unknown",
                       "subStatus": "VerificationBlocked",
                       "confidence": 0.88,
+                      "unknownContext": {
+                        "cause": "ProviderVerificationBlocked",
+                        "summary": "The destination did not provide recipient-specific verification evidence.",
+                        "retryable": true,
+                        "recommendedAction": "Wait for the provider cooldown and retry later; do not attempt to circumvent the provider policy.",
+                        "smtpCategory": "VerificationBlocked",
+                        "failedStage": "RcptTo",
+                        "responseCode": 550,
+                        "enhancedStatusCode": "5.7.1",
+                        "mxHost": "mx.example.com"
+                      },
                       "provider": "Google",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -622,6 +645,9 @@
             "type": "string",
             "nullable": true
           },
+          "unknownContext": {
+            "$ref": "#/components/schemas/EmailValidation.Api.UnknownValidationContextV1"
+          },
           "provider": {
             "type": "string"
           },
@@ -656,6 +682,49 @@
           },
           "checks": {
             "$ref": "#/components/schemas/EmailValidation.Api.ValidationChecksV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.UnknownValidationContextV1": {
+        "type": "object",
+        "properties": {
+          "cause": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "recommendedAction": {
+            "type": "string"
+          },
+          "smtpCategory": {
+            "type": "string"
+          },
+          "failedStage": {
+            "type": "string",
+            "nullable": true
+          },
+          "responseCode": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "enhancedStatusCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "mxHost": {
+            "type": "string",
+            "nullable": true
+          },
+          "retryAfterUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -870,6 +939,9 @@
           "confidenceReason": {
             "type": "string",
             "nullable": true
+          },
+          "unknownContext": {
+            "$ref": "#/components/schemas/EmailValidation.Api.UnknownValidationContextV1"
           },
           "attemptNumber": {
             "type": "integer",

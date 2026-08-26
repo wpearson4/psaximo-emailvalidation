@@ -43,6 +43,7 @@ public record ValidationStatusSnapshot
     public required ValidationResultState ResultState { get; init; }
     public double? Confidence { get; init; }
     public string? ConfidenceReason { get; init; }
+    public UnknownValidationContext? UnknownContext { get; init; }
     public int AttemptNumber { get; init; }
     public int MaximumAttempts { get; init; }
     public bool IsRunning { get; init; }
@@ -85,6 +86,7 @@ public static class ValidationStatusMapper
             ResultState = lifecycle.ResultState,
             Confidence = hasResult ? result.Confidence : null,
             ConfidenceReason = hasResult ? result.ConfidenceReason : null,
+            UnknownContext = hasResult ? result.UnknownContext : null,
             AttemptNumber = lifecycle.AttemptNumber,
             MaximumAttempts = lifecycle.MaximumAttempts,
             IsRunning = state is ValidationLifecycleState.Validating or ValidationLifecycleState.Revalidating,
@@ -123,6 +125,7 @@ public static class ValidationStatusMapper
             ResultState = snapshot.ResultState,
             Confidence = snapshot.Confidence,
             ConfidenceReason = snapshot.ConfidenceReason,
+            UnknownContext = snapshot.UnknownContext,
             AttemptNumber = snapshot.AttemptNumber,
             MaximumAttempts = snapshot.MaximumAttempts,
             IsRunning = snapshot.IsRunning,

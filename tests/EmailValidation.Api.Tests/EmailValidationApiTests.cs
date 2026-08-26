@@ -81,6 +81,9 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal("Provisional", result!.ResultState);
         Assert.Equal("RetryScheduled", result.LifecycleState);
         Assert.True(result.RetryScheduled);
+        Assert.Equal("TemporarySmtpFailure", result.UnknownContext?.Cause);
+        Assert.True(result.UnknownContext!.Retryable);
+        Assert.Contains("Retry", result.UnknownContext.RecommendedAction, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -391,6 +394,19 @@ public sealed class ApiValidator : IEmailValidator
             ResultState = provisional ? ValidationResultState.Provisional : ValidationResultState.Final,
             RetryScheduled = provisional,
             RetryAfter = provisional ? now.AddMinutes(15) : null,
+            UnknownContext = provisional
+                ? new(
+                    UnknownCause.TemporarySmtpFailure,
+                    "The destination returned a temporary SMTP failure.",
+                    true,
+                    "Retry after the destination or provider cooldown clears.",
+                    SmtpResponseCategory.TemporaryFailure,
+                    SmtpCommand.RcptTo,
+                    451,
+                    "4.7.1",
+                    "mx.example.com",
+                    now.AddMinutes(15))
+                : null,
             FirstValidatedAt = now,
             LastValidatedAt = now,
             FinalizedAt = provisional ? null : now
@@ -417,6 +433,14 @@ public sealed class ApiStatusService : IValidationStatusQueryService
                     : EmailValidationStatus.Valid,
                 RetryScheduled = validationId == "validation-provisional",
                 RetryAt = validationId == "validation-provisional" ? DateTimeOffset.UtcNow.AddMinutes(15) : null,
+                UnknownContext = validationId == "validation-provisional"
+                    ? new(
+                        UnknownCause.TemporarySmtpFailure,
+                        "The destination returned a temporary SMTP failure.",
+                        true,
+                        "Retry after the destination or provider cooldown clears.",
+                        SmtpResponseCategory.TemporaryFailure)
+                    : null,
                 Sequence = 3,
                 LastUpdatedAt = DateTimeOffset.UtcNow
             }

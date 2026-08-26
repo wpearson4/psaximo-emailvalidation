@@ -290,6 +290,7 @@ public sealed class EmailValidator(
             SubStatus = subStatus,
             SubStatuses = result.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
+        result = result with { UnknownContext = UnknownValidationContextBuilder.Build(result) };
         persistenceMetrics.RecordSmtpUtf8(
             result.RequiresSmtpUtf8,
             result.SmtpUtf8Supported is not false);

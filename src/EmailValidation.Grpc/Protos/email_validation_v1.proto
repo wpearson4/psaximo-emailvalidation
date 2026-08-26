@@ -21,6 +21,19 @@ message GetValidationRequest {
   string validation_id = 1;
 }
 
+message UnknownValidationContext {
+  string cause = 1;
+  string summary = 2;
+  bool retryable = 3;
+  string recommended_action = 4;
+  string smtp_category = 5;
+  optional string failed_stage = 6;
+  optional int32 response_code = 7;
+  optional string enhanced_status_code = 8;
+  optional string mx_host = 9;
+  google.protobuf.Timestamp retry_after_utc = 10;
+}
+
 message EmailValidationResponse {
   string validation_id = 1;
   string email = 2;
@@ -38,4 +51,5 @@ message EmailValidationResponse {
   google.protobuf.Timestamp validated_at_utc = 14;
   optional string source = 15;
   int64 sequence = 16;
+  UnknownValidationContext unknown_context = 17;
 }

@@ -39,6 +39,13 @@ internal static class ResultFormatter
         Add(builder, "Probe Attempted:", result.ProbeAttempted ? "Yes" : "No");
         Add(builder, "Probe Disposition:", result.ProbeDisposition.ToString());
         Add(builder, "Retry After:", result.RetryAfter?.ToString("O", CultureInfo.InvariantCulture) ?? "—");
+        if (result.UnknownContext is { } unknown)
+        {
+            Add(builder, "Unknown Cause:", unknown.Cause.ToString());
+            Add(builder, "Unknown Summary:", unknown.Summary);
+            Add(builder, "Unknown Retryable:", unknown.Retryable ? "Yes" : "No");
+            Add(builder, "Recommended Action:", unknown.RecommendedAction);
+        }
         Add(builder, "Validation ID:", result.ValidationId ?? "—");
         Add(builder, "Result State:", result.ResultState.ToString());
         Add(builder, "Attempt:", $"{result.AttemptNumber}/{result.MaximumAttempts}");
@@ -179,7 +186,7 @@ internal static class ResultFormatter
 
     private static string ToCsv(IReadOnlyList<EmailValidationResult> results)
     {
-        var builder = new StringBuilder("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth,evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter,validationId,resultState,attemptNumber,maximumAttempts,retryScheduled,firstValidatedAt,lastValidatedAt,finalizedAt\n");
+        var builder = new StringBuilder("email,normalizedEmail,status,classificationConfidence,syntaxValid,domainExists,mxPresent,implicitMxFallback,mxHosts,provider,mailbox,catchAll,disposableDomain,roleAccount,reasonCodes,durationMs,providerFamily,gatewayProvider,mailboxProvider,verificationReliability,verificationReliabilityLevel,providerConfidence,catchAllConfidence,smtpCategory,enhancedStatusCode,detailedStatus,detailedStatuses,freeEmailProvider,disposableStatus,toxicDomainStatus,mailInfrastructureStatus,mxForwardStatus,domainAgeDays,typoDetected,suggestedEmail,spamTrapRisk,abuseRisk,suppressionStatus,bounceRisk,recommendedSend,recommendationRisk,recommendationReasons,confidenceType,evidenceConfidence,confidenceReason,unknownCause,unknownSummary,unknownRetryable,recommendedAction,failedSmtpStage,mxHostsAttempted,mxConsensus,probeSenderHealth,evidenceQuality,deliverabilityProbability,catchAllClassification,probeAttempted,probeDisposition,retryAfter,validationId,resultState,attemptNumber,maximumAttempts,retryScheduled,firstValidatedAt,lastValidatedAt,finalizedAt\n");
         foreach (var result in results)
         {
             var fields = new[]
@@ -221,6 +228,10 @@ internal static class ResultFormatter
                 result.ConfidenceType.ToString(),
                 result.EvidenceConfidence.ToString("0.00", CultureInfo.InvariantCulture),
                 result.ConfidenceReason ?? string.Empty,
+                result.UnknownContext?.Cause.ToString() ?? string.Empty,
+                result.UnknownContext?.Summary ?? string.Empty,
+                result.UnknownContext?.Retryable.ToString() ?? string.Empty,
+                result.UnknownContext?.RecommendedAction ?? string.Empty,
                 result.SmtpSessionEvidence?.FailedStage?.ToString() ?? string.Empty,
                 result.MxValidation is null ? string.Empty : string.Join(';', result.MxValidation.HostsAttempted),
                 result.MxValidation?.Consensus.ToString() ?? string.Empty,

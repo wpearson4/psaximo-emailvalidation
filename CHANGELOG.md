@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added structured `UnknownContext` to inconclusive results with a stable cause, plain-language summary,
+  retryability, recommended action, SMTP stage/category/code, MX host, and retry time. REST, gRPC, lifecycle status,
+  Console text/JSON/CSV, and file-processing CSV outputs expose the same context without changing classification.
 - Fixed production job creation by using native MongoDB `$in` filters for source-file deduplication and active-job
   failure transitions, avoiding an unsupported LINQ partial-evaluation path in the MongoDB driver.
 - Prevented API/worker release skew with one immutable Compose release tag, made Mongo job documents tolerant of
@@ -20,7 +23,7 @@
   inconclusive evidence without sending an invalid SMTP envelope.
 - Added the persisted and published `RetryScheduled` lifecycle transition and mapped it through the existing gRPC v1
   contract while preserving all previously persisted enum values.
-- Added API, async-job, SMTPUTF8, lifecycle, and gRPC coverage. The full solution now passes 341 tests.
+- Added API, async-job, SMTPUTF8, lifecycle, gRPC, and structured Unknown-context coverage. The full solution now passes 371 tests.
 - Completed an architecture guardrail review covering layering, shared orchestration, evidence/reuse, SMTP and sender policy, retry/lifecycle authority, risk/confidence boundaries, async safety, and commercial extensibility.
 - Moved bounded domain scheduling from the Console host into Application, added asynchronous channel backpressure, and removed the duplicate legacy domain-intelligence workflow from `EmailValidator`.
 - Preserved compatible historical catch-all evidence across inconclusive refreshes, including records written before richer provider fingerprints, while retaining topology/provider invalidation.

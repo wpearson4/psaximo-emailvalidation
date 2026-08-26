@@ -129,12 +129,22 @@ public sealed class RevalidationTests
         var coordinator = Coordinator(store, dispatcher, metrics);
 
         var first = await coordinator.ProcessInitialResultAsync(
-            Result(EmailValidationStatus.Unknown, ReasonCode.TemporaryFailure), new(true));
+            Result(EmailValidationStatus.Unknown, ReasonCode.TemporaryFailure) with
+            {
+                UnknownContext = new(
+                    UnknownCause.TemporarySmtpFailure,
+                    "The destination returned a temporary SMTP failure.",
+                    true,
+                    "Retry after the destination or provider cooldown clears.",
+                    SmtpResponseCategory.TemporaryFailure)
+            },
+            new(true));
 
         Assert.Equal(ValidationResultState.Provisional, first.Result.ResultState);
         Assert.Equal(1, first.Result.AttemptNumber);
         Assert.Equal(2, first.Result.MaximumAttempts);
         Assert.NotNull(first.Result.ValidationId);
+        Assert.Equal(first.Result.RetryAfter, first.Result.UnknownContext?.RetryAfter);
         Assert.Single(first.Lifecycle!.Attempts);
         Assert.NotNull(first.Lifecycle.PendingRevalidation);
 

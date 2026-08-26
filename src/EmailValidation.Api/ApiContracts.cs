@@ -24,6 +24,18 @@ public sealed record ValidationChecksV1(
     bool RoleAddress,
     string CatchAll);
 
+public sealed record UnknownValidationContextV1(
+    string Cause,
+    string Summary,
+    bool Retryable,
+    string RecommendedAction,
+    string SmtpCategory,
+    string? FailedStage,
+    int? ResponseCode,
+    string? EnhancedStatusCode,
+    string? MxHost,
+    DateTimeOffset? RetryAfterUtc);
+
 public sealed record EmailValidationV1Response(
     string ValidationId,
     string Email,
@@ -33,6 +45,7 @@ public sealed record EmailValidationV1Response(
     string SubStatus,
     double Confidence,
     string? ConfidenceReason,
+    UnknownValidationContextV1? UnknownContext,
     string Provider,
     DateTimeOffset? ValidatedAtUtc,
     string Source,
@@ -53,6 +66,7 @@ public sealed record ValidationStatusV1Response(
     string? SubStatus,
     double? Confidence,
     string? ConfidenceReason,
+    UnknownValidationContextV1? UnknownContext,
     int AttemptNumber,
     int MaxAttempts,
     bool RetryScheduled,
@@ -109,6 +123,7 @@ public static class ApiContractMapper
         result.SubStatus.ToString(),
         result.Confidence,
         result.ConfidenceReason,
+        Map(result.UnknownContext),
         result.MailProvider.ToString(),
         result.Metadata?.ValidatedAt ?? result.LastValidatedAt,
         result.Metadata?.ResultSource.ToString() ?? ValidationResultSource.LiveValidation.ToString(),
@@ -135,6 +150,7 @@ public static class ApiContractMapper
         snapshot.SubStatus?.ToString(),
         snapshot.Confidence,
         snapshot.ConfidenceReason,
+        Map(snapshot.UnknownContext),
         snapshot.AttemptNumber,
         snapshot.MaximumAttempts,
         snapshot.RetryScheduled,
@@ -173,4 +189,18 @@ public static class ApiContractMapper
             : result.RetryScheduled
                 ? ValidationLifecycleState.RetryScheduled.ToString()
                 : ValidationLifecycleState.Provisional.ToString();
+
+    private static UnknownValidationContextV1? Map(UnknownValidationContext? context) => context is null
+        ? null
+        : new(
+            context.Cause.ToString(),
+            context.Summary,
+            context.Retryable,
+            context.RecommendedAction,
+            context.SmtpCategory.ToString(),
+            context.FailedStage?.ToString(),
+            context.ResponseCode,
+            context.EnhancedStatusCode,
+            context.MxHost,
+            context.RetryAfter);
 }

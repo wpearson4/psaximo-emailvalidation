@@ -490,6 +490,9 @@ public sealed class ValidationLifecycleCoordinator(
             MaximumAttempts = decision.MaximumAttempts,
             RetryScheduled = false,
             RetryAfter = nextRetry ?? raw.RetryAfter,
+            UnknownContext = raw.UnknownContext is null
+                ? null
+                : raw.UnknownContext with { RetryAfter = nextRetry ?? raw.RetryAfter },
             FirstValidatedAt = first,
             LastValidatedAt = attemptedAt,
             FinalizedAt = state == ValidationResultState.Final ? attemptedAt : null
