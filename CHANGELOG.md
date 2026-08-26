@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enabled production live SMTP verification with the labeled Azure App Configuration key
+  `EmailValidation:Smtp:Enabled=true`; the API and worker were restarted and readiness remained healthy.
 - Changed the Azure DevOps `master` pipeline to deploy validated immutable API/worker images to production by
   default; manually queued publish-only runs can explicitly set `deployProduction=false`.
 - Added structured `UnknownContext` to inconclusive results with a stable cause, plain-language summary,

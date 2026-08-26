@@ -19,10 +19,14 @@ As of 2026-08-25, Azure DevOps pipeline `EmailValidation Production` (definition
 
 The pipeline has scoped access to the active `OpenMeta Prod` Azure service connection and production environment `emailvalidation-production` (environment ID 6). Do not switch it to the legacy `Visual Studio Professional (6e996557-409f-458a-8c4c-23a0ffb26e62)` service connection; that connection references an Entra application that no longer exists.
 
-Run 1313 deployed the immutable API and worker images for application commit
-`cf633e2f7cad1e31ae3b248e6a34583a691801b3` to `esdata03` on 2026-08-26 and passed the public readiness check. It was
-the final rollout that required manually setting `deployProduction=true`; subsequent `master` CI runs deploy by
+Run 1317 automatically deployed the immutable API and worker images for application commit
+`4310a9f78e7ab41f80820f6aefd931800db4247b` to `esdata03` on 2026-08-26 and passed the public readiness check. Run 1313
+was the final rollout that required manually setting `deployProduction=true`; subsequent `master` CI runs deploy by
 default. The earlier recovered 150-row job completed with no dead-lettered messages.
+
+Production live SMTP verification is enabled by the labeled Azure App Configuration value
+`EmailValidation:Smtp:Enabled=true`. The API and worker load this value at startup; both were restarted after the
+setting was created on 2026-08-26, and the public readiness endpoint returned healthy.
 
 The Linux automation agent `esdata03-emailvalidation` is registered and online in `OMetaSearchPool` on `10.10.252.31`. Its systemd service runs as `gwadmin`, and the deployment job demands that exact agent name so another machine cannot receive a host-local deployment accidentally. The separate `EmailValidation Production` deployment group remains available for Classic releases; YAML deployment continues through `OMetaSearchPool` because Azure DevOps deployment groups are not YAML execution pools.
 
