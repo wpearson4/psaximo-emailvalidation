@@ -230,6 +230,27 @@ public interface ILocalOutboundIdentityDiscovery
     Task<IReadOnlySet<string>> GetBoundIpv4AddressesAsync(
         string interfaceName,
         CancellationToken cancellationToken = default);
+
+    async Task<LocalOutboundIdentityBinding> InspectAsync(
+        string interfaceName,
+        IPAddress address,
+        CancellationToken cancellationToken = default)
+    {
+        var bound = await GetBoundIpv4AddressesAsync(interfaceName, cancellationToken).ConfigureAwait(false);
+        return new(interfaceName, true, true, bound.Contains(address.ToString()),
+            bound.Contains(address.ToString()) ? interfaceName : null);
+    }
+}
+
+public interface IOutboundIdentityDnsResolver
+{
+    Task<OutboundIdentityDnsQueryResult> ResolvePtrAsync(
+        IPAddress address,
+        CancellationToken cancellationToken = default);
+
+    Task<OutboundIdentityDnsQueryResult> ResolveIpv4Async(
+        string hostName,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IForwardConfirmedReverseDnsValidator
@@ -237,6 +258,33 @@ public interface IForwardConfirmedReverseDnsValidator
     Task<ForwardConfirmedReverseDnsState> ValidateAsync(
         OutboundIdentity identity,
         CancellationToken cancellationToken = default);
+
+    async Task<OutboundIdentityDnsReadiness> GetReadinessAsync(
+        OutboundIdentity identity,
+        bool forceRefresh = false,
+        CancellationToken cancellationToken = default)
+    {
+        var state = await ValidateAsync(identity, cancellationToken).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        return new()
+        {
+            IdentityId = identity.IdentityId,
+            Address = identity.Address,
+            ExpectedHostName = identity.ExpectedPtrHostName,
+            EhloHostName = identity.EhloHostName,
+            State = state,
+            DnsState = state,
+            IsEligible = state == ForwardConfirmedReverseDnsState.Valid,
+            EvaluatedAtUtc = now,
+            ExpiresAtUtc = now,
+            ValidationPolicyVersion = "legacy"
+        };
+    }
+
+    Task<IReadOnlyList<OutboundIdentityDnsReadiness>> GetAllAsync(
+        bool forceRefresh = false,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<OutboundIdentityDnsReadiness>>([]);
 }
 
 public interface IOutboundIdentityHealthStore

@@ -77,7 +77,8 @@ public static class ApiPlatformExtensions
 
         services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])
-            .AddCheck<ApiReadinessHealthCheck>("critical-dependencies", tags: ["ready"]);
+            .AddCheck<ApiReadinessHealthCheck>("critical-dependencies", tags: ["ready"])
+            .AddCheck<OutboundIdentityReadinessHealthCheck>("outbound-identities", tags: ["ready"]);
         services.AddSingleton<ApiTelemetry>();
         return services;
     }
@@ -160,6 +161,32 @@ public sealed class ApiReadinessHealthCheck(
         {
             return HealthCheckResult.Unhealthy("A critical dependency is unavailable.");
         }
+    }
+}
+
+public sealed class OutboundIdentityReadinessHealthCheck(
+    IOptions<EmailValidationOptions> options,
+    IForwardConfirmedReverseDnsValidator readiness) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var outbound = options.Value.OutboundIdentities;
+        if (!outbound.Enabled || !outbound.DnsReadiness.Enabled ||
+            outbound.DnsReadiness.Mode == OutboundIdentityDnsReadinessMode.Disabled)
+            return HealthCheckResult.Healthy();
+        var snapshots = await readiness.GetAllAsync(false, cancellationToken).ConfigureAwait(false);
+        var ready = snapshots.Where(item => item.IsEligible)
+            .Select(item => item.IdentityId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unavailableGroups = outbound.IdentityGroups
+            .Where(group => group.Value.All(identityId => !ready.Contains(identityId)))
+            .Select(group => group.Key).ToArray();
+        if (unavailableGroups.Length > 0)
+            return HealthCheckResult.Unhealthy("One or more outbound provider groups have no usable identity.");
+        if (snapshots.Any(item => item.State != ForwardConfirmedReverseDnsState.Valid))
+            return HealthCheckResult.Degraded("One or more outbound identities are not fully DNS-ready.");
+        return HealthCheckResult.Healthy();
     }
 }
 

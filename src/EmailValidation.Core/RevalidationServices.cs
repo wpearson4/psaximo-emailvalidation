@@ -603,7 +603,13 @@ public sealed class ValidationLifecycleCoordinator(
             session?.InterfaceName,
             session?.EhloHost,
             session?.SelectionAlgorithmVersion,
-            result.Provider?.DetectionVersion);
+            result.Provider?.DetectionVersion,
+            session?.ConfiguredSourceIp ?? session?.SourceAddress,
+            session?.ActualBoundSourceIp,
+            session?.ExpectedPtrHostName,
+            session?.FcrDnsState,
+            session?.FcrDnsEvaluatedAtUtc,
+            session?.FcrDnsPolicyVersion);
     }
 
     private async Task PublishBestEffortAsync(ValidationLifecycle lifecycle)

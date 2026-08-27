@@ -28,6 +28,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly ISmtpConnectionFactory _connectionFactory;
     private readonly OutboundIdentityOptions _outboundIdentityOptions;
     private readonly string _strategyVersion;
+    private readonly string _classificationVersion;
+    private readonly SmtpResponseIntelligenceMode _intelligenceMode;
 
     public SmtpMailboxProbe(
         IOptions<EmailValidationOptions> options,
@@ -56,6 +58,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _connectionFactory = connectionFactory ?? new SmtpConnectionFactory();
         _outboundIdentityOptions = options.Value.OutboundIdentities;
         _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
+        _classificationVersion = options.Value.SmtpResponseIntelligence.ClassificationVersion;
+        _intelligenceMode = options.Value.SmtpResponseIntelligence.Mode;
     }
 
     public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default) =>
@@ -195,6 +199,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var observation = ObservationContext(recipient, probeSender, outboundIdentity);
         string? banner = null;
         string? ehloHost = null;
+        string? actualBoundSourceIp = null;
         var tlsAdvertised = false;
         try
         {
@@ -203,6 +208,21 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             await using var connection = await _connectionFactory.ConnectAsync(
                 mxHost, 25, outboundIdentity?.Address ?? IPAddress.Any, connectionTimeout.Token)
                 .ConfigureAwait(false);
+            actualBoundSourceIp = connection.LocalAddress;
+            if (outboundIdentity is not null &&
+                (!IPAddress.TryParse(actualBoundSourceIp, out var actualAddress) ||
+                 !actualAddress.Equals(outboundIdentity.Address)))
+            {
+                connectionWatch.Stop();
+                BindFailures.Add(1,
+                    new("provider", provider.ToString()),
+                    new("identity_id", outboundIdentity.IdentityId));
+                return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, SmtpCommand.Connect,
+                    "The connected socket did not use the selected local source address",
+                    connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
+                    banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation,
+                    localBindFailure: true, actualBoundSourceIp: actualBoundSourceIp);
+            }
             connectionWatch.Stop();
             stages.Add(new SmtpStageResult(
                 SmtpCommand.Connect, null, null, SmtpResponseCategory.Accepted,
@@ -224,7 +244,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             if (greeting.Code / 100 != 2)
                 return BuildResult(greetingEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, SmtpCommand.Greeting, banner, ehloHost,
-                    tlsAdvertised, probeSender, outboundIdentity);
+                    tlsAdvertised, probeSender, outboundIdentity, actualBoundSourceIp: actualBoundSourceIp);
 
             currentCommand = SmtpCommand.Ehlo;
             ehloHost = outboundIdentity?.EhloHostName ?? probeSender.Split('@').LastOrDefault();
@@ -246,7 +266,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             if (ehlo.Code / 100 != 2)
                 return BuildResult(ehloEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, currentCommand, banner, ehloHost,
-                    tlsAdvertised, probeSender, outboundIdentity);
+                    tlsAdvertised, probeSender, outboundIdentity, actualBoundSourceIp: actualBoundSourceIp);
 
             var requiresSmtpUtf8 = recipient.Any(character => !char.IsAscii(character));
             if (requiresSmtpUtf8 && !smtpUtf8Advertised)
@@ -259,7 +279,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 };
                 return BuildResult(unsupported, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, SmtpCommand.RcptTo, banner, ehloHost,
-                    tlsAdvertised, probeSender, outboundIdentity, smtpUtf8Advertised, requiresSmtpUtf8);
+                    tlsAdvertised, probeSender, outboundIdentity, smtpUtf8Advertised, requiresSmtpUtf8,
+                    actualBoundSourceIp);
             }
 
             currentCommand = SmtpCommand.MailFrom;
@@ -271,7 +292,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             if (sender.Code / 100 != 2)
                 return BuildResult(senderEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, SmtpCommand.MailFrom, banner, ehloHost,
-                    tlsAdvertised, probeSender, outboundIdentity);
+                    tlsAdvertised, probeSender, outboundIdentity, actualBoundSourceIp: actualBoundSourceIp);
 
             currentCommand = SmtpCommand.RcptTo;
             stageWatch.Restart();
@@ -296,13 +317,25 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 provider, mxHost, attempt, stages,
                 recipientEvidence.Category == SmtpResponseCategory.Accepted ? null : SmtpCommand.RcptTo,
                 banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity,
-                smtpUtf8Advertised, requiresSmtpUtf8);
+                smtpUtf8Advertised, requiresSmtpUtf8, actualBoundSourceIp);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return ExceptionalResult(SmtpResponseCategory.Timeout, currentCommand, "SMTP operation timed out",
                 connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
-                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation);
+                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation,
+                actualBoundSourceIp: actualBoundSourceIp);
+        }
+        catch (OutboundIdentityBindException)
+        {
+            BindFailures.Add(1,
+                new("provider", provider.ToString()),
+                new("identity_id", outboundIdentity?.IdentityId ?? "unbound"));
+            return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, SmtpCommand.Connect,
+                "The configured local source address could not be bound", connectionWatch.Elapsed,
+                operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost,
+                tlsAdvertised, probeSender, outboundIdentity, observation, localBindFailure: true,
+                actualBoundSourceIp: actualBoundSourceIp);
         }
         catch (SocketException exception) when (exception.SocketErrorCode == SocketError.AddressNotAvailable)
         {
@@ -312,19 +345,22 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, currentCommand,
                 "The configured local source address could not be bound", connectionWatch.Elapsed,
                 operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost,
-                tlsAdvertised, probeSender, outboundIdentity, observation, localBindFailure: true);
+                tlsAdvertised, probeSender, outboundIdentity, observation, localBindFailure: true,
+                actualBoundSourceIp: actualBoundSourceIp);
         }
         catch (SocketException exception)
         {
             return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, currentCommand, exception.Message,
                 connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
-                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation);
+                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation,
+                actualBoundSourceIp: actualBoundSourceIp);
         }
         catch (IOException exception)
         {
             return ExceptionalResult(SmtpResponseCategory.ProtocolFailure, currentCommand, exception.Message,
                 connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
-                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation);
+                banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity, observation,
+                actualBoundSourceIp: actualBoundSourceIp);
         }
     }
 
@@ -396,7 +432,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         string probeSender,
         OutboundIdentity? outboundIdentity,
         bool smtpUtf8Advertised = false,
-        bool smtpUtf8Required = false)
+        bool smtpUtf8Required = false,
+        string? actualBoundSourceIp = null)
     {
         var session = new SmtpSessionEvidence(
             failedStage, stages.ToArray(), mxHost, elapsed, probeSender,
@@ -404,7 +441,13 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             smtpUtf8Advertised, smtpUtf8Required,
             outboundIdentity?.IdentityId, outboundIdentity?.Address.ToString(),
             outboundIdentity?.InterfaceName,
-            outboundIdentity is null ? null : _outboundIdentityOptions.SelectionAlgorithmVersion);
+            outboundIdentity is null ? null : _outboundIdentityOptions.SelectionAlgorithmVersion,
+            ConfiguredSourceIp: outboundIdentity?.Address.ToString(),
+            ActualBoundSourceIp: actualBoundSourceIp,
+            ExpectedPtrHostName: outboundIdentity?.ExpectedPtrHostName,
+            FcrDnsState: outboundIdentity?.DnsReadiness?.DnsState ?? outboundIdentity?.FcrDnsState,
+            FcrDnsEvaluatedAtUtc: outboundIdentity?.DnsReadiness?.EvaluatedAtUtc,
+            FcrDnsPolicyVersion: outboundIdentity?.DnsReadiness?.ValidationPolicyVersion);
         return new SmtpProbeResult(
             SmtpResponseClassifier.ToMailboxStatus(evidence.Category),
             evidence.ResponseCode,
@@ -437,7 +480,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         string probeSender,
         OutboundIdentity? outboundIdentity,
         SmtpResponseObservationContext observation,
-        bool localBindFailure = false)
+        bool localBindFailure = false,
+        string? actualBoundSourceIp = null)
     {
         var classified = _responseClassifier.Classify(
             command, null, detail, elapsed, provider, mxHost, attempt, observation);
@@ -451,7 +495,13 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             InterfaceName: outboundIdentity?.InterfaceName,
             SelectionAlgorithmVersion: outboundIdentity is null
                 ? null
-                : _outboundIdentityOptions.SelectionAlgorithmVersion);
+                : _outboundIdentityOptions.SelectionAlgorithmVersion,
+            ConfiguredSourceIp: outboundIdentity?.Address.ToString(),
+            ActualBoundSourceIp: actualBoundSourceIp,
+            ExpectedPtrHostName: outboundIdentity?.ExpectedPtrHostName,
+            FcrDnsState: outboundIdentity?.DnsReadiness?.DnsState ?? outboundIdentity?.FcrDnsState,
+            FcrDnsEvaluatedAtUtc: outboundIdentity?.DnsReadiness?.EvaluatedAtUtc,
+            FcrDnsPolicyVersion: outboundIdentity?.DnsReadiness?.ValidationPolicyVersion);
         return new SmtpProbeResult(
             SmtpResponseClassifier.ToMailboxStatus(category),
             null,
@@ -557,6 +607,26 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         {
             Category = SmtpResponseCategory.LocalCooldown,
             TextClassification = SmtpResponseTextClassification.VerificationUnavailable
+        };
+        var normalizedReason = selection.Reason switch
+        {
+            OutboundIdentitySelectionReason.NoDnsReadyIdentities =>
+                SmtpNormalizedReason.OutboundIdentityDnsNotReady,
+            OutboundIdentitySelectionReason.InvalidIdentityConfiguration =>
+                SmtpNormalizedReason.OutboundIdentityConfigurationInvalid,
+            _ => SmtpNormalizedReason.NoEligibleOutboundIdentity
+        };
+        var intelligence = evidence.Intelligence is { } classified
+            ? classified with { Reason = normalizedReason }
+            : new SmtpResponseIntelligence(
+                SmtpCommand.Connect, null, null, null, normalizedReason,
+                SmtpEvidenceStrength.High, provider, _classificationVersion,
+                normalizedReason.ToString(), evidence.SanitizedResponse,
+                ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+        evidence = evidence with
+        {
+            Intelligence = intelligence,
+            IntelligenceMode = _intelligenceMode
         };
         return new(SmtpMailboxStatus.NotAttempted, null, evidence.SanitizedResponse,
             TimeSpan.Zero, 0, evidence)

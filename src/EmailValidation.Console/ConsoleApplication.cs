@@ -11,6 +11,7 @@ internal sealed class ConsoleApplication(
     IDnsMailResolver dnsResolver,
     IOptions<EmailValidationOptions> options,
     IProbeSenderPool senderPool,
+    IForwardConfirmedReverseDnsValidator outboundIdentityReadiness,
     CsvFileProcessor csvFileProcessor)
 {
     private readonly EmailValidationOptions _options = options.Value;
@@ -107,8 +108,12 @@ internal sealed class ConsoleApplication(
 
     private async Task<int> DiagnosticsCommandAsync(CliOptions parsed, CancellationToken cancellationToken)
     {
-        if (parsed.Values.Count != 1 || !string.Equals(parsed.Values[0], "smtp", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Usage: diagnostics smtp");
+        if (parsed.Values.Count != 1)
+            throw new ArgumentException("Usage: diagnostics smtp|outbound-identities");
+        if (string.Equals(parsed.Values[0], "outbound-identities", StringComparison.OrdinalIgnoreCase))
+            return await OutboundIdentityDiagnosticsAsync(cancellationToken);
+        if (!string.Equals(parsed.Values[0], "smtp", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Usage: diagnostics smtp|outbound-identities");
 
         const string diagnosticDomain = "gmail.com";
         var dns = await dnsResolver.ResolveAsync(diagnosticDomain, cancellationToken);
@@ -135,6 +140,27 @@ internal sealed class ConsoleApplication(
             await System.Console.Out.WriteLineAsync($"Outbound SMTP connection blocked / unavailable ({exception.Message}).");
             return 1;
         }
+    }
+
+    private async Task<int> OutboundIdentityDiagnosticsAsync(CancellationToken cancellationToken)
+    {
+        var readiness = await outboundIdentityReadiness.GetAllAsync(
+            forceRefresh: true, cancellationToken).ConfigureAwait(false);
+        await System.Console.Out.WriteLineAsync(
+            "Identity   Source IP       Expected PTR / EHLO                           State                     Eligible  Expires (UTC)");
+        foreach (var item in readiness)
+            await System.Console.Out.WriteLineAsync(string.Format(
+                CultureInfo.InvariantCulture,
+                "{0,-10} {1,-15} {2,-45} {3,-25} {4,-9} {5:O}",
+                item.IdentityId,
+                item.Address,
+                item.ExpectedHostName,
+                item.State,
+                item.IsEligible ? "yes" : "no",
+                item.ExpiresAtUtc));
+        var enforced = _options.OutboundIdentities.DnsReadiness.Mode ==
+            OutboundIdentityDnsReadinessMode.Enforced;
+        return enforced && readiness.Any(item => !item.IsEligible) ? 1 : 0;
     }
 
     private async Task<IReadOnlyList<EmailValidationResult>> ValidateBatchAsync(
@@ -260,6 +286,7 @@ internal sealed class ConsoleApplication(
               file <emails.csv> [--column name] [--verbose] [--live]
               interactive [--verbose] [--live]
               diagnostics smtp
+              diagnostics outbound-identities
 
             DNS/MX checks run normally. SMTP and catch-all probes only run with --live.
             Live probing never sends message content and stops after RCPT TO.

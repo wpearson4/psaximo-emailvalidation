@@ -21,6 +21,8 @@ public sealed class RendezvousOutboundIdentitySelector(
     private static readonly Counter<long> Selected = Meter.CreateCounter<long>("outbound_identity_selected_total");
     private static readonly Counter<long> Unavailable = Meter.CreateCounter<long>("outbound_identity_unavailable_total");
     private static readonly Counter<long> FcrDnsInvalid = Meter.CreateCounter<long>("outbound_identity_fcrdns_invalid_total");
+    private static readonly Counter<long> DnsReadinessExcluded =
+        Meter.CreateCounter<long>("outbound_identity_excluded_dns_readiness_total");
     private readonly OutboundIdentityOptions _options = options.Value.OutboundIdentities;
 
     public async Task<OutboundIdentitySelectionResult> SelectAsync(
@@ -43,31 +45,55 @@ public sealed class RendezvousOutboundIdentitySelector(
             return Empty(OutboundIdentitySelectionReason.NoConfiguredIdentities, group);
         }
 
-        var bound = await discovery.GetBoundIpv4AddressesAsync(
-            _options.InterfaceName, cancellationToken).ConfigureAwait(false);
         var members = new HashSet<string>(memberIds, StringComparer.OrdinalIgnoreCase);
         var rejected = new List<string>();
         var eligible = new List<OutboundIdentity>();
+        var readinessByIdentity = new Dictionary<string, OutboundIdentityDnsReadiness>(
+            StringComparer.OrdinalIgnoreCase);
+        var localRejections = 0;
+        var dnsRejections = 0;
+        var configurationRejections = 0;
         foreach (var configured in _options.Identities
                      .Where(item => members.Contains(item.IdentityId))
                      .OrderBy(item => item.IdentityId, StringComparer.Ordinal))
         {
-            if (!TryCreateIdentity(configured, out var identity) || !identity.Enabled ||
-                !IsApprovedAddress(identity.Address) ||
-                (_options.RequireAddressToBeBound && !bound.Contains(identity.Address.ToString())))
+            if (!OutboundIdentityFactory.TryCreate(_options, configured, out var identity) ||
+                !identity.Enabled || !IsApprovedAddress(identity.Address))
             {
+                configurationRejections++;
                 rejected.Add(configured.IdentityId);
                 continue;
             }
 
-            var fcrDns = await fcrDnsValidator.ValidateAsync(identity, cancellationToken).ConfigureAwait(false);
-            identity = identity with { FcrDnsState = fcrDns };
-            if (_options.RequireForwardConfirmedReverseDns && fcrDns != ForwardConfirmedReverseDnsState.Valid)
+            var local = await discovery.InspectAsync(
+                identity.InterfaceName, identity.Address, cancellationToken).ConfigureAwait(false);
+            if (!local.InterfaceExists || !local.InterfaceOperational || !local.AddressBound ||
+                !string.Equals(local.ActualInterfaceName, identity.InterfaceName, StringComparison.Ordinal))
+            {
+                localRejections++;
+                rejected.Add(identity.IdentityId);
+                continue;
+            }
+
+            var readiness = await fcrDnsValidator.GetReadinessAsync(
+                identity, false, cancellationToken).ConfigureAwait(false);
+            readinessByIdentity[identity.IdentityId] = readiness;
+            identity = identity with { FcrDnsState = readiness.DnsState, DnsReadiness = readiness };
+            if (!readiness.IsEligible)
             {
                 FcrDnsInvalid.Add(1,
                     new("provider", request.Provider.ToString()),
                     new("identity_id", identity.IdentityId),
-                    new("fcrdns_state", fcrDns.ToString()));
+                    new("fcrdns_state", readiness.State.ToString()));
+                DnsReadinessExcluded.Add(1,
+                    new("provider", request.Provider.ToString()),
+                    new("identity_id", identity.IdentityId),
+                    new("readiness_state", readiness.State.ToString()));
+                if (readiness.State is ForwardConfirmedReverseDnsState.LocalAddressNotBound or
+                    ForwardConfirmedReverseDnsState.WrongInterface)
+                    localRejections++;
+                else
+                    dnsRejections++;
                 rejected.Add(identity.IdentityId);
                 continue;
             }
@@ -88,14 +114,18 @@ public sealed class RendezvousOutboundIdentitySelector(
 
         if (eligible.Count == 0)
         {
-            var reason = bound.Count == 0
+            var reason = localRejections > 0 && localRejections + configurationRejections == rejected.Count
                 ? OutboundIdentitySelectionReason.NoLocallyBoundIdentities
-                : OutboundIdentitySelectionReason.NoEligibleIdentities;
+                : dnsRejections > 0 && dnsRejections + configurationRejections == rejected.Count
+                    ? OutboundIdentitySelectionReason.NoDnsReadyIdentities
+                    : configurationRejections == rejected.Count
+                        ? OutboundIdentitySelectionReason.InvalidIdentityConfiguration
+                        : OutboundIdentitySelectionReason.NoEligibleIdentities;
             logger.LogWarning(
                 "No eligible outbound identity exists for provider {Provider} group {ProviderGroup}",
                 request.Provider, group);
             RecordUnavailable(request.Provider, reason);
-            return Empty(reason, group, rejected);
+            return Empty(reason, group, rejected, readinessByIdentity);
         }
 
         var selected = eligible
@@ -111,8 +141,11 @@ public sealed class RendezvousOutboundIdentitySelector(
             new("provider", request.Provider.ToString()),
             new("identity_id", selected.IdentityId),
             new("provider_group", group));
-        return new(selected, OutboundIdentitySelectionReason.Selected, group,
-            _options.SelectionAlgorithmVersion, rejected);
+        return new OutboundIdentitySelectionResult(selected, OutboundIdentitySelectionReason.Selected, group,
+            _options.SelectionAlgorithmVersion, rejected)
+        {
+            Readiness = readinessByIdentity
+        };
     }
 
     internal static ulong Score(
@@ -126,35 +159,6 @@ public sealed class RendezvousOutboundIdentitySelector(
         return BinaryPrimitives.ReadUInt64BigEndian(hash);
     }
 
-    private bool TryCreateIdentity(
-        OutboundIdentityConfiguration configured,
-        out OutboundIdentity identity)
-    {
-        var interfaceName = string.IsNullOrWhiteSpace(configured.InterfaceName)
-            ? _options.InterfaceName
-            : configured.InterfaceName.Trim();
-        if (string.IsNullOrWhiteSpace(configured.IdentityId) ||
-            string.IsNullOrWhiteSpace(configured.EhloHostName) ||
-            !IPAddress.TryParse(configured.Address, out var address) ||
-            address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
-            !string.Equals(interfaceName, _options.InterfaceName, StringComparison.Ordinal))
-        {
-            identity = null!;
-            return false;
-        }
-
-        identity = new OutboundIdentity
-        {
-            IdentityId = configured.IdentityId.Trim(),
-            Address = address,
-            InterfaceName = interfaceName,
-            EhloHostName = configured.EhloHostName.Trim().TrimEnd('.').ToLowerInvariant(),
-            Enabled = configured.Enabled,
-            FcrDnsState = ForwardConfirmedReverseDnsState.NotEvaluated
-        };
-        return true;
-    }
-
     private bool IsApprovedAddress(IPAddress address)
     {
         if (!Ipv4Cidr.TryParse(_options.AllowedCidr, out var cidr) || !cidr.Contains(address)) return false;
@@ -166,8 +170,14 @@ public sealed class RendezvousOutboundIdentitySelector(
     private OutboundIdentitySelectionResult Empty(
         OutboundIdentitySelectionReason reason,
         string group,
-        IReadOnlyList<string>? rejected = null) =>
-        new(null, reason, group, _options.SelectionAlgorithmVersion, rejected ?? []);
+        IReadOnlyList<string>? rejected = null,
+        IReadOnlyDictionary<string, OutboundIdentityDnsReadiness>? readiness = null) =>
+        new OutboundIdentitySelectionResult(
+            null, reason, group, _options.SelectionAlgorithmVersion, rejected ?? [])
+        {
+            Readiness = readiness ?? new Dictionary<string, OutboundIdentityDnsReadiness>(
+                StringComparer.OrdinalIgnoreCase)
+        };
 
     private static void RecordUnavailable(
         MailProvider provider,

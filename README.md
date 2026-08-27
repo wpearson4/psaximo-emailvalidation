@@ -188,6 +188,8 @@ Store `Username`/`Password` or `ApiKey` through user secrets or environment vari
 
 The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. A bounded, process-wide pool is loaded once and shared by interactive and CSV validation. Healthy senders are held by domain-scoped affinity even when the routine pool rotation threshold is reached. Syntax is checked while loading; sender-domain DNS health is checked lazily before first use. A sender-specific rejection clears only that recipient domain's affinity and records domain/sender incompatibility; globally invalid sender health removes every matching affinity. Recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and all other SMTP work share the strict per-address session budget.
 
+Provider-aware outbound identities use explicit source IP, interface, expected PTR, and EHLO configuration. DNS readiness supports `Disabled`, `Observe`, and `Enforced` rollout modes plus strict one-PTR/one-A validation, TTL-aware caching, bounded negative caching, single-flight refresh, and a limited last-known-good grace for transient resolver failures. Local binding is mandatory in every mode. The SMTP connection verifies its actual local endpoint before reading the greeting and never falls back to default egress. Run `diagnostics outbound-identities` for a no-SMTP readiness report.
+
 ## CSV input
 
 A CSV file must have a header. Common email headers are detected automatically, case-insensitively, after normalizing spaces, underscores, and hyphens:

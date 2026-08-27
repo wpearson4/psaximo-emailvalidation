@@ -71,7 +71,10 @@ public enum SmtpNormalizedReason
     EhloRejected,
     ProtocolFailure,
     DnsFailure,
-    TlsFailure
+    TlsFailure,
+    NoEligibleOutboundIdentity,
+    OutboundIdentityDnsNotReady,
+    OutboundIdentityConfigurationInvalid
 }
 
 public enum SmtpEvidenceStrength { None, Low, Medium, High }
@@ -223,7 +226,13 @@ public sealed record SmtpSessionEvidence(
     string? OutboundIdentityId = null,
     string? SourceAddress = null,
     string? InterfaceName = null,
-    string? SelectionAlgorithmVersion = null)
+    string? SelectionAlgorithmVersion = null,
+    string? ConfiguredSourceIp = null,
+    string? ActualBoundSourceIp = null,
+    string? ExpectedPtrHostName = null,
+    ForwardConfirmedReverseDnsState? FcrDnsState = null,
+    DateTimeOffset? FcrDnsEvaluatedAtUtc = null,
+    string? FcrDnsPolicyVersion = null)
 {
     public SmtpStageResult? MailFrom => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.MailFrom);
     public SmtpStageResult? RcptTo => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.RcptTo);

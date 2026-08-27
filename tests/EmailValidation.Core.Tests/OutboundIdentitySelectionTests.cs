@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using EmailValidation.Application;
 using EmailValidation.Core;
@@ -115,6 +116,28 @@ public sealed class OutboundIdentitySelectionTests
         Assert.Equal("smtp-162", google.Identity!.IdentityId);
     }
 
+    [Theory]
+    [InlineData(OutboundIdentityDnsReadinessMode.Observe, true)]
+    [InlineData(OutboundIdentityDnsReadinessMode.Enforced, false)]
+    public async Task Selector_HonorsDnsReadinessRolloutMode(
+        OutboundIdentityDnsReadinessMode mode,
+        bool expectedSelected)
+    {
+        var root = Config();
+        root.OutboundIdentities.DnsReadiness.Mode = mode;
+        var selector = Selector(Options.Create(root),
+            new FakeDiscovery("64.182.22.162", "64.182.22.163"),
+            new FakeHealthStore(),
+            new FixedReadiness(ForwardConfirmedReverseDnsState.MissingPtr,
+                isEligible: mode == OutboundIdentityDnsReadinessMode.Observe));
+
+        var result = await selector.SelectAsync(new("company.example", MailProvider.Microsoft365));
+
+        Assert.Equal(expectedSelected, result.Selected);
+        if (!expectedSelected)
+            Assert.Equal(OutboundIdentitySelectionReason.NoDnsReadyIdentities, result.Reason);
+    }
+
     [Fact]
     public void HealthPolicy_DoesNotPenalizeRecipientFailureOrSingleTimeout()
     {
@@ -181,9 +204,23 @@ public sealed class OutboundIdentitySelectionTests
             IdentityId = "smtp-162",
             Address = IPAddress.Parse("64.182.22.162"),
             InterfaceName = "ens19",
+            ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
             EhloHostName = "smtp-162.email.digitalwarehouse.io",
             Enabled = true,
-            FcrDnsState = ForwardConfirmedReverseDnsState.Valid
+            FcrDnsState = ForwardConfirmedReverseDnsState.Valid,
+            DnsReadiness = new()
+            {
+                IdentityId = "smtp-162",
+                Address = IPAddress.Parse("64.182.22.162"),
+                ExpectedHostName = "smtp-162.email.digitalwarehouse.io",
+                EhloHostName = "smtp-162.email.digitalwarehouse.io",
+                State = ForwardConfirmedReverseDnsState.Valid,
+                DnsState = ForwardConfirmedReverseDnsState.Valid,
+                IsEligible = true,
+                EvaluatedAtUtc = new DateTimeOffset(2026, 8, 27, 12, 0, 0, TimeSpan.Zero),
+                ExpiresAtUtc = new DateTimeOffset(2026, 8, 27, 13, 0, 0, TimeSpan.Zero),
+                ValidationPolicyVersion = "test-v1"
+            }
         };
         using var connection = new ScriptedConnectionFactory(
             "220 mx.example ESMTP\r\n" +
@@ -210,18 +247,116 @@ public sealed class OutboundIdentitySelectionTests
         Assert.Equal(identity.Address, connection.LocalAddress);
         Assert.Equal(identity.IdentityId, result.SessionEvidence!.OutboundIdentityId);
         Assert.Equal(identity.Address.ToString(), result.SessionEvidence.SourceAddress);
+        Assert.Equal(identity.Address.ToString(), result.SessionEvidence.ConfiguredSourceIp);
+        Assert.Equal(identity.Address.ToString(), result.SessionEvidence.ActualBoundSourceIp);
+        Assert.Equal(identity.ExpectedPtrHostName, result.SessionEvidence.ExpectedPtrHostName);
+        Assert.Equal(ForwardConfirmedReverseDnsState.Valid, result.SessionEvidence.FcrDnsState);
+        Assert.Equal("test-v1", result.SessionEvidence.FcrDnsPolicyVersion);
         Assert.Equal(identity.EhloHostName, result.SessionEvidence.EhloHost);
         Assert.Contains($"EHLO {identity.EhloHostName}\r\n", connection.Commands, StringComparison.Ordinal);
         Assert.DoesNotContain("EHLO example.test", connection.Commands, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task SmtpProbe_ActualEndpointMismatchStopsBeforeSmtpCommands()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.Smtp.RetryCount = 0;
+        var options = Options.Create(root);
+        var identity = new OutboundIdentity
+        {
+            IdentityId = "smtp-162",
+            Address = IPAddress.Parse("64.182.22.162"),
+            InterfaceName = "ens19",
+            ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
+            EhloHostName = "smtp-162.email.digitalwarehouse.io",
+            Enabled = true,
+            FcrDnsState = ForwardConfirmedReverseDnsState.Valid
+        };
+        using var connection = new ScriptedConnectionFactory(
+            "220 mx.example ESMTP\r\n", "64.182.232.51");
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(), connection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.True(result.LocalBindFailure);
+        Assert.Equal(SmtpMailboxStatus.ConnectionFailure, result.Status);
+        Assert.Equal("64.182.232.51", result.SessionEvidence!.ActualBoundSourceIp);
+        Assert.Empty(connection.Commands);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_BindFailureDoesNotFallBackToUnboundConnection()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.Smtp.RetryCount = 0;
+        var options = Options.Create(root);
+        var identity = new OutboundIdentity
+        {
+            IdentityId = "smtp-162",
+            Address = IPAddress.Parse("64.182.22.162"),
+            InterfaceName = "ens19",
+            ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
+            EhloHostName = "smtp-162.email.digitalwarehouse.io",
+            Enabled = true,
+            FcrDnsState = ForwardConfirmedReverseDnsState.Valid
+        };
+        var connection = new ThrowingBindConnectionFactory();
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(), connection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.True(result.LocalBindFailure);
+        Assert.Equal(SmtpMailboxStatus.ConnectionFailure, result.Status);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(1, connection.Calls);
+        Assert.Equal(identity.Address, connection.LocalAddress);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_NoEligibleIdentityDoesNotOpenConnection()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        var options = Options.Create(root);
+        var connection = new CountingConnectionFactory();
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new UnavailableSelector(), new FakeHealthStore(), connection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(SmtpMailboxStatus.NotAttempted, result.Status);
+        Assert.Equal(0, result.Attempts);
+        Assert.Equal(SmtpNormalizedReason.OutboundIdentityDnsNotReady,
+            result.Evidence!.Intelligence!.Reason);
+        Assert.NotNull(result.RetryAfter);
+        Assert.Equal(0, connection.Calls);
+    }
+
     private static RendezvousOutboundIdentitySelector Selector(
         IOptions<EmailValidationOptions> options,
         FakeDiscovery discovery,
-        FakeHealthStore health) => new(
+        FakeHealthStore health,
+        IForwardConfirmedReverseDnsValidator? readiness = null) => new(
             options,
             discovery,
-            new ValidFcrDns(),
+            readiness ?? new ValidFcrDns(),
             health,
             TimeProvider.System,
             NullLogger<RendezvousOutboundIdentitySelector>.Instance);
@@ -270,6 +405,7 @@ public sealed class OutboundIdentitySelectionTests
         IdentityId = $"smtp-{octet}",
         Address = $"64.182.22.{octet}",
         InterfaceName = "ens19",
+        ExpectedPtrHostName = $"smtp-{octet}.email.digitalwarehouse.io",
         EhloHostName = $"smtp-{octet}.email.digitalwarehouse.io"
     };
 
@@ -291,6 +427,32 @@ public sealed class OutboundIdentitySelectionTests
             OutboundIdentity identity,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(ForwardConfirmedReverseDnsState.Valid);
+    }
+
+    private sealed class FixedReadiness(
+        ForwardConfirmedReverseDnsState state,
+        bool isEligible) : IForwardConfirmedReverseDnsValidator
+    {
+        public Task<ForwardConfirmedReverseDnsState> ValidateAsync(
+            OutboundIdentity identity,
+            CancellationToken cancellationToken = default) => Task.FromResult(state);
+
+        public Task<OutboundIdentityDnsReadiness> GetReadinessAsync(
+            OutboundIdentity identity,
+            bool forceRefresh = false,
+            CancellationToken cancellationToken = default) => Task.FromResult(new OutboundIdentityDnsReadiness
+            {
+                IdentityId = identity.IdentityId,
+                Address = identity.Address,
+                ExpectedHostName = identity.ExpectedPtrHostName,
+                EhloHostName = identity.EhloHostName,
+                State = state,
+                DnsState = state,
+                IsEligible = isEligible,
+                EvaluatedAtUtc = DateTimeOffset.UtcNow,
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+                ValidationPolicyVersion = "test-v1"
+            });
     }
 
     private sealed class FakeHealthStore : IOutboundIdentityHealthStore
@@ -324,6 +486,15 @@ public sealed class OutboundIdentitySelectionTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new OutboundIdentitySelectionResult(
                 identity, OutboundIdentitySelectionReason.Selected, "Microsoft", "v1", []));
+    }
+
+    private sealed class UnavailableSelector : IOutboundIdentitySelector
+    {
+        public Task<OutboundIdentitySelectionResult> SelectAsync(
+            OutboundIdentitySelectionRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new OutboundIdentitySelectionResult(
+                null, OutboundIdentitySelectionReason.NoDnsReadyIdentities, "Microsoft", "v1", []));
     }
 
     private sealed class SenderPool : IProbeSenderPool
@@ -360,7 +531,9 @@ public sealed class OutboundIdentitySelectionTests
         }
     }
 
-    private sealed class ScriptedConnectionFactory(string responses) : ISmtpConnectionFactory, IDisposable
+    private sealed class ScriptedConnectionFactory(
+        string responses,
+        string? actualLocalAddress = null) : ISmtpConnectionFactory, IDisposable
     {
         private readonly ScriptedStream _stream = new(responses);
         public IPAddress? LocalAddress { get; private set; }
@@ -373,16 +546,50 @@ public sealed class OutboundIdentitySelectionTests
             CancellationToken cancellationToken = default)
         {
             LocalAddress = localAddress;
-            return Task.FromResult<ISmtpConnection>(new Connection(_stream, localAddress));
+            return Task.FromResult<ISmtpConnection>(new Connection(
+                _stream, actualLocalAddress ?? localAddress.ToString()));
         }
 
         public void Dispose() => _stream.Dispose();
 
-        private sealed class Connection(ScriptedStream stream, IPAddress localAddress) : ISmtpConnection
+        private sealed class Connection(ScriptedStream stream, string localAddress) : ISmtpConnection
         {
             public Stream Stream => stream;
-            public string LocalAddress => localAddress.ToString();
+            public string LocalAddress => localAddress;
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingBindConnectionFactory : ISmtpConnectionFactory
+    {
+        public int Calls { get; private set; }
+        public IPAddress? LocalAddress { get; private set; }
+
+        public Task<ISmtpConnection> ConnectAsync(
+            string host,
+            int port,
+            IPAddress localAddress,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            LocalAddress = localAddress;
+            throw new OutboundIdentityBindException(
+                localAddress, new SocketException((int)SocketError.AccessDenied));
+        }
+    }
+
+    private sealed class CountingConnectionFactory : ISmtpConnectionFactory
+    {
+        public int Calls { get; private set; }
+
+        public Task<ISmtpConnection> ConnectAsync(
+            string host,
+            int port,
+            IPAddress localAddress,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            throw new InvalidOperationException("SMTP connection must not be attempted");
         }
     }
 

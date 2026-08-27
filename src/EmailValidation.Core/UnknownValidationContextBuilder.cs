@@ -15,6 +15,16 @@ public static class UnknownValidationContextBuilder
             ?? result.SmtpEvidence?.Category
             ?? SmtpResponseCategory.NotAttempted;
         var reasons = result.ReasonCodes;
+        var smtpReason = result.SmtpEvidence?.Intelligence?.Reason;
+
+        if (smtpReason is SmtpNormalizedReason.NoEligibleOutboundIdentity or
+            SmtpNormalizedReason.OutboundIdentityDnsNotReady or
+            SmtpNormalizedReason.OutboundIdentityConfigurationInvalid)
+            return Create(result, UnknownCause.NoEligibleOutboundIdentity,
+                "No configured outbound SMTP identity currently satisfies local binding, DNS readiness, provider affinity, and operational health requirements.",
+                true,
+                "Correct outbound identity readiness or wait for the configured retry; do not fall back to default egress.",
+                category);
 
         if (reasons.Contains(ReasonCode.ProbeSenderNotConfigured) ||
             reasons.Contains(ReasonCode.ProbeSenderUnhealthy))

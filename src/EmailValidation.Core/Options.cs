@@ -220,6 +220,7 @@ public sealed class OutboundIdentityOptions
     public string GatewayAddress { get; set; } = string.Empty;
     public bool RequireAddressToBeBound { get; set; } = true;
     public bool RequireForwardConfirmedReverseDns { get; set; } = true;
+    public OutboundIdentityDnsReadinessOptions DnsReadiness { get; set; } = new();
     public string SelectionAlgorithm { get; set; } = "RendezvousHash";
     public string SelectionAlgorithmVersion { get; set; } = "v1";
     public int PolicyBlockCooldownMinutes { get; set; } = 60;
@@ -237,8 +238,31 @@ public sealed class OutboundIdentityConfiguration
     public string IdentityId { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string InterfaceName { get; set; } = string.Empty;
+    public string ExpectedPtrHostName { get; set; } = string.Empty;
     public string EhloHostName { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
+}
+
+public sealed class OutboundIdentityDnsReadinessOptions
+{
+    public bool Enabled { get; set; } = true;
+    public OutboundIdentityDnsReadinessMode Mode { get; set; } = OutboundIdentityDnsReadinessMode.Observe;
+    public ForwardConfirmedReverseDnsValidationMode ValidationMode { get; set; } =
+        ForwardConfirmedReverseDnsValidationMode.StrictOneToOne;
+    public bool RequireExpectedPtr { get; set; } = true;
+    public bool RequireForwardConfirmation { get; set; } = true;
+    public bool RequireEhloMatch { get; set; } = true;
+    public bool AllowLastKnownGoodOnTransientFailure { get; set; } = true;
+    public int MinimumFreshnessMinutes { get; set; } = 5;
+    public int MaximumFreshnessHours { get; set; } = 24;
+    public int FallbackFreshnessMinutes { get; set; } = 60;
+    public int NegativeCacheMinutes { get; set; } = 5;
+    public int TransientFailureRetrySeconds { get; set; } = 60;
+    public int LastKnownGoodGraceMinutes { get; set; } = 15;
+    public int RefreshAheadMinutes { get; set; } = 5;
+    public int MaximumConcurrentLookups { get; set; } = 4;
+    public int RefreshJitterPercent { get; set; } = 10;
+    public string ValidationPolicyVersion { get; set; } = "2026.08.1";
 }
 
 public sealed class ProbeSenderSourceOptions

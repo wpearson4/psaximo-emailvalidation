@@ -83,7 +83,13 @@ public sealed record ValidationAttemptRecord(
     string? InterfaceName = null,
     string? EhloHostName = null,
     string? SelectionAlgorithmVersion = null,
-    string? ProviderClassificationVersion = null);
+    string? ProviderClassificationVersion = null,
+    string? ConfiguredSourceIp = null,
+    string? ActualBoundSourceIp = null,
+    string? ExpectedPtrHostName = null,
+    ForwardConfirmedReverseDnsState? FcrDnsState = null,
+    DateTimeOffset? FcrDnsEvaluatedAtUtc = null,
+    string? FcrDnsPolicyVersion = null);
 
 public sealed record PendingRevalidation(
     EmailRevalidationMessageV1 Message,

@@ -55,6 +55,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDomainBackoffPolicy, DomainBackoffPolicy>();
         services.AddSingleton<IProviderPolicyResolver, ProviderPolicyResolver>();
         services.AddSingleton<ILocalOutboundIdentityDiscovery, LocalOutboundIdentityDiscovery>();
+        services.AddSingleton<IOutboundIdentityDnsResolver, OutboundIdentityDnsResolver>();
+        services.AddSingleton<OutboundIdentityReadinessPolicy>();
         services.AddSingleton<IForwardConfirmedReverseDnsValidator, ForwardConfirmedReverseDnsValidator>();
         services.AddSingleton<OutboundIdentityHealthPolicy>();
         services.AddSingleton<InMemoryOutboundIdentityHealthStore>();

@@ -231,13 +231,16 @@ internal sealed class EmailAuthenticationAnalyzer(
     }
 }
 
-internal enum DnsRecordType : ushort { Txt = 16, DnsKey = 48 }
+internal enum DnsRecordType : ushort { A = 1, CName = 5, Ptr = 12, Txt = 16, DnsKey = 48 }
 
 internal sealed record DnsWireResponse(
     int ResponseCode,
     bool AuthenticatedData,
     IReadOnlyList<ushort> AnswerTypes,
-    IReadOnlyList<string> TextRecords)
+    IReadOnlyList<string> TextRecords,
+    IReadOnlyList<string>? HostNames = null,
+    IReadOnlyList<IPAddress>? Addresses = null,
+    uint? MinimumTtlSeconds = null)
 {
     public bool HasAnswer(DnsRecordType type) => AnswerTypes.Contains((ushort)type);
 }
@@ -383,20 +386,33 @@ internal sealed class DnsWireQueryClient(IOptions<EmailValidationOptions> option
         }
         var answerTypes = new List<ushort>(answers);
         var text = new List<string>();
+        var hostNames = new List<string>();
+        var addresses = new List<IPAddress>();
+        uint? minimumTtl = null;
         for (var index = 0; index < answers; index++)
         {
             ReadName(message, ref offset);
             EnsureAvailable(message, offset, 10);
             var recordType = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(offset, 2));
+            var ttl = BinaryPrimitives.ReadUInt32BigEndian(message.AsSpan(offset + 4, 4));
             var dataLength = BinaryPrimitives.ReadUInt16BigEndian(message.AsSpan(offset + 8, 2));
             offset += 10;
             EnsureAvailable(message, offset, dataLength);
             answerTypes.Add(recordType);
+            minimumTtl = minimumTtl is null ? ttl : Math.Min(minimumTtl.Value, ttl);
             if (recordType == (ushort)DnsRecordType.Txt)
                 text.Add(ReadTextRecord(message.AsSpan(offset, dataLength)));
+            else if (recordType == (ushort)DnsRecordType.A && dataLength == 4)
+                addresses.Add(new IPAddress(message.AsSpan(offset, dataLength)));
+            else if (recordType is (ushort)DnsRecordType.Ptr or (ushort)DnsRecordType.CName)
+            {
+                var nameOffset = offset;
+                hostNames.Add(ReadName(message, ref nameOffset));
+            }
             offset += dataLength;
         }
-        return new(flags & 0x000F, (flags & 0x0020) != 0, answerTypes, text);
+        return new(flags & 0x000F, (flags & 0x0020) != 0, answerTypes, text,
+            hostNames, addresses, minimumTtl);
     }
 
     private static string ReadTextRecord(ReadOnlySpan<byte> data)

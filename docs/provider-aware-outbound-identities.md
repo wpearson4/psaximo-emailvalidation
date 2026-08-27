@@ -11,16 +11,27 @@
 | Outbound identity model | NOT IMPLEMENTED | None | Added immutable identity, FCrDNS, health, selection, and outcome models in Domain. |
 | Provider affinity groups | NOT IMPLEMENTED | Provider enums and policies existed | Added configuration-driven provider-to-group and group-to-identity mappings. No cross-group fallback is present. |
 | Stable identity affinity | NOT IMPLEMENTED | Sender affinity existed, but no source identity selection | Added versioned SHA-256 rendezvous hashing over provider, normalized recipient domain, and stable identity ID. |
-| Local identity eligibility | NOT IMPLEMENTED | None | Added CIDR/reserved-address validation, interface enumeration, bound-address filtering, enabled-state checks, FCrDNS gating, and startup validation. |
+| Local identity eligibility | PARTIALLY IMPLEMENTED | CIDR/reserved-address validation, interface enumeration, bound-address filtering, enabled-state checks, and coarse FCrDNS gating | Extended the existing discovery/validator path with interface existence/operational state, wrong-interface detection, explicit expected PTR names, deterministic hostname normalization, and host-local readiness snapshots. |
+| PTR/forward DNS readiness | PARTIALLY IMPLEMENTED | `IForwardConfirmedReverseDnsValidator` used `System.Net.Dns`, a fixed cache lifetime, and a coarse state enum | Extended the existing validator and DNS wire client with structured PTR/A results, TTLs, strict/compatible policy, negative/transient caching, bounded last-known-good grace, single-flight refresh, rollout modes, and background refresh. No second selector or DNS subsystem was added. |
 | Identity health/cooldown | PARTIALLY IMPLEMENTED | Sender health and provider-wide circuit state existed | Added separate global/provider identity health with expiring cooldown/quarantine, in-memory fallback, and Mongo persistence. Recipient failure and a single timeout have no identity penalty. |
-| SMTP source binding and EHLO | NOT IMPLEMENTED | `TcpClient.ConnectAsync` used default source; EHLO came from the envelope sender domain | Added a testable connection factory that binds the selected IPv4 address before connect and uses the identity's EHLO hostname. The transport never selects another identity. |
-| Attempt evidence | PARTIALLY IMPLEMENTED | Immutable lifecycle attempts already captured provider, topology, SMTP stage/reply, response fingerprint, and sender identity | Added recipient domain, classification source/confidence/version, MX host, outbound identity, source address, interface, EHLO, and selection version. Older Mongo JSON remains additive-field compatible. |
+| SMTP source binding and EHLO | PARTIALLY IMPLEMENTED | The connection factory already bound the selected IPv4 address and used the selected EHLO hostname | Added post-connect local-endpoint verification. A mismatch stops before the SMTP greeting and is recorded as infrastructure/bind failure; default egress is never accepted. |
+| Attempt evidence | PARTIALLY IMPLEMENTED | Immutable lifecycle attempts already captured provider, topology, SMTP stage/reply, response fingerprint, identity, source address, interface, EHLO, and selection version | Added configured and actual bound source IP, expected PTR hostname, FCrDNS state/evaluation time/policy version. Older Mongo documents remain additive-field compatible. |
 | Container namespace/security | IMPLEMENTED BUT INCORRECT | API and worker already use host networking, no published ports, read-only roots, `privileged: false`, and `cap_drop: ALL`; API binds loopback | This is the documented temporary compatibility option because API requests still execute live SMTP. It is safe for source binding but should eventually delegate all live execution to the worker. |
 | Reproducible host networking | IMPLEMENTED | `.162/28`, table 200, narrow source rule, and outbound-only firewall were manually present | Added and applied an idempotent `--check/--apply/--rollback` NetworkManager artifact. All 13 source paths and persistence across interface reactivation were verified. |
 
 ## Configuration
 
-Use `examples/appsettings.outbound-identities.json` as the source for Azure App Configuration keys. Identity values are not secrets. Production should retain `RequireAddressToBeBound=true` and `RequireForwardConfirmedReverseDns=true`.
+Use `examples/appsettings.outbound-identities.json` as the source for Azure App Configuration keys. Identity values are not secrets. Production must retain `RequireAddressToBeBound=true` and `RequireForwardConfirmedReverseDns=true`.
+
+Each identity now explicitly configures both `ExpectedPtrHostName` and `EhloHostName`. `DnsReadiness` defaults to `Observe` with `StrictOneToOne` validation, five-minute minimum freshness, 24-hour maximum freshness, 60-minute fallback freshness, five-minute negative caching, a 60-second transient retry, and a 15-minute bounded last-known-good grace. Configuration/policy version changes invalidate the in-memory DNS cache.
+
+Rollout modes are:
+
+- `Disabled`: skip DNS gating; local binding remains mandatory.
+- `Observe`: evaluate, cache, log, and report DNS readiness without excluding an identity solely for DNS state.
+- `Enforced`: require local binding, exact provider-group membership, DNS readiness, EHLO consistency, and operational health.
+
+`diagnostics outbound-identities` performs a DNS-only, no-SMTP refresh and prints a concise readiness row per configured identity. The API liveness endpoint does not depend on DNS. Readiness is degraded in Observe mode when identities are not fully DNS-ready and unhealthy when a provider group has no usable identity; anonymous health output remains status-only.
 
 The example assigns:
 
@@ -65,7 +76,7 @@ sudo ops/email-validation/configure-outbound-identities.sh --rollback
 
 The host-network configuration was applied after the user explicitly accepted the pre-existing Azure outage. Application image/configuration deployment remains blocked:
 
-- `emailvalidation-api` and `emailvalidation-worker` were each in a restart loop (206 restarts observed).
+- `emailvalidation-api` and `emailvalidation-worker` remain in a restart loop (220+ restarts observed during the latest inspection).
 - Nginx health returned 502 and the API did not listen on loopback port 8080.
 - The mounted App Configuration connection string returned HTTP 401 `Invalid Credential`.
 - The certificate fallback also failed with Entra error `AADSTS700026` (the client application has no configured keys).
@@ -75,21 +86,41 @@ Restore a valid App Configuration credential (or register the configured certifi
 
 ## DNS and FCrDNS readiness
 
-At inspection time none of `smtp-162.email.digitalwarehouse.io` through `smtp-174.email.digitalwarehouse.io` had an A record. `.162` had no PTR; `.163`–`.174` had PTRs pointing to unrelated historical hostnames. Therefore all 13 identities must remain ineligible while production requires FCrDNS.
+At the latest inspection, all 13 `smtp-162.email.digitalwarehouse.io` through `smtp-174.email.digitalwarehouse.io` names had the correct single IPv4 A record. Reverse DNS is still not ready: `.162` has no PTR and `.163`–`.174` have PTRs pointing to unrelated historical hostnames. Therefore all 13 identities fail strict FCrDNS and must remain in `Observe` mode until the IP provider corrects PTR records.
 
 For every identity, create:
 
-1. `smtp-N.email.digitalwarehouse.io A 64.182.22.N` in authoritative forward DNS.
-2. `64.182.22.N PTR smtp-N.email.digitalwarehouse.io` through the IP provider or delegated reverse zone.
-3. Recheck `IP -> PTR hostname -> A same IP` before enabling outbound identities.
+1. Retain `smtp-N.email.digitalwarehouse.io A 64.182.22.N` in authoritative forward DNS.
+2. Set `64.182.22.N PTR smtp-N.email.digitalwarehouse.io` through the IP provider or delegated reverse zone.
+3. Recheck `IP -> exactly one PTR hostname -> exactly one A with the same IP` before switching from `Observe` to `Enforced`.
 
 Do not disable `RequireForwardConfirmedReverseDns` to work around missing external DNS.
+
+Latest read-only readiness matrix (2026-08-27 UTC):
+
+| Identity | Source IP / forward A | Expected PTR and EHLO | Observed PTR | Local `ens19` | Strict FCrDNS | Observe eligibility | Cache expiry |
+|---|---|---|---|---|---|---|---|
+| `smtp-162` | `64.182.22.162` | `smtp-162.email.digitalwarehouse.io` | none | bound | `MissingPtr` | eligible | 5-minute negative cache |
+| `smtp-163` | `64.182.22.163` | `smtp-163.email.digitalwarehouse.io` | `camera.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-164` | `64.182.22.164` | `smtp-164.email.digitalwarehouse.io` | `el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-165` | `64.182.22.165` | `smtp-165.email.digitalwarehouse.io` | `intend.el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-166` | `64.182.22.166` | `smtp-166.email.digitalwarehouse.io` | `timing.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-167` | `64.182.22.167` | `smtp-167.email.digitalwarehouse.io` | `appeal.el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-168` | `64.182.22.168` | `smtp-168.email.digitalwarehouse.io` | `ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-169` | `64.182.22.169` | `smtp-169.email.digitalwarehouse.io` | `gender.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-170` | `64.182.22.170` | `smtp-170.email.digitalwarehouse.io` | `junior.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-171` | `64.182.22.171` | `smtp-171.email.digitalwarehouse.io` | `behind.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-172` | `64.182.22.172` | `smtp-172.email.digitalwarehouse.io` | `author.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-173` | `64.182.22.173` | `smtp-173.email.digitalwarehouse.io` | `vendor.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-174` | `64.182.22.174` | `smtp-174.email.digitalwarehouse.io` | `medium.abmarkset.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+
+“Eligible” above is the intended `Observe` behavior after this build is deployed and configured; it does not mean the currently restarting production containers are using this code. All 13 become ineligible if switched to `Enforced` before PTR correction.
 
 ## Remaining verification after application blockers are cleared
 
 After deploying a healthy application image:
 
-1. Configure and verify matching A/PTR records for all identities.
+1. Configure and verify matching PTR records for all identities; reverify the existing A records.
 2. Publish the outbound identity settings through Azure App Configuration.
 3. Confirm startup validation admits every configured group.
 4. Confirm API ingress, worker health, loopback Kestrel binding, no worker listener, and `outbound-only` firewall state after application restart.

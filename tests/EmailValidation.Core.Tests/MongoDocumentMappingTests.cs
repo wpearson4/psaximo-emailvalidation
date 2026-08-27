@@ -158,7 +158,13 @@ public sealed class MongoDocumentMappingTests
                 SmtpCommand.RcptTo, 451, "4.7.0", SmtpNormalizedReason.ProviderRateLimit,
                 new string('a', 64), SmtpCooldownScope.MxProvider, SmtpHealthImpact.Restriction,
                 "rules-1", "policy-1", SmtpResponseIntelligenceMode.Shadow,
-                ProviderFamily.GenericSmtp, GatewayProvider.GenericSmtp, MailProvider.GenericSmtp)],
+                ProviderFamily.GenericSmtp, GatewayProvider.GenericSmtp, MailProvider.GenericSmtp,
+                ConfiguredSourceIp: "64.182.22.162",
+                ActualBoundSourceIp: "64.182.22.162",
+                ExpectedPtrHostName: "smtp-162.email.digitalwarehouse.io",
+                FcrDnsState: ForwardConfirmedReverseDnsState.Valid,
+                FcrDnsEvaluatedAtUtc: now,
+                FcrDnsPolicyVersion: "test-v1")],
             FirstValidatedAt = now,
             LastValidatedAt = now,
             NextRetryAt = now.AddMinutes(5),
@@ -176,6 +182,11 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal("rules-1", restored.Attempts[0].SmtpClassificationVersion);
         Assert.Equal("policy-1", restored.Attempts[0].SmtpDecisionPolicyVersion);
         Assert.Equal(ProviderFamily.GenericSmtp, restored.Attempts[0].ProviderFamily);
+        Assert.Equal("64.182.22.162", restored.Attempts[0].ConfiguredSourceIp);
+        Assert.Equal("64.182.22.162", restored.Attempts[0].ActualBoundSourceIp);
+        Assert.Equal("smtp-162.email.digitalwarehouse.io", restored.Attempts[0].ExpectedPtrHostName);
+        Assert.Equal(ForwardConfirmedReverseDnsState.Valid, restored.Attempts[0].FcrDnsState);
+        Assert.Equal("test-v1", restored.Attempts[0].FcrDnsPolicyVersion);
         Assert.Null(restored.CurrentResult.SmtpEvidence);
         Assert.Equal(UnknownCause.TemporarySmtpFailure, restored.CurrentResult.UnknownContext?.Cause);
         Assert.Equal(now.AddMinutes(5), restored.CurrentResult.UnknownContext?.RetryAfter);

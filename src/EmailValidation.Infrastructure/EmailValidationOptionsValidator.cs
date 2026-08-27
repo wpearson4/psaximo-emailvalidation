@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Text.Json;
+using EmailValidation.Application;
 using EmailValidation.Core;
 using Microsoft.Extensions.Options;
 
@@ -227,6 +228,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         if (!options.Enabled) return;
         if (string.IsNullOrWhiteSpace(options.InterfaceName))
             failures.Add("EmailValidation:OutboundIdentities:InterfaceName is required.");
+        if (!options.RequireAddressToBeBound)
+            failures.Add("EmailValidation:OutboundIdentities:RequireAddressToBeBound must remain true.");
         if (!string.Equals(options.SelectionAlgorithm, "RendezvousHash", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(options.SelectionAlgorithmVersion))
             failures.Add("EmailValidation:OutboundIdentities must use a versioned RendezvousHash selection algorithm.");
@@ -244,11 +247,24 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         if (options.PolicyBlockCooldownMinutes < 1 || options.QuarantineFailureThreshold < 1 ||
             options.QuarantineMinutes < 1)
             failures.Add("EmailValidation outbound identity cooldown and quarantine policy values must be positive.");
+        var readiness = options.DnsReadiness;
+        if (readiness.Enabled && readiness.Mode == OutboundIdentityDnsReadinessMode.Enforced &&
+            !options.RequireForwardConfirmedReverseDns)
+            failures.Add("Enforced outbound identity DNS readiness requires RequireForwardConfirmedReverseDns=true.");
+        if (string.IsNullOrWhiteSpace(readiness.ValidationPolicyVersion))
+            failures.Add("EmailValidation:OutboundIdentities:DnsReadiness:ValidationPolicyVersion is required.");
+        if (readiness.MinimumFreshnessMinutes < 1 || readiness.MaximumFreshnessHours < 1 ||
+            readiness.FallbackFreshnessMinutes < 1 || readiness.NegativeCacheMinutes < 1 ||
+            readiness.TransientFailureRetrySeconds < 15 || readiness.LastKnownGoodGraceMinutes < 0 ||
+            readiness.RefreshAheadMinutes < 0 || readiness.MaximumConcurrentLookups is < 1 or > 32 ||
+            readiness.RefreshJitterPercent is < 0 or > 50)
+            failures.Add("EmailValidation outbound identity DNS readiness cache, refresh, grace, and concurrency values are invalid.");
         if (options.Identities.Count == 0 || options.IdentityGroups.Count == 0 || options.ProviderGroups.Count == 0)
             failures.Add("Enabled outbound identity configuration requires identities, identity groups, and provider mappings.");
 
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var addresses = new HashSet<string>(StringComparer.Ordinal);
+        var expectedPtrNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var ehloNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var identity in options.Identities)
         {
@@ -270,8 +286,14 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (!string.IsNullOrWhiteSpace(identity.InterfaceName) &&
                 !string.Equals(identity.InterfaceName, options.InterfaceName, StringComparison.Ordinal))
                 failures.Add($"Outbound identity '{identity.IdentityId}' uses an unapproved interface.");
-            if (string.IsNullOrWhiteSpace(identity.EhloHostName) || !ehloNames.Add(identity.EhloHostName))
-                failures.Add("EmailValidation outbound identity EHLO hostnames must be present and unique.");
+            if (!OutboundIdentityHostName.TryNormalize(identity.ExpectedPtrHostName, out var expectedPtr) ||
+                !expectedPtrNames.Add(expectedPtr))
+                failures.Add("EmailValidation outbound identity expected PTR hostnames must be valid FQDNs and unique.");
+            if (!OutboundIdentityHostName.TryNormalize(identity.EhloHostName, out var ehlo) ||
+                !ehloNames.Add(ehlo))
+                failures.Add("EmailValidation outbound identity EHLO hostnames must be valid FQDNs and unique.");
+            if (readiness.RequireEhloMatch && !string.Equals(expectedPtr, ehlo, StringComparison.OrdinalIgnoreCase))
+                failures.Add($"Outbound identity '{identity.IdentityId}' EHLO hostname must match its expected PTR hostname.");
         }
 
         foreach (var mapping in options.ProviderGroups)

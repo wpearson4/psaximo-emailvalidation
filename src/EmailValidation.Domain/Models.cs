@@ -28,7 +28,8 @@ public enum UnknownCause
     SmtpUtf8Unsupported,
     ConflictingMxEvidence,
     AmbiguousSmtpResponse,
-    ExecutionFailure
+    ExecutionFailure,
+    NoEligibleOutboundIdentity
 }
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
 public enum ProbeSenderCandidateState { Candidate, Healthy, Active, CoolingDown, Invalid, Degraded, Retired }
@@ -49,7 +50,8 @@ public enum ReasonCode
     SuggestedDomainCorrection, TemporaryFailure, Timeout, Alias, AlternateAddress,
     SenderIdentityRejected, SenderDomainRejected, PolicyBlock, AuthenticationRequired,
     RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
-    LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported
+    LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported,
+    NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
