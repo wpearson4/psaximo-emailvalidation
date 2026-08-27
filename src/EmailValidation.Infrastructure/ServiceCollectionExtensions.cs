@@ -54,6 +54,17 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDomainPacingJitter, DomainPacingJitter>();
         services.AddSingleton<IDomainBackoffPolicy, DomainBackoffPolicy>();
         services.AddSingleton<IProviderPolicyResolver, ProviderPolicyResolver>();
+        services.AddSingleton<ILocalOutboundIdentityDiscovery, LocalOutboundIdentityDiscovery>();
+        services.AddSingleton<IForwardConfirmedReverseDnsValidator, ForwardConfirmedReverseDnsValidator>();
+        services.AddSingleton<OutboundIdentityHealthPolicy>();
+        services.AddSingleton<InMemoryOutboundIdentityHealthStore>();
+        services.AddSingleton<MongoOutboundIdentityHealthStore>();
+        services.AddSingleton<IOutboundIdentityHealthStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoOutboundIdentityHealthStore>()
+            : provider.GetRequiredService<InMemoryOutboundIdentityHealthStore>());
+        services.AddSingleton<IOutboundIdentitySelector, RendezvousOutboundIdentitySelector>();
+        services.AddSingleton<ISmtpConnectionFactory, SmtpConnectionFactory>();
+        services.AddHostedService<OutboundIdentityStartupValidator>();
         services.AddSingleton<IProbeSenderAffinityStore, ProbeSenderAffinityStore>();
         services.AddSingleton<IProbeSenderJitter, ProbeSenderJitter>();
         services.AddSingleton<IProbeSenderRotationPolicy, ProbeSenderRotationPolicy>();

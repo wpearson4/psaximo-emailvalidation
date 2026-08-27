@@ -142,6 +142,7 @@ public sealed record SmtpProbeResult(
     public SmtpProbeDisposition Disposition { get; init; } = SmtpProbeDisposition.Completed;
     /// <summary>The earliest useful retry time when local policy deferred the probe.</summary>
     public DateTimeOffset? RetryAfter { get; init; }
+    public bool LocalBindFailure { get; init; }
     public bool ProbeAttempted => SessionEvidence is not null || Attempts > 0;
 }
 

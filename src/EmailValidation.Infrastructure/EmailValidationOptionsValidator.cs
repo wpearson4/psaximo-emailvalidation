@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Net;
 using System.Text.Json;
 using EmailValidation.Core;
 using Microsoft.Extensions.Options;
@@ -20,7 +22,9 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var jobs = options.Jobs;
         var columnDetection = options.ColumnDetection;
         var smtpResponseIntelligence = options.SmtpResponseIntelligence;
+        var outboundIdentities = options.OutboundIdentities;
         var failures = new List<string>();
+        ValidateOutboundIdentities(outboundIdentities, failures);
         if (string.IsNullOrWhiteSpace(smtpResponseIntelligence.ClassificationVersion) ||
             string.IsNullOrWhiteSpace(smtpResponseIntelligence.DecisionPolicyVersion))
             failures.Add("SMTP response intelligence classification and decision policy versions are required.");
@@ -119,14 +123,15 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (string.IsNullOrWhiteSpace(persistence.DatabaseName))
                 failures.Add("EmailValidation:Persistence:DatabaseName is required for MongoDB.");
             if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
-                string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection))
+                string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection) ||
+                string.IsNullOrWhiteSpace(persistence.OutboundIdentityHealthCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
             if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection,
-                    persistence.CommercialResourceCollection }
-                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 4)
-                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, and commercial resource collection names must be different.");
+                    persistence.CommercialResourceCollection, persistence.OutboundIdentityHealthCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 5)
+                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, commercial resource, and outbound identity health collection names must be different.");
         }
         if (revalidation.Enabled)
         {
@@ -172,7 +177,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add("EmailValidation:CatchAll:MinimumReusableConfidence must be between zero and one.");
         if (catchAll.CacheMinutes < 0)
             failures.Add("EmailValidation:CatchAll:CacheMinutes cannot be negative.");
-        if (domainIntelligence.MemoryCacheMinutes < 0 || domainIntelligence.PersistentFreshnessHours < 0)
+        if (domainIntelligence.MemoryCacheMinutes < 0 || domainIntelligence.PersistentFreshnessHours < 0 ||
+            domainIntelligence.MinimumFreshnessMinutes < 0 || domainIntelligence.MaximumFreshnessHours < 0)
             failures.Add("EmailValidation:DomainIntelligence freshness windows cannot be negative.");
         if (domainIntelligence.MaximumConcurrentAnalyses < 1)
             failures.Add("EmailValidation:DomainIntelligence:MaximumConcurrentAnalyses must be at least 1.");
@@ -212,5 +218,91 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add($"{path}:PolicyBlockCooldownMinutes cannot be negative.");
         if (policy.MaxRetries < 0)
             failures.Add($"{path}:MaxRetries cannot be negative.");
+    }
+
+    private static void ValidateOutboundIdentities(
+        OutboundIdentityOptions options,
+        List<string> failures)
+    {
+        if (!options.Enabled) return;
+        if (string.IsNullOrWhiteSpace(options.InterfaceName))
+            failures.Add("EmailValidation:OutboundIdentities:InterfaceName is required.");
+        if (!string.Equals(options.SelectionAlgorithm, "RendezvousHash", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(options.SelectionAlgorithmVersion))
+            failures.Add("EmailValidation:OutboundIdentities must use a versioned RendezvousHash selection algorithm.");
+        if (!TryParseIpv4Cidr(options.AllowedCidr, out var network, out var broadcast))
+            failures.Add("EmailValidation:OutboundIdentities:AllowedCidr must be a valid IPv4 CIDR.");
+        if (!IPAddress.TryParse(options.GatewayAddress, out var gateway) ||
+            gateway.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+            failures.Add("EmailValidation:OutboundIdentities:GatewayAddress must be a valid IPv4 address.");
+        else
+        {
+            var gatewayValue = BinaryPrimitives.ReadUInt32BigEndian(gateway.GetAddressBytes());
+            if (gatewayValue < network || gatewayValue > broadcast)
+                failures.Add("EmailValidation:OutboundIdentities:GatewayAddress must belong to the approved CIDR.");
+        }
+        if (options.PolicyBlockCooldownMinutes < 1 || options.QuarantineFailureThreshold < 1 ||
+            options.QuarantineMinutes < 1)
+            failures.Add("EmailValidation outbound identity cooldown and quarantine policy values must be positive.");
+        if (options.Identities.Count == 0 || options.IdentityGroups.Count == 0 || options.ProviderGroups.Count == 0)
+            failures.Add("Enabled outbound identity configuration requires identities, identity groups, and provider mappings.");
+
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var addresses = new HashSet<string>(StringComparer.Ordinal);
+        var ehloNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var identity in options.Identities)
+        {
+            if (string.IsNullOrWhiteSpace(identity.IdentityId) || !ids.Add(identity.IdentityId))
+                failures.Add("EmailValidation outbound identity IDs must be present and unique.");
+            if (!IPAddress.TryParse(identity.Address, out var address) ||
+                address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                failures.Add($"Outbound identity '{identity.IdentityId}' has an invalid IPv4 address.");
+                continue;
+            }
+            var numeric = BinaryPrimitives.ReadUInt32BigEndian(address.GetAddressBytes());
+            if (!addresses.Add(address.ToString()))
+                failures.Add($"Outbound identity address '{address}' is duplicated.");
+            if (numeric < network || numeric > broadcast)
+                failures.Add($"Outbound identity address '{address}' is outside the approved CIDR.");
+            if (numeric == network || numeric == broadcast || address.Equals(gateway))
+                failures.Add($"Outbound identity address '{address}' is reserved and cannot be assigned.");
+            if (!string.IsNullOrWhiteSpace(identity.InterfaceName) &&
+                !string.Equals(identity.InterfaceName, options.InterfaceName, StringComparison.Ordinal))
+                failures.Add($"Outbound identity '{identity.IdentityId}' uses an unapproved interface.");
+            if (string.IsNullOrWhiteSpace(identity.EhloHostName) || !ehloNames.Add(identity.EhloHostName))
+                failures.Add("EmailValidation outbound identity EHLO hostnames must be present and unique.");
+        }
+
+        foreach (var mapping in options.ProviderGroups)
+        {
+            if (!Enum.TryParse<MailProvider>(mapping.Key, true, out _) ||
+                string.IsNullOrWhiteSpace(mapping.Value) || !options.IdentityGroups.ContainsKey(mapping.Value))
+                failures.Add($"Outbound provider group mapping '{mapping.Key}' is invalid.");
+        }
+        foreach (var group in options.IdentityGroups)
+        {
+            if (string.IsNullOrWhiteSpace(group.Key) || group.Value.Length == 0)
+                failures.Add("Outbound identity groups must have a name and at least one identity.");
+            if (group.Value.Distinct(StringComparer.OrdinalIgnoreCase).Count() != group.Value.Length)
+                failures.Add($"Outbound identity group '{group.Key}' contains duplicate identity references.");
+            foreach (var identityId in group.Value)
+                if (!ids.Contains(identityId))
+                    failures.Add($"Outbound identity group '{group.Key}' references unknown identity '{identityId}'.");
+        }
+    }
+
+    private static bool TryParseIpv4Cidr(string value, out uint network, out uint broadcast)
+    {
+        network = 0;
+        broadcast = 0;
+        var parts = value.Split('/', StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || !IPAddress.TryParse(parts[0], out var address) ||
+            address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+            !int.TryParse(parts[1], out var prefix) || prefix is < 0 or > 32) return false;
+        var mask = prefix == 0 ? 0u : uint.MaxValue << (32 - prefix);
+        network = BinaryPrimitives.ReadUInt32BigEndian(address.GetAddressBytes()) & mask;
+        broadcast = network | ~mask;
+        return true;
     }
 }

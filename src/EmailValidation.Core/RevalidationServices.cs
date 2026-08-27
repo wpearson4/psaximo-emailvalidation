@@ -570,6 +570,10 @@ public sealed class ValidationLifecycleCoordinator(
         var evidence = result.SmtpEvidence;
         var intelligence = evidence?.Intelligence;
         var decision = evidence?.Decision;
+        var session = result.SmtpSessionEvidence;
+        var normalizedDomain = result.NormalizedEmail is { } normalized && normalized.LastIndexOf('@') is var separator && separator >= 0
+            ? normalized[(separator + 1)..]
+            : null;
         return new(result.AttemptNumber, result.Status, result.SubStatus, result.Confidence, result.MailProvider,
             result.ReasonCodes.ToArray(), attemptedAt,
             result.Metadata?.ResultSource ?? ValidationResultSource.LiveValidation, result.RetryAfter,
@@ -590,7 +594,16 @@ public sealed class ValidationLifecycleCoordinator(
             intelligence?.OutboundIdentityId,
             intelligence?.SenderIdentityId,
             decision?.ResultState,
-            intelligence?.StrategyVersion);
+            intelligence?.StrategyVersion,
+            normalizedDomain,
+            result.Provider?.Evidence is { Count: > 0 } providerEvidence ? providerEvidence[0] : null,
+            result.Provider?.Confidence,
+            session?.MxHost ?? result.SelectedMx,
+            session?.SourceAddress,
+            session?.InterfaceName,
+            session?.EhloHost,
+            session?.SelectionAlgorithmVersion,
+            result.Provider?.DetectionVersion);
     }
 
     private async Task PublishBestEffortAsync(ValidationLifecycle lifecycle)

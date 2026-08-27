@@ -244,9 +244,12 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 "supplemental domain",
                 domain,
                 cancellationToken).ConfigureAwait(false);
-            var provider = _providerDetector.DetectWithConfidence(routing.Routes) with
+            var detectedProvider = _providerDetector.DetectWithConfidence(domain, routing.Routes);
+            var provider = detectedProvider with
             {
-                Evidence = ["MxTopology"],
+                Evidence = detectedProvider.Evidence is { Count: > 0 }
+                    ? detectedProvider.Evidence
+                    : ["MxTopology"],
                 DetectedAtUtc = now,
                 DetectionVersion = _options.Policy.ProviderStrategyVersion
             };
@@ -422,12 +425,14 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
 
     private TimeSpan DomainLifetime(TimeSpan? routingTtl)
     {
-        var configured = TimeSpan.FromHours(Math.Max(0, _options.DomainIntelligence.PersistentFreshnessHours));
+        var configured = TimeSpan.FromHours(Math.Max(0, Math.Min(
+            _options.DomainIntelligence.PersistentFreshnessHours,
+            _options.DomainIntelligence.MaximumFreshnessHours)));
         var legacy = TimeSpan.FromMinutes(Math.Max(0, _options.Dns.CacheMinutes));
         var policyLifetime = configured == TimeSpan.Zero ? legacy : configured;
-        return routingTtl is { } ttl && ttl > TimeSpan.Zero && ttl < policyLifetime
-            ? ttl
-            : policyLifetime;
+        var lower = TimeSpan.FromMinutes(Math.Max(0, _options.DomainIntelligence.MinimumFreshnessMinutes));
+        var ttlLifetime = routingTtl is { } ttl && ttl > TimeSpan.Zero ? ttl : policyLifetime;
+        return ttlLifetime < lower ? lower : ttlLifetime > policyLifetime ? policyLifetime : ttlLifetime;
     }
 
     private static string Normalize(string domain) => domain.Trim().TrimEnd('.').ToLowerInvariant();

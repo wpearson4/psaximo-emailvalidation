@@ -108,6 +108,20 @@ public sealed class RoleAccountDetector(IOptions<EmailValidationOptions> options
 
 public sealed class MailProviderDetector : IMailProviderDetector
 {
+    private static readonly Dictionary<string, MailProvider> ProviderOwnedDomains =
+        new Dictionary<string, MailProvider>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["gmail.com"] = MailProvider.GoogleWorkspace,
+            ["googlemail.com"] = MailProvider.GoogleWorkspace,
+            ["outlook.com"] = MailProvider.MicrosoftConsumer,
+            ["hotmail.com"] = MailProvider.MicrosoftConsumer,
+            ["live.com"] = MailProvider.MicrosoftConsumer,
+            ["msn.com"] = MailProvider.MicrosoftConsumer,
+            ["yahoo.com"] = MailProvider.Yahoo,
+            ["ymail.com"] = MailProvider.Yahoo,
+            ["rocketmail.com"] = MailProvider.Yahoo,
+            ["aol.com"] = MailProvider.Yahoo
+        };
     private sealed record MxFingerprint(
         string Suffix,
         MailProvider Provider,
@@ -154,6 +168,32 @@ public sealed class MailProviderDetector : IMailProviderDetector
     ];
 
     public MailProvider Detect(IReadOnlyList<MxRecord> records) => DetectWithConfidence(records).Provider;
+
+    public ProviderDetectionResult DetectWithConfidence(
+        string normalizedDomain,
+        IReadOnlyList<MxRecord> records)
+    {
+        var mx = DetectWithConfidence(records);
+        if (!ProviderOwnedDomains.TryGetValue(
+                normalizedDomain.Trim().TrimEnd('.'), out var provider)) return mx;
+        var (family, gateway) = provider switch
+        {
+            MailProvider.GoogleWorkspace => (ProviderFamily.GoogleWorkspace, GatewayProvider.GoogleWorkspace),
+            MailProvider.MicrosoftConsumer => (ProviderFamily.MicrosoftConsumer,
+                GatewayProvider.MicrosoftExchangeOnlineProtection),
+            MailProvider.Yahoo => (ProviderFamily.Yahoo, GatewayProvider.GenericSmtp),
+            _ => (ProviderFamily.Unknown, GatewayProvider.Unknown)
+        };
+        return mx with
+        {
+            Provider = provider,
+            Confidence = 1,
+            MatchedSignature = normalizedDomain,
+            Family = family,
+            GatewayProvider = gateway,
+            Evidence = ["ExplicitProviderOwnedDomain"]
+        };
+    }
 
     public ProviderDetectionResult DetectWithConfidence(IReadOnlyList<MxRecord> records)
     {

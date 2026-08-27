@@ -12,6 +12,7 @@ public sealed class EmailValidationOptions
     public SchedulingOptions Scheduling { get; set; } = new();
     public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
     public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
+    public OutboundIdentityOptions OutboundIdentities { get; set; } = new();
     public CatchAllOptions CatchAll { get; set; } = new();
     public DnsOptions Dns { get; set; } = new();
     public IntelligenceOptions Intelligence { get; set; } = new();
@@ -67,6 +68,8 @@ public sealed class DomainIntelligenceOptions
     public bool Enabled { get; set; } = true;
     public int MemoryCacheMinutes { get; set; } = 30;
     public int PersistentFreshnessHours { get; set; } = 24;
+    public int MinimumFreshnessMinutes { get; set; } = 5;
+    public int MaximumFreshnessHours { get; set; } = 24;
     public int MaximumConcurrentAnalyses { get; set; } = 16;
     public string PolicyVersion { get; set; } = "2.0.0";
 }
@@ -132,6 +135,7 @@ public sealed class PersistenceOptions
     public string MailboxCollection { get; set; } = "EmailValidationMailboxIntelligence";
     public string LifecycleCollection { get; set; } = "EmailValidationLifecycle";
     public string CommercialResourceCollection { get; set; } = "EmailValidationCommercialResources";
+    public string OutboundIdentityHealthCollection { get; set; } = "EmailValidationOutboundIdentityHealth";
 }
 
 public sealed class ResultReuseOptions
@@ -206,6 +210,35 @@ public sealed class SmtpOptions
     public int MaxMxAttempts { get; set; } = 3;
     public int MaxSmtpSessionsPerAddress { get; set; } = 8;
     public int ProbeSenderHealthCacheMinutes { get; set; } = 60;
+}
+
+public sealed class OutboundIdentityOptions
+{
+    public bool Enabled { get; set; }
+    public string InterfaceName { get; set; } = string.Empty;
+    public string AllowedCidr { get; set; } = string.Empty;
+    public string GatewayAddress { get; set; } = string.Empty;
+    public bool RequireAddressToBeBound { get; set; } = true;
+    public bool RequireForwardConfirmedReverseDns { get; set; } = true;
+    public string SelectionAlgorithm { get; set; } = "RendezvousHash";
+    public string SelectionAlgorithmVersion { get; set; } = "v1";
+    public int PolicyBlockCooldownMinutes { get; set; } = 60;
+    public int QuarantineFailureThreshold { get; set; } = 3;
+    public int QuarantineMinutes { get; set; } = 240;
+    public Dictionary<string, string> ProviderGroups { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string[]> IdentityGroups { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public List<OutboundIdentityConfiguration> Identities { get; set; } = [];
+}
+
+public sealed class OutboundIdentityConfiguration
+{
+    public string IdentityId { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public string InterfaceName { get; set; } = string.Empty;
+    public string EhloHostName { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
 }
 
 public sealed class ProbeSenderSourceOptions

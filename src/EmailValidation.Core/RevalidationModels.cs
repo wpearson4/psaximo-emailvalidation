@@ -74,7 +74,16 @@ public sealed record ValidationAttemptRecord(
     string? OutboundIdentityId = null,
     string? SenderIdentityId = null,
     ValidationResultState? SmtpDecisionResultState = null,
-    string? SmtpStrategyVersion = null);
+    string? SmtpStrategyVersion = null,
+    string? NormalizedRecipientDomain = null,
+    string? ProviderClassificationSource = null,
+    double? ProviderClassificationConfidence = null,
+    string? MxHost = null,
+    string? SourceAddress = null,
+    string? InterfaceName = null,
+    string? EhloHostName = null,
+    string? SelectionAlgorithmVersion = null,
+    string? ProviderClassificationVersion = null);
 
 public sealed record PendingRevalidation(
     EmailRevalidationMessageV1 Message,

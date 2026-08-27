@@ -219,7 +219,11 @@ public sealed record SmtpSessionEvidence(
     bool TlsAdvertised = false,
     bool TlsUsed = false,
     bool SmtpUtf8Advertised = false,
-    bool SmtpUtf8Required = false)
+    bool SmtpUtf8Required = false,
+    string? OutboundIdentityId = null,
+    string? SourceAddress = null,
+    string? InterfaceName = null,
+    string? SelectionAlgorithmVersion = null)
 {
     public SmtpStageResult? MailFrom => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.MailFrom);
     public SmtpStageResult? RcptTo => Stages.LastOrDefault(stage => stage.Stage == SmtpCommand.RcptTo);

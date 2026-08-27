@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace EmailValidation.Core;
 
 public interface IEmailValidator
@@ -212,6 +214,54 @@ public interface IMailProviderDetector
 {
     MailProvider Detect(IReadOnlyList<MxRecord> records);
     ProviderDetectionResult DetectWithConfidence(IReadOnlyList<MxRecord> records);
+    ProviderDetectionResult DetectWithConfidence(string normalizedDomain, IReadOnlyList<MxRecord> records) =>
+        DetectWithConfidence(records);
+}
+
+public interface IOutboundIdentitySelector
+{
+    Task<OutboundIdentitySelectionResult> SelectAsync(
+        OutboundIdentitySelectionRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ILocalOutboundIdentityDiscovery
+{
+    Task<IReadOnlySet<string>> GetBoundIpv4AddressesAsync(
+        string interfaceName,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IForwardConfirmedReverseDnsValidator
+{
+    Task<ForwardConfirmedReverseDnsState> ValidateAsync(
+        OutboundIdentity identity,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IOutboundIdentityHealthStore
+{
+    Task<OutboundIdentityHealth> GetAsync(
+        string identityId,
+        MailProvider provider,
+        CancellationToken cancellationToken = default);
+
+    Task RecordAsync(OutboundIdentityOutcome outcome, CancellationToken cancellationToken = default);
+}
+
+public interface ISmtpConnection : IAsyncDisposable
+{
+    Stream Stream { get; }
+    string LocalAddress { get; }
+}
+
+public interface ISmtpConnectionFactory
+{
+    Task<ISmtpConnection> ConnectAsync(
+        string host,
+        int port,
+        IPAddress localAddress,
+        CancellationToken cancellationToken = default);
 }
 
 public interface ISmtpMailboxProbe
