@@ -19,7 +19,26 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var domainIntelligence = options.DomainIntelligence;
         var jobs = options.Jobs;
         var columnDetection = options.ColumnDetection;
+        var smtpResponseIntelligence = options.SmtpResponseIntelligence;
         var failures = new List<string>();
+        if (string.IsNullOrWhiteSpace(smtpResponseIntelligence.ClassificationVersion) ||
+            string.IsNullOrWhiteSpace(smtpResponseIntelligence.DecisionPolicyVersion))
+            failures.Add("SMTP response intelligence classification and decision policy versions are required.");
+        if (smtpResponseIntelligence.MaximumResponseCharacters is < 256 or > 16_384)
+            failures.Add("EmailValidation:SmtpResponseIntelligence:MaximumResponseCharacters must be between 256 and 16384.");
+        if (smtpResponseIntelligence.RegexTimeoutMilliseconds is < 10 or > 1_000)
+            failures.Add("EmailValidation:SmtpResponseIntelligence:RegexTimeoutMilliseconds must be between 10 and 1000.");
+        if (failures.Count == 0)
+        {
+            try
+            {
+                _ = new SmtpResponseRuleRegistry(Options.Create(options));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                failures.Add($"SMTP response intelligence rules are invalid: {exception.Message}");
+            }
+        }
         if (columnDetection.MaximumNonEmptySamplesPerColumn < 1 ||
             columnDetection.MaximumRowsInspected < columnDetection.MaximumNonEmptySamplesPerColumn ||
             columnDetection.MinimumNonEmptySamples < 1 ||

@@ -56,7 +56,25 @@ public sealed record ValidationAttemptRecord(
     IReadOnlyList<ReasonCode> ReasonCodes,
     DateTimeOffset AttemptedAt,
     ValidationResultSource ResultSource,
-    DateTimeOffset? RetryAfter);
+    DateTimeOffset? RetryAfter,
+    SmtpCommand? SmtpStage = null,
+    int? SmtpReplyCode = null,
+    string? SmtpEnhancedStatusCode = null,
+    SmtpNormalizedReason? SmtpNormalizedReason = null,
+    string? SmtpResponseFingerprint = null,
+    SmtpCooldownScope? SmtpCooldownScope = null,
+    SmtpHealthImpact? SmtpHealthImpact = null,
+    string? SmtpClassificationVersion = null,
+    string? SmtpDecisionPolicyVersion = null,
+    SmtpResponseIntelligenceMode? SmtpIntelligenceMode = null,
+    ProviderFamily? ProviderFamily = null,
+    GatewayProvider? GatewayProvider = null,
+    MailProvider? MailboxProvider = null,
+    string? MxTopologyFingerprint = null,
+    string? OutboundIdentityId = null,
+    string? SenderIdentityId = null,
+    ValidationResultState? SmtpDecisionResultState = null,
+    string? SmtpStrategyVersion = null);
 
 public sealed record PendingRevalidation(
     EmailRevalidationMessageV1 Message,

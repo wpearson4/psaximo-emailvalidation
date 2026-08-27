@@ -27,7 +27,8 @@ public sealed class RevalidationPolicy(
         ReasonCode.LocalCooldown,
         ReasonCode.RetryRecommended,
         ReasonCode.MailboxAcceptanceAmbiguous,
-        ReasonCode.MxResultsConflicting
+        ReasonCode.MxResultsConflicting,
+        ReasonCode.MailboxFull
     ];
 
     private readonly RevalidationOptions _options = options.Value.Revalidation;
@@ -52,7 +53,12 @@ public sealed class RevalidationPolicy(
         var maximum = context.ExistingMaximumAttempts ?? Math.Min(configuredMaximum, providerMaximum);
         maximum = Math.Max(context.AttemptNumber, maximum);
 
-        if (!_options.Enabled || result.Status != EmailValidationStatus.Unknown ||
+        var enforcedIntelligenceRetry = result.SmtpEvidence is
+        {
+            IntelligenceMode: SmtpResponseIntelligenceMode.Enforced,
+            Decision.RetryDisposition: not SmtpRetryDisposition.None
+        };
+        if (!_options.Enabled || (result.Status != EmailValidationStatus.Unknown && !enforcedIntelligenceRetry) ||
             result.ReasonCodes.Any(TerminalReasons.Contains) ||
             result.MailingRisk?.RiskReasons.Contains(MailingRiskReason.KnownSuppression) == true)
             return new(false, null, maximum);
@@ -105,6 +111,7 @@ public sealed class RevalidationSchedulePolicy(
             ReasonCode.LocalCooldown => SmtpResponseCategory.LocalCooldown,
             ReasonCode.SmtpTimeout or ReasonCode.Timeout => SmtpResponseCategory.Timeout,
             ReasonCode.SmtpConnectionFailure => SmtpResponseCategory.ConnectionRejected,
+            ReasonCode.MailboxFull => SmtpResponseCategory.MailboxFull,
             _ => SmtpResponseCategory.TemporaryFailure
         };
     }
@@ -558,10 +565,33 @@ public sealed class ValidationLifecycleCoordinator(
         return new(current.CurrentResult, current, true, scheduled?.Succeeded == true);
     }
 
-    private static ValidationAttemptRecord ToAttempt(EmailValidationResult result, DateTimeOffset attemptedAt) =>
-        new(result.AttemptNumber, result.Status, result.SubStatus, result.Confidence, result.MailProvider,
+    private static ValidationAttemptRecord ToAttempt(EmailValidationResult result, DateTimeOffset attemptedAt)
+    {
+        var evidence = result.SmtpEvidence;
+        var intelligence = evidence?.Intelligence;
+        var decision = evidence?.Decision;
+        return new(result.AttemptNumber, result.Status, result.SubStatus, result.Confidence, result.MailProvider,
             result.ReasonCodes.ToArray(), attemptedAt,
-            result.Metadata?.ResultSource ?? ValidationResultSource.LiveValidation, result.RetryAfter);
+            result.Metadata?.ResultSource ?? ValidationResultSource.LiveValidation, result.RetryAfter,
+            intelligence?.Stage ?? evidence?.Command,
+            intelligence?.ReplyCode ?? evidence?.ResponseCode,
+            intelligence?.EnhancedStatusCode ?? evidence?.EnhancedStatusCode,
+            intelligence?.Reason,
+            intelligence?.ResponseFingerprint,
+            decision?.CooldownScope,
+            decision?.HealthImpact,
+            intelligence?.ClassificationVersion,
+            decision?.PolicyVersion,
+            evidence?.IntelligenceMode,
+            result.Provider?.Family,
+            result.Provider?.GatewayProvider,
+            result.Provider?.MailboxProvider,
+            result.Provider?.TopologyFingerprint,
+            intelligence?.OutboundIdentityId,
+            intelligence?.SenderIdentityId,
+            decision?.ResultState,
+            intelligence?.StrategyVersion);
+    }
 
     private async Task PublishBestEffortAsync(ValidationLifecycle lifecycle)
     {

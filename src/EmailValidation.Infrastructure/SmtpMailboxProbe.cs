@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,6 +19,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly IProbeSenderAffinityStore _affinityStore;
     private readonly ISmtpSessionBudget _sessionBudget;
     private readonly IProviderPolicyResolver _providerPolicyResolver;
+    private readonly string _strategyVersion;
 
     public SmtpMailboxProbe(
         IOptions<EmailValidationOptions> options,
@@ -37,6 +40,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _affinityStore = affinityStore;
         _sessionBudget = sessionBudget;
         _providerPolicyResolver = providerPolicyResolver;
+        _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
     }
 
     public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default) =>
@@ -156,6 +160,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var connectionWatch = Stopwatch.StartNew();
         var currentCommand = SmtpCommand.Connect;
         var stages = new List<SmtpStageResult>();
+        var observation = ObservationContext(recipient, probeSender);
         string? banner = null;
         string? ehloHost = null;
         var tlsAdvertised = false;
@@ -182,7 +187,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             var greeting = await ReadResponseWithTimeoutAsync(reader, cancellationToken);
             stageWatch.Stop();
             banner = greeting.Text;
-            var greetingEvidence = RecordStage(SmtpCommand.Greeting, greeting, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+            var greetingEvidence = RecordStage(SmtpCommand.Greeting, greeting, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             if (greeting.Code / 100 != 2)
                 return BuildResult(greetingEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, SmtpCommand.Greeting, banner, ehloHost, tlsAdvertised, probeSender);
@@ -193,7 +198,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             stageWatch.Restart();
             var ehlo = await CommandAsync(writer, reader, $"EHLO {ehloHost}", cancellationToken);
             stageWatch.Stop();
-            var ehloEvidence = RecordStage(SmtpCommand.Ehlo, ehlo, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+            var ehloEvidence = RecordStage(SmtpCommand.Ehlo, ehlo, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             tlsAdvertised = ehlo.Text.Contains("STARTTLS", StringComparison.OrdinalIgnoreCase);
             var smtpUtf8Advertised = HasEhloCapability(ehlo.Text, "SMTPUTF8");
             if (ehlo.Code / 100 != 2)
@@ -202,7 +207,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 stageWatch.Restart();
                 ehlo = await CommandAsync(writer, reader, $"HELO {ehloHost}", cancellationToken);
                 stageWatch.Stop();
-                ehloEvidence = RecordStage(SmtpCommand.Helo, ehlo, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+                ehloEvidence = RecordStage(SmtpCommand.Helo, ehlo, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             }
             if (ehlo.Code / 100 != 2)
                 return BuildResult(ehloEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
@@ -227,7 +232,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             var sender = await CommandAsync(writer, reader,
                 MailFromCommand(probeSender, requiresSmtpUtf8), cancellationToken);
             stageWatch.Stop();
-            var senderEvidence = RecordStage(SmtpCommand.MailFrom, sender, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+            var senderEvidence = RecordStage(SmtpCommand.MailFrom, sender, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             if (sender.Code / 100 != 2)
                 return BuildResult(senderEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
                     provider, mxHost, attempt, stages, SmtpCommand.MailFrom, banner, ehloHost, tlsAdvertised, probeSender);
@@ -236,19 +241,19 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             stageWatch.Restart();
             var recipientResponse = await CommandAsync(writer, reader, $"RCPT TO:<{recipient}>", cancellationToken);
             stageWatch.Stop();
-            var recipientEvidence = RecordStage(SmtpCommand.RcptTo, recipientResponse, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+            var recipientEvidence = RecordStage(SmtpCommand.RcptTo, recipientResponse, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             try
             {
                 currentCommand = SmtpCommand.Rset;
                 stageWatch.Restart();
                 var reset = await CommandAsync(writer, reader, "RSET", cancellationToken);
                 stageWatch.Stop();
-                RecordStage(SmtpCommand.Rset, reset, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+                RecordStage(SmtpCommand.Rset, reset, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
                 currentCommand = SmtpCommand.Quit;
                 stageWatch.Restart();
                 var quit = await CommandAsync(writer, reader, "QUIT", cancellationToken);
                 stageWatch.Stop();
-                RecordStage(SmtpCommand.Quit, quit, stageWatch.Elapsed, provider, mxHost, attempt, stages);
+                RecordStage(SmtpCommand.Quit, quit, stageWatch.Elapsed, provider, mxHost, attempt, stages, observation);
             }
             catch (Exception exception) when (exception is IOException or OperationCanceledException) { }
             return BuildResult(recipientEvidence, connectionWatch.Elapsed, operationWatch.Elapsed,
@@ -258,15 +263,15 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return ExceptionalResult(SmtpResponseCategory.Timeout, currentCommand, "SMTP operation timed out", connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender);
+            return ExceptionalResult(SmtpResponseCategory.Timeout, currentCommand, "SMTP operation timed out", connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender, observation);
         }
         catch (SocketException exception)
         {
-            return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, currentCommand, exception.Message, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender);
+            return ExceptionalResult(SmtpResponseCategory.ConnectionRejected, currentCommand, exception.Message, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender, observation);
         }
         catch (IOException exception)
         {
-            return ExceptionalResult(SmtpResponseCategory.ProtocolFailure, currentCommand, exception.Message, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender);
+            return ExceptionalResult(SmtpResponseCategory.ProtocolFailure, currentCommand, exception.Message, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages, banner, ehloHost, tlsAdvertised, probeSender, observation);
         }
     }
 
@@ -307,13 +312,6 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         return new(code.Value, string.Join(" | ", lines));
     }
 
-    internal static SmtpProbeResult Categorize(int code, string response)
-    {
-        var classifier = new SmtpResponseClassifier();
-        var evidence = classifier.Classify(SmtpCommand.RcptTo, code, response, TimeSpan.Zero, MailProvider.Unknown, "test", 1);
-        return SmtpResponseClassifier.ToProbeResult(evidence, TimeSpan.Zero);
-    }
-
     private SmtpEvidence RecordStage(
         SmtpCommand command,
         SmtpResponse response,
@@ -321,9 +319,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         MailProvider provider,
         string mxHost,
         int attempt,
-        List<SmtpStageResult> stages)
+        List<SmtpStageResult> stages,
+        SmtpResponseObservationContext observation)
     {
-        var evidence = _responseClassifier.Classify(command, response.Code, response.Text, duration, provider, mxHost, attempt);
+        var evidence = _responseClassifier.Classify(
+            command, response.Code, response.Text, duration, provider, mxHost, attempt, observation);
         stages.Add(ToStageResult(evidence, duration));
         return evidence;
     }
@@ -377,9 +377,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         string? banner,
         string? ehloHost,
         bool tlsAdvertised,
-        string probeSender)
+        string probeSender,
+        SmtpResponseObservationContext observation)
     {
-        var classified = _responseClassifier.Classify(command, null, detail, elapsed, provider, mxHost, attempt);
+        var classified = _responseClassifier.Classify(
+            command, null, detail, elapsed, provider, mxHost, attempt, observation);
         var evidence = classified with { Category = category };
         stages.Add(ToStageResult(evidence, elapsed));
         var session = new SmtpSessionEvidence(
@@ -407,10 +409,25 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         evidence.Category,
         evidence.TextClassification,
         duration,
-        evidence.SanitizedResponse);
+        evidence.SanitizedResponse,
+        evidence.Intelligence,
+        evidence.Decision,
+        evidence.IntelligenceMode);
 
     private static string? SanitizeSessionText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? value : value.Length <= 300 ? value : value[..300];
+
+    private SmtpResponseObservationContext ObservationContext(string recipient, string probeSender)
+    {
+        var separator = recipient.LastIndexOf('@');
+        var recipientDomain = separator >= 0 && separator < recipient.Length - 1
+            ? recipient[(separator + 1)..].Trim().ToLowerInvariant()
+            : null;
+        var senderHash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(probeSender.Trim().ToLowerInvariant()))).ToLowerInvariant();
+        return new(RecipientDomain: recipientDomain, SenderIdentityId: senderHash,
+            ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+    }
 
     internal static bool HasEhloCapability(string response, string capability) =>
         response.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)

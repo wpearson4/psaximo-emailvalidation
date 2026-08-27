@@ -16,7 +16,7 @@ public sealed class DomainBackoffPolicy(IOptions<EmailValidationOptions> options
         if (category is not (SmtpResponseCategory.TemporaryFailure or
             SmtpResponseCategory.Greylisted or SmtpResponseCategory.RateLimited or
             SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.ConnectionRejected or
-            SmtpResponseCategory.Timeout))
+            SmtpResponseCategory.Timeout or SmtpResponseCategory.MailboxFull))
             return new(now, TimeSpan.Zero);
 
         var exponent = Math.Clamp(consecutiveTemporaryFailures - 1, 0, 10);

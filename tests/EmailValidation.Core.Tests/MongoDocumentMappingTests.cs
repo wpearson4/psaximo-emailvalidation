@@ -154,7 +154,11 @@ public sealed class MongoDocumentMappingTests
             MaximumAttempts = 2,
             CurrentResult = result,
             Attempts = [new(1, result.Status, result.SubStatus, result.Confidence, result.MailProvider,
-                result.ReasonCodes, now, ValidationResultSource.LiveValidation, now.AddMinutes(5))],
+                result.ReasonCodes, now, ValidationResultSource.LiveValidation, now.AddMinutes(5),
+                SmtpCommand.RcptTo, 451, "4.7.0", SmtpNormalizedReason.ProviderRateLimit,
+                new string('a', 64), SmtpCooldownScope.MxProvider, SmtpHealthImpact.Restriction,
+                "rules-1", "policy-1", SmtpResponseIntelligenceMode.Shadow,
+                ProviderFamily.GenericSmtp, GatewayProvider.GenericSmtp, MailProvider.GenericSmtp)],
             FirstValidatedAt = now,
             LastValidatedAt = now,
             NextRetryAt = now.AddMinutes(5),
@@ -166,6 +170,12 @@ public sealed class MongoDocumentMappingTests
         var restored = document.ToModel();
 
         Assert.Single(restored.Attempts);
+        Assert.Equal(SmtpNormalizedReason.ProviderRateLimit, restored.Attempts[0].SmtpNormalizedReason);
+        Assert.Equal(SmtpCooldownScope.MxProvider, restored.Attempts[0].SmtpCooldownScope);
+        Assert.Equal(new string('a', 64), restored.Attempts[0].SmtpResponseFingerprint);
+        Assert.Equal("rules-1", restored.Attempts[0].SmtpClassificationVersion);
+        Assert.Equal("policy-1", restored.Attempts[0].SmtpDecisionPolicyVersion);
+        Assert.Equal(ProviderFamily.GenericSmtp, restored.Attempts[0].ProviderFamily);
         Assert.Null(restored.CurrentResult.SmtpEvidence);
         Assert.Equal(UnknownCause.TemporarySmtpFailure, restored.CurrentResult.UnknownContext?.Cause);
         Assert.Equal(now.AddMinutes(5), restored.CurrentResult.UnknownContext?.RetryAfter);

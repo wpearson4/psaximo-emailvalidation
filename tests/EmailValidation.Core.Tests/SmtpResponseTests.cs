@@ -15,6 +15,8 @@ public sealed class SmtpResponseTests
     [InlineData(554, "access denied by policy", SmtpMailboxStatus.Blocked)]
     public void Categorize_DistinguishesTransientPermanentAndBlocked(int code, string text, SmtpMailboxStatus expected)
     {
-        Assert.Equal(expected, SmtpMailboxProbe.Categorize(code, text).Status);
+        var evidence = new SmtpResponseClassifier().Classify(
+            SmtpCommand.RcptTo, code, text, TimeSpan.Zero, MailProvider.Unknown, "mx.example.test");
+        Assert.Equal(expected, SmtpResponseClassifier.ToProbeResult(evidence, TimeSpan.Zero).Status);
     }
 }

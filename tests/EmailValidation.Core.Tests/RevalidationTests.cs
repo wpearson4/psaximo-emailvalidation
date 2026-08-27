@@ -29,6 +29,76 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public void Policy_RetriesMailboxFullOnlyWhenResponseIntelligenceIsEnforced()
+    {
+        var policy = new RevalidationPolicy(
+            new StubProviderPolicies(new("GenericSmtp", 1, 0, 15, 1)),
+            Options(true));
+        var classification = new SmtpResponseIntelligence(
+            SmtpCommand.RcptTo, 552, 5, "5.2.2", SmtpNormalizedReason.MailboxFull,
+            SmtpEvidenceStrength.High, MailProvider.GenericSmtp, "rules-1",
+            "generic-mailbox-full", "552 5.2.2 Mailbox full");
+        var decision = new SmtpResponseDecision(
+            SmtpMailboxImpact.Provisional, ValidationResultState.Provisional, SmtpRetryDisposition.RetryWithBackoff,
+            SmtpCooldownScope.Domain, SmtpHealthImpact.TemporaryFailure, false,
+            SmtpResponseCategory.MailboxFull, "mailbox_full_is_provisional", "policy-1");
+        var baseResult = Result(EmailValidationStatus.Risky, ReasonCode.MailboxFull);
+        var shadow = baseResult with
+        {
+            SmtpEvidence = new(SmtpCommand.RcptTo, 552, "5.2.2", SmtpResponseCategory.MailboxFull,
+                SmtpResponseTextClassification.MailboxFull, 1, MailProvider.GenericSmtp,
+                "mx.example.test", 1, Now, "552 5.2.2 Mailbox full", classification, decision,
+                SmtpResponseIntelligenceMode.Shadow)
+        };
+        var enforced = shadow with
+        {
+            SmtpEvidence = shadow.SmtpEvidence! with { IntelligenceMode = SmtpResponseIntelligenceMode.Enforced }
+        };
+
+        Assert.False(policy.Evaluate(shadow, new(1)).ShouldRetry);
+        Assert.True(policy.Evaluate(enforced, new(1)).ShouldRetry);
+    }
+
+    [Fact]
+    public async Task Lifecycle_AttemptRetainsCompactImmutableResponseIntelligence()
+    {
+        var store = new MemoryLifecycleStore();
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics);
+        var classification = new SmtpResponseIntelligence(
+            SmtpCommand.RcptTo, 451, 4, "4.7.0", SmtpNormalizedReason.ProviderRateLimit,
+            SmtpEvidenceStrength.High, MailProvider.Microsoft365, "rules-1", "microsoft-rate-limit",
+            "451 4.7.0 Rate limit", RecipientDomain: "example.com",
+            OutboundIdentityId: "outbound-1", SenderIdentityId: "sender-1",
+            ObservedAtUtc: Now, StrategyVersion: "strategy-1");
+        var decision = new SmtpResponseDecision(
+            SmtpMailboxImpact.Provisional, ValidationResultState.Provisional, SmtpRetryDisposition.Cooldown,
+            SmtpCooldownScope.MxProvider, SmtpHealthImpact.Restriction, false,
+            SmtpResponseCategory.RateLimited, "provider_rate_limit", "policy-1");
+        var raw = Result(EmailValidationStatus.Unknown, ReasonCode.RateLimited) with
+        {
+            SmtpEvidence = new(SmtpCommand.RcptTo, 451, "4.7.0", SmtpResponseCategory.RateLimited,
+                SmtpResponseTextClassification.RateLimit, 1, MailProvider.Microsoft365,
+                "mx.example.test", 1, Now, "451 4.7.0 Rate limit", classification, decision,
+                SmtpResponseIntelligenceMode.Enforced),
+            Provider = new(MailProvider.Microsoft365, 0.99, Family: ProviderFamily.Microsoft365,
+                GatewayProvider: GatewayProvider.MicrosoftExchangeOnlineProtection,
+                MailboxProvider: MailProvider.Microsoft365, TopologyFingerprint: "mx-topology-1")
+        };
+
+        var completed = await coordinator.ProcessInitialResultAsync(raw, new(true));
+        var attempt = Assert.Single(completed.Lifecycle!.Attempts);
+
+        Assert.Equal(SmtpNormalizedReason.ProviderRateLimit, attempt.SmtpNormalizedReason);
+        Assert.Equal("microsoft-rate-limit", attempt.SmtpResponseFingerprint);
+        Assert.Equal("outbound-1", attempt.OutboundIdentityId);
+        Assert.Equal("sender-1", attempt.SenderIdentityId);
+        Assert.Equal("mx-topology-1", attempt.MxTopologyFingerprint);
+        Assert.Equal(ValidationResultState.Provisional, attempt.SmtpDecisionResultState);
+        Assert.Equal("strategy-1", attempt.SmtpStrategyVersion);
+    }
+
+    [Fact]
     public void Schedule_UsesMaximumOfBackoffRetryAfterProviderAndLocalCooldown()
     {
         var policy = new RevalidationSchedulePolicy(

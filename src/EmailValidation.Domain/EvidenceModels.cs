@@ -39,6 +39,121 @@ public enum SmtpResponseTextClassification
     MailboxFull
 }
 
+public enum SmtpResponseIntelligenceMode { Disabled, Shadow, Enforced }
+
+public enum SmtpNormalizedReason
+{
+    UnknownProviderResponse,
+    CommandAccepted,
+    RecipientAccepted,
+    RecipientRejected,
+    MailboxNotFound,
+    MailboxDisabled,
+    MailboxInactive,
+    MailboxFull,
+    SenderInvalid,
+    SenderRejected,
+    SenderPolicyRejected,
+    RoutingTemporaryFailure,
+    RoutingPermanentFailure,
+    Greylisted,
+    TemporaryFailure,
+    ProviderUnavailable,
+    ConnectionTimeout,
+    ProviderRateLimit,
+    ProviderConnectionLimit,
+    PolicyBlock,
+    VerificationRefused,
+    IpPolicyBlock,
+    ReputationBlocked,
+    ConnectionFailure,
+    GreetingRejected,
+    EhloRejected,
+    ProtocolFailure,
+    DnsFailure,
+    TlsFailure
+}
+
+public enum SmtpEvidenceStrength { None, Low, Medium, High }
+public enum SmtpMailboxImpact { None, Valid, Invalid, Provisional }
+public enum SmtpRetryDisposition { None, RetryWithBackoff, Cooldown }
+public enum SmtpCooldownScope { None, Domain, MxProvider, OutboundIdentity, SourceIp }
+public enum SmtpHealthImpact { None, Success, TemporaryFailure, Restriction, PermanentFailure }
+
+public sealed record SmtpResponseClassificationContext(
+    SmtpCommand Stage,
+    int? ReplyCode,
+    string? Response,
+    TimeSpan Elapsed,
+    MailProvider Provider,
+    string MxHost,
+    int Attempt = 1,
+    SmtpResponseObservationContext? Observation = null);
+
+public sealed record SmtpResponseObservationContext(
+    string? ValidationId = null,
+    string? RecipientDomain = null,
+    string? MxTopologyFingerprint = null,
+    string? OutboundIdentityId = null,
+    string? SenderIdentityId = null,
+    DateTimeOffset? ObservedAtUtc = null,
+    string? StrategyVersion = null);
+
+public sealed record SmtpResponseIntelligence(
+    SmtpCommand Stage,
+    int? ReplyCode,
+    int? ReplyClass,
+    string? EnhancedStatusCode,
+    SmtpNormalizedReason Reason,
+    SmtpEvidenceStrength EvidenceStrength,
+    MailProvider Provider,
+    string ClassificationVersion,
+    string ResponseFingerprint,
+    string? SanitizedResponse,
+    string? ValidationId = null,
+    string? RecipientDomain = null,
+    string? MxTopologyFingerprint = null,
+    string? OutboundIdentityId = null,
+    string? SenderIdentityId = null,
+    DateTimeOffset? ObservedAtUtc = null,
+    string? StrategyVersion = null,
+    bool RuleEvaluationFailed = false);
+
+public sealed record SmtpResponseDecision(
+    SmtpMailboxImpact MailboxImpact,
+    ValidationResultState ResultState,
+    SmtpRetryDisposition RetryDisposition,
+    SmtpCooldownScope CooldownScope,
+    SmtpHealthImpact HealthImpact,
+    bool AllowSenderRotation,
+    SmtpResponseCategory CanonicalCategory,
+    string DecisionReason,
+    string PolicyVersion);
+
+public sealed record SmtpResponseRolloutObservation(
+    SmtpResponseIntelligenceMode Mode,
+    MailProvider Provider,
+    SmtpCommand Stage,
+    SmtpResponseCategory LegacyCategory,
+    SmtpResponseCategory CandidateCategory,
+    SmtpNormalizedReason CandidateReason,
+    bool Agreement,
+    bool CandidateFailed = false,
+    double ClassificationLatencyMilliseconds = 0,
+    bool NormalizedReasonAgreement = true,
+    bool MailboxImpactAgreement = true,
+    bool ResultStateAgreement = true,
+    bool RetryDecisionAgreement = true,
+    bool CooldownDecisionAgreement = true,
+    bool RotationDecisionAgreement = true,
+    bool OutboundHealthDecisionAgreement = true);
+
+public sealed record SmtpResponseIntelligenceMetricsSnapshot(
+    long Classified,
+    long Agreements,
+    long Disagreements,
+    long CandidateFailures);
+
 public enum AcceptanceStrength { None, Low, Medium, High }
 public enum ValidationObservationType { Domain, CatchAllProbe, MailboxProbe }
 
@@ -68,7 +183,11 @@ public sealed record SmtpEvidence(
     string MxHost,
     int Attempt,
     DateTimeOffset Timestamp,
-    string? SanitizedResponse = null);
+    string? SanitizedResponse = null,
+    SmtpResponseIntelligence? Intelligence = null,
+    SmtpResponseDecision? Decision = null,
+    SmtpResponseIntelligenceMode IntelligenceMode = SmtpResponseIntelligenceMode.Disabled,
+    bool CanonicalOutcomeChanged = false);
 
 /// <summary>
 /// Evidence for one command in an SMTP conversation. A response is never
@@ -81,7 +200,10 @@ public sealed record SmtpStageResult(
     SmtpResponseCategory Category,
     SmtpResponseTextClassification TextClassification,
     TimeSpan Duration,
-    string? SanitizedResponse = null);
+    string? SanitizedResponse = null,
+    SmtpResponseIntelligence? Intelligence = null,
+    SmtpResponseDecision? Decision = null,
+    SmtpResponseIntelligenceMode IntelligenceMode = SmtpResponseIntelligenceMode.Disabled);
 
 /// <summary>
 /// Complete command-stage provenance for a single connection to one MX host.

@@ -321,7 +321,29 @@ public interface ISmtpResponseClassifier
         TimeSpan elapsed,
         MailProvider provider,
         string mxHost,
-        int attempt = 1);
+        int attempt = 1,
+        SmtpResponseObservationContext? observation = null);
+}
+
+public interface ICanonicalSmtpResponseClassifier
+{
+    SmtpEvidence Classify(SmtpResponseClassificationContext context);
+}
+
+public interface ISmtpResponseIntelligenceClassifier
+{
+    SmtpResponseIntelligence Classify(SmtpResponseClassificationContext context);
+}
+
+public interface ISmtpResponseDecisionPolicy
+{
+    SmtpResponseDecision Decide(SmtpResponseIntelligence classification);
+}
+
+public interface ISmtpResponseIntelligenceMetrics
+{
+    void Record(SmtpResponseRolloutObservation observation);
+    SmtpResponseIntelligenceMetricsSnapshot GetSnapshot();
 }
 
 /// <summary>

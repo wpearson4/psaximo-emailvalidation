@@ -481,6 +481,15 @@ internal static class SmtpSenderFailureClassifier
         var session = result.SessionEvidence;
         var evidence = result.Evidence;
         var response = evidence?.SanitizedResponse ?? result.Response ?? string.Empty;
+        if (evidence is { IntelligenceMode: SmtpResponseIntelligenceMode.Enforced, Decision: { } decision })
+        {
+            if (decision.AllowSenderRotation)
+                return decision.HealthImpact == SmtpHealthImpact.TemporaryFailure
+                    ? ProbeSenderOutcomeKind.SenderTemporaryFailure
+                    : ProbeSenderOutcomeKind.SenderInvalid;
+            if (decision.CooldownScope is SmtpCooldownScope.MxProvider or SmtpCooldownScope.SourceIp)
+                return ProbeSenderOutcomeKind.ProviderRestriction;
+        }
         var explicitlySenderSpecific = SenderMarkers.Any(marker =>
             response.Contains(marker, StringComparison.OrdinalIgnoreCase));
         if (!explicitlySenderSpecific &&
@@ -518,6 +527,17 @@ internal static class SmtpSenderFailureClassifier
 
     internal static ValidationFailureScope Scope(SmtpProbeResult result)
     {
+        if (result.Evidence is { IntelligenceMode: SmtpResponseIntelligenceMode.Enforced, Decision: { } decision })
+            return decision.CooldownScope switch
+            {
+                SmtpCooldownScope.OutboundIdentity => ValidationFailureScope.Sender,
+                SmtpCooldownScope.SourceIp => ValidationFailureScope.SourceIp,
+                SmtpCooldownScope.MxProvider => ValidationFailureScope.Provider,
+                SmtpCooldownScope.Domain => ValidationFailureScope.Domain,
+                _ => decision.MailboxImpact == SmtpMailboxImpact.Invalid
+                    ? ValidationFailureScope.Recipient
+                    : ValidationFailureScope.Unknown
+            };
         var outcome = Classify(result);
         if (outcome is ProbeSenderOutcomeKind.SenderInvalid or ProbeSenderOutcomeKind.SenderTemporaryFailure)
             return ValidationFailureScope.Sender;

@@ -45,7 +45,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMailProviderDetector, MailProviderDetector>();
         services.AddSingleton<ISmtpProviderDetector, SmtpBannerProviderDetector>();
         services.AddSingleton<ISmtpProbeThrottle, DomainSmtpProbeThrottle>();
-        services.AddSingleton<ISmtpResponseClassifier, SmtpResponseClassifier>();
+        services.AddSingleton<ICanonicalSmtpResponseClassifier, CanonicalSmtpResponseClassifierAdapter>();
+        services.AddSingleton<ISmtpResponseIntelligenceClassifier, SmtpResponseClassifier>();
+        services.AddSingleton<ISmtpResponseDecisionPolicy, SmtpResponseDecisionPolicy>();
+        services.AddSingleton<ISmtpResponseIntelligenceMetrics, SmtpResponseIntelligenceMetrics>();
+        services.AddSingleton<ISmtpResponseClassifier, SmtpResponseClassificationOrchestrator>();
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IDomainPacingJitter, DomainPacingJitter>();
         services.AddSingleton<IDomainBackoffPolicy, DomainBackoffPolicy>();

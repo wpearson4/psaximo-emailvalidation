@@ -8,6 +8,7 @@ public sealed class EmailValidationOptions
     public DisposableEmailOptions DisposableEmail { get; set; } = new();
     public RiskIntelligenceOptions RiskIntelligence { get; set; } = new();
     public SmtpOptions Smtp { get; set; } = new();
+    public SmtpResponseIntelligenceOptions SmtpResponseIntelligence { get; set; } = new();
     public SchedulingOptions Scheduling { get; set; } = new();
     public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
     public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
@@ -20,6 +21,15 @@ public sealed class EmailValidationOptions
     public RevalidationOptions Revalidation { get; set; } = new();
     public ValidationJobsOptions Jobs { get; set; } = new();
     public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
+}
+
+public sealed class SmtpResponseIntelligenceOptions
+{
+    public SmtpResponseIntelligenceMode Mode { get; set; } = SmtpResponseIntelligenceMode.Shadow;
+    public string ClassificationVersion { get; set; } = "smtp-response-rules-1.0.0";
+    public string DecisionPolicyVersion { get; set; } = "smtp-response-policy-1.0.0";
+    public int MaximumResponseCharacters { get; set; } = 4096;
+    public int RegexTimeoutMilliseconds { get; set; } = 100;
 }
 
 public sealed class EmailColumnDetectionOptions

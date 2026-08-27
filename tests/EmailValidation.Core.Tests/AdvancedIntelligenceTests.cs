@@ -108,7 +108,8 @@ public sealed class AdvancedIntelligenceTests
 
         Assert.Equal(SmtpResponseCategory.MailboxFull, evidence.Category);
         Assert.Equal(SmtpResponseTextClassification.MailboxFull, evidence.TextClassification);
-        Assert.Equal(SmtpMailboxStatus.MailboxFull, SmtpMailboxProbe.Categorize(code, response).Status);
+        Assert.Equal(SmtpMailboxStatus.MailboxFull,
+            SmtpResponseClassifier.ToProbeResult(evidence, TimeSpan.Zero).Status);
     }
 
     [Fact]
