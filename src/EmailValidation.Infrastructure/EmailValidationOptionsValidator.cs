@@ -24,8 +24,10 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var columnDetection = options.ColumnDetection;
         var smtpResponseIntelligence = options.SmtpResponseIntelligence;
         var outboundIdentities = options.OutboundIdentities;
+        var reputation = options.SmtpReputationProtection;
         var failures = new List<string>();
         ValidateOutboundIdentities(outboundIdentities, failures);
+        ValidateSmtpReputation(reputation, outboundIdentities, failures);
         if (string.IsNullOrWhiteSpace(smtpResponseIntelligence.ClassificationVersion) ||
             string.IsNullOrWhiteSpace(smtpResponseIntelligence.DecisionPolicyVersion))
             failures.Add("SMTP response intelligence classification and decision policy versions are required.");
@@ -125,14 +127,16 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 failures.Add("EmailValidation:Persistence:DatabaseName is required for MongoDB.");
             if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
                 string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection) ||
-                string.IsNullOrWhiteSpace(persistence.OutboundIdentityHealthCollection))
+                string.IsNullOrWhiteSpace(persistence.OutboundIdentityHealthCollection) ||
+                string.IsNullOrWhiteSpace(persistence.SmtpReputationStateCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
             if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection,
-                    persistence.CommercialResourceCollection, persistence.OutboundIdentityHealthCollection }
-                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 5)
-                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, commercial resource, and outbound identity health collection names must be different.");
+                    persistence.CommercialResourceCollection, persistence.OutboundIdentityHealthCollection,
+                    persistence.SmtpReputationStateCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 6)
+                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, commercial resource, outbound identity health, and SMTP reputation collections must be different.");
         }
         if (revalidation.Enabled)
         {
@@ -312,6 +316,38 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 if (!ids.Contains(identityId))
                     failures.Add($"Outbound identity group '{group.Key}' references unknown identity '{identityId}'.");
         }
+    }
+
+    private static void ValidateSmtpReputation(
+        SmtpReputationProtectionOptions options,
+        OutboundIdentityOptions outboundIdentities,
+        List<string> failures)
+    {
+        if (!options.Enabled) return;
+        if (!TryParseIpv4Cidr(options.NetworkBlock, out _, out _))
+            failures.Add("EmailValidation:SmtpReputationProtection:NetworkBlock must be a valid IPv4 CIDR.");
+        if (outboundIdentities.Enabled && !string.Equals(
+                options.NetworkBlock, outboundIdentities.AllowedCidr, StringComparison.OrdinalIgnoreCase))
+            failures.Add("SMTP reputation network block must match the configured outbound identity CIDR.");
+        if (string.IsNullOrWhiteSpace(options.PolicyVersion))
+            failures.Add("EmailValidation:SmtpReputationProtection:PolicyVersion is required.");
+        if (options.WindowMinutes < 1 || options.FailureFallbackMinutes < 1 ||
+            options.Mailbox.MinimumMinutesBetweenLiveProbes < 0 ||
+            options.Mailbox.MaximumLiveProbesPer24Hours < 1)
+            failures.Add("SMTP reputation window, fallback, and mailbox budget values are invalid.");
+        var circuit = options.CircuitBreaker;
+        if (circuit.MinimumObservationsBeforeEvaluation < 1 || circuit.CooldownMinutes < 1 ||
+            circuit.HalfOpenMaximumProbes < 1 || circuit.RecoverySuccessesRequired < 1 ||
+            circuit.ProviderIdentityPolicyBlockCount < 1 || circuit.ProviderAffectedIdentityCount < 2 ||
+            circuit.NetworkAffectedProviderCount < 2 || circuit.NetworkAffectedIdentityCount < 2)
+            failures.Add("SMTP reputation circuit-breaker thresholds are invalid.");
+        if (options.UnknownRecipientPressure.MinimumRcptObservations < 1 ||
+            options.UnknownRecipientPressure.OpenRatio is <= 0 or > 1 ||
+            options.PolicyBlockPressure.MinimumObservations < 1 ||
+            options.PolicyBlockPressure.DegradedRatio is < 0 or > 1 ||
+            options.PolicyBlockPressure.OpenRatio is <= 0 or > 1 ||
+            options.PolicyBlockPressure.DegradedRatio >= options.PolicyBlockPressure.OpenRatio)
+            failures.Add("SMTP reputation pressure thresholds and ratios are invalid.");
     }
 
     private static bool TryParseIpv4Cidr(string value, out uint network, out uint broadcast)

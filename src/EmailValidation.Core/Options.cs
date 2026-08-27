@@ -13,6 +13,7 @@ public sealed class EmailValidationOptions
     public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
     public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
     public OutboundIdentityOptions OutboundIdentities { get; set; } = new();
+    public SmtpReputationProtectionOptions SmtpReputationProtection { get; set; } = new();
     public CatchAllOptions CatchAll { get; set; } = new();
     public DnsOptions Dns { get; set; } = new();
     public IntelligenceOptions Intelligence { get; set; } = new();
@@ -22,6 +23,54 @@ public sealed class EmailValidationOptions
     public RevalidationOptions Revalidation { get; set; } = new();
     public ValidationJobsOptions Jobs { get; set; } = new();
     public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
+}
+
+public sealed class SmtpReputationProtectionOptions
+{
+    public bool Enabled { get; set; } = true;
+    public SmtpReputationProtectionMode Mode { get; set; } = SmtpReputationProtectionMode.Observe;
+    public string NetworkBlock { get; set; } = "64.182.22.160/28";
+    public int WindowMinutes { get; set; } = 60;
+    public int FailureFallbackMinutes { get; set; } = 5;
+    public string PolicyVersion { get; set; } = "2026.08.1";
+    public SmtpMailboxReputationOptions Mailbox { get; set; } = new();
+    public SmtpCircuitBreakerOptions CircuitBreaker { get; set; } = new();
+    public SmtpUnknownRecipientPressureOptions UnknownRecipientPressure { get; set; } = new();
+    public SmtpPolicyBlockPressureOptions PolicyBlockPressure { get; set; } = new();
+}
+
+public sealed class SmtpMailboxReputationOptions
+{
+    public int MinimumMinutesBetweenLiveProbes { get; set; } = 60;
+    public int MaximumLiveProbesPer24Hours { get; set; } = 2;
+}
+
+public sealed class SmtpCircuitBreakerOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int MinimumObservationsBeforeEvaluation { get; set; } = 20;
+    public int CooldownMinutes { get; set; } = 30;
+    public int HalfOpenMaximumProbes { get; set; } = 2;
+    public int RecoverySuccessesRequired { get; set; } = 3;
+    public int ProviderIdentityPolicyBlockCount { get; set; } = 3;
+    public int ProviderAffectedIdentityCount { get; set; } = 2;
+    public int NetworkAffectedProviderCount { get; set; } = 2;
+    public int NetworkAffectedIdentityCount { get; set; } = 3;
+}
+
+public sealed class SmtpUnknownRecipientPressureOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int MinimumRcptObservations { get; set; } = 20;
+    public double OpenRatio { get; set; } = 0.50;
+}
+
+public sealed class SmtpPolicyBlockPressureOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int MinimumObservations { get; set; } = 10;
+    public double DegradedRatio { get; set; } = 0.15;
+    public double OpenRatio { get; set; } = 0.30;
 }
 
 public sealed class SmtpResponseIntelligenceOptions
@@ -136,6 +185,7 @@ public sealed class PersistenceOptions
     public string LifecycleCollection { get; set; } = "EmailValidationLifecycle";
     public string CommercialResourceCollection { get; set; } = "EmailValidationCommercialResources";
     public string OutboundIdentityHealthCollection { get; set; } = "EmailValidationOutboundIdentityHealth";
+    public string SmtpReputationStateCollection { get; set; } = "EmailValidationSmtpReputationState";
 }
 
 public sealed class ResultReuseOptions

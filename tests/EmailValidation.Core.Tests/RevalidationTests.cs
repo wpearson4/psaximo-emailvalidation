@@ -75,12 +75,33 @@ public sealed class RevalidationTests
             SmtpMailboxImpact.Provisional, ValidationResultState.Provisional, SmtpRetryDisposition.Cooldown,
             SmtpCooldownScope.MxProvider, SmtpHealthImpact.Restriction, false,
             SmtpResponseCategory.RateLimited, "provider_rate_limit", "policy-1");
+        var reputation = new SmtpReputationEvidence
+        {
+            Decision = SmtpProbeBudgetDecision.Allow,
+            WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
+            Mode = SmtpReputationProtectionMode.Observe,
+            RestrictingScope = SmtpReputationScopeType.ProviderIdentity,
+            CircuitState = SmtpReputationState.CircuitOpen,
+            RetryAtUtc = Now.AddMinutes(30),
+            SuppressionReason = "ProviderIdentityCircuitOpen",
+            WouldHaveUsedIdentityId = "outbound-1",
+            ScopeStates = new Dictionary<SmtpReputationScopeType, SmtpReputationState>
+            {
+                [SmtpReputationScopeType.NetworkBlock] = SmtpReputationState.Healthy,
+                [SmtpReputationScopeType.Provider] = SmtpReputationState.Degraded,
+                [SmtpReputationScopeType.ProviderIdentity] = SmtpReputationState.CircuitOpen,
+                [SmtpReputationScopeType.RecipientDomain] = SmtpReputationState.Healthy
+            },
+            MailboxProbeCount = 1,
+            EvaluatedAtUtc = Now,
+            PolicyVersion = "reputation-1"
+        };
         var raw = Result(EmailValidationStatus.Unknown, ReasonCode.RateLimited) with
         {
             SmtpEvidence = new(SmtpCommand.RcptTo, 451, "4.7.0", SmtpResponseCategory.RateLimited,
                 SmtpResponseTextClassification.RateLimit, 1, MailProvider.Microsoft365,
                 "mx.example.test", 1, Now, "451 4.7.0 Rate limit", classification, decision,
-                SmtpResponseIntelligenceMode.Enforced),
+                SmtpResponseIntelligenceMode.Enforced, Reputation: reputation),
             Provider = new(MailProvider.Microsoft365, 0.99, Family: ProviderFamily.Microsoft365,
                 GatewayProvider: GatewayProvider.MicrosoftExchangeOnlineProtection,
                 MailboxProvider: MailProvider.Microsoft365, TopologyFingerprint: "mx-topology-1")
@@ -96,6 +117,13 @@ public sealed class RevalidationTests
         Assert.Equal("mx-topology-1", attempt.MxTopologyFingerprint);
         Assert.Equal(ValidationResultState.Provisional, attempt.SmtpDecisionResultState);
         Assert.Equal("strategy-1", attempt.SmtpStrategyVersion);
+        Assert.Equal(SmtpProbeBudgetDecision.Allow, attempt.ReputationBudgetDecision);
+        Assert.Equal(SmtpProbeBudgetDecision.CircuitOpen, attempt.ReputationWouldDecision);
+        Assert.Equal(SmtpReputationState.Degraded, attempt.ReputationProviderState);
+        Assert.Equal(SmtpReputationState.CircuitOpen, attempt.ReputationProviderIdentityState);
+        Assert.Equal(1, attempt.ReputationMailboxProbeCount);
+        Assert.Equal("outbound-1", attempt.ReputationWouldHaveUsedIdentityId);
+        Assert.Equal("reputation-1", attempt.ReputationPolicyVersion);
     }
 
     [Fact]
@@ -386,6 +414,29 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public async Task Processor_ReputationCircuitReschedulesWithoutConsumingAttempt()
+    {
+        var lifecycle = Lifecycle(ValidationResultState.Provisional, 1);
+        var store = new MemoryLifecycleStore(lifecycle);
+        var service = new CountingValidationService(Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted));
+        using var metrics = new RevalidationMetrics();
+        var processor = new EmailRevalidationProcessor(
+            store, service, new StubCoordinator(), new StubDispatcher(true), new AvailableThrottle(),
+            new RevalidationSchedulePolicy(new StubProviderPolicies(new("Microsoft365", 1, 0, 60, 1)),
+                new StubBackoff(Now.AddMinutes(5))),
+            metrics, new FixedTimeProvider(Now),
+            reputationProtection: new DeferredReputationProtection(Now.AddMinutes(45)));
+
+        var disposition = await processor.ProcessAsync(Message(lifecycle.ValidationId, 2));
+
+        Assert.Equal(RevalidationProcessingDisposition.Rescheduled, disposition.Disposition);
+        Assert.Equal(0, service.Calls);
+        Assert.Equal(1, store.Value!.AttemptNumber);
+        Assert.Equal(Now.AddMinutes(45), store.Value.NextRetryAt);
+        Assert.Equal(ReasonCode.ReputationPolicyDeferred.ToString(), store.Value.RetryReason);
+    }
+
+    [Fact]
     public async Task OutboxDispatcher_PersistsRetryScheduledBeforeServiceBusAndThenRetryWaiting()
     {
         var message = Message("validation-123", 2);
@@ -624,6 +675,27 @@ public sealed class RevalidationTests
             new(false, retryAfter, "ProviderCooldown");
         public ValueTask<ISmtpThrottleLease> AcquireAsync(SmtpThrottleContext context,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
+    private sealed class DeferredReputationProtection(DateTimeOffset retryAt) : ISmtpReputationProtection
+    {
+        public Task<SmtpReputationEvidence> EvaluateAsync(
+            SmtpReputationBudgetContext context,
+            CancellationToken cancellationToken = default) => Task.FromResult(new SmtpReputationEvidence
+        {
+            Decision = SmtpProbeBudgetDecision.CircuitOpen,
+            WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
+            Mode = SmtpReputationProtectionMode.Enforced,
+            RestrictingScope = SmtpReputationScopeType.Provider,
+            CircuitState = SmtpReputationState.CircuitOpen,
+            RetryAtUtc = retryAt,
+            EvaluatedAtUtc = Now,
+            PolicyVersion = "test-v1"
+        });
+
+        public Task RecordAsync(
+            SmtpReputationObservation observation,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider

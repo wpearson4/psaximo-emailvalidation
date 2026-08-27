@@ -457,6 +457,29 @@ public interface ISmtpProbeThrottle
     SmtpSchedulingSnapshot GetSnapshot() => new(0, 0, 0, 0, 0, 0, 0, 0);
 }
 
+public interface ISmtpReputationProtection
+{
+    Task<SmtpReputationEvidence> EvaluateAsync(
+        SmtpReputationBudgetContext context,
+        CancellationToken cancellationToken = default);
+
+    Task RecordAsync(
+        SmtpReputationObservation observation,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ISmtpReputationStateStore
+{
+    Task<IReadOnlyList<SmtpReputationScopeSnapshot>> GetManyAsync(
+        IReadOnlyList<(SmtpReputationScopeType ScopeType, string ScopeId)> scopes,
+        CancellationToken cancellationToken = default);
+
+    Task<SmtpReputationStateWriteResult> TrySaveAsync(
+        SmtpReputationScopeSnapshot state,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+}
+
 public interface ISmtpThrottleLease : IAsyncDisposable
 {
     bool Acquired { get; }
@@ -557,6 +580,9 @@ public interface IEmailValidationPersistenceInitializer
 public interface IValidationPersistenceMetrics
 {
     void RecordValidationRequest();
+    void RecordSmtpValidationRequired();
+    void RecordSmtpValidationAvoided();
+    void RecordSmtpValidationPerformed();
     void RecordRead(string recordType, bool found, TimeSpan elapsed);
     void RecordWrite(string recordType, bool succeeded);
     void RecordMailboxReuse(bool liveSmtpAvoided);

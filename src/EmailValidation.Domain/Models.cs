@@ -40,7 +40,7 @@ public enum ReasonCode
     InvalidDomain, NoMailExchanger, DnsTimeout, DnsFailure, SmtpDisabled,
     SmtpTimeout, MailboxRejected, MailboxAccepted, CatchAllDetected,
     CatchAllUnknown, DisposableDomain, RoleAccount, TemporarySmtpFailure,
-    ProviderBlockedVerification, SmtpConnectionFailure, ImplicitMxFallback,
+    ProviderBlockedVerification, SmtpConnectionFailure, ImplicitMxFallback, ReputationPolicyDeferred,
     GatewayAccepted, ProviderVerificationBlocked, Greylisted, RateLimited,
     CatchAllLikely, CatchAllUncertain, ProviderDetected, MailboxAcceptanceAmbiguous,
     HistoricalCatchAllBehavior, HistoricalVerificationBlocked, NullMailExchanger,

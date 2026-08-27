@@ -33,6 +33,8 @@ Real-time lifecycle status, gRPC reconnect semantics, authorization boundaries, 
 documented in [docs/realtime-status-gap-analysis.md](docs/realtime-status-gap-analysis.md).
 The current boundary assessment, SOLID review, remediated risks, and dependency guardrails are documented in
 [docs/architecture-review-guardrails.md](docs/architecture-review-guardrails.md).
+SMTP probe budgeting, durable hierarchical circuits, Observe/Enforced rollout, evidence, and operations are
+documented in [docs/smtp-reputation-protection.md](docs/smtp-reputation-protection.md).
 
 ## Run
 

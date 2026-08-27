@@ -21,10 +21,15 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseIntelligenceCl
     {
         var sanitized = _rules.Sanitize(context.Response, out var sanitizationTimedOut);
         var enhanced = _rules.EnhancedStatus(sanitized, out var enhancedStatusTimedOut);
-        var structured = ClassifyStructured(context, enhanced);
-        var matched = structured ?? _rules.MatchProvider(context, sanitized) ?? _rules.MatchGeneric(context, sanitized);
+        var regexTimedOut = sanitizationTimedOut || enhancedStatusTimedOut;
+        var structured = regexTimedOut ? null : ClassifyStructured(context, enhanced);
+        var matched = regexTimedOut
+            ? null
+            : structured ?? _rules.MatchProvider(context, sanitized) ?? _rules.MatchGeneric(context, sanitized);
         matched = ConstrainByReplyClass(context, matched);
-        var reason = matched?.Reason ?? ClassifyReplyFallback(context, enhanced);
+        var reason = regexTimedOut
+            ? SmtpNormalizedReason.UnknownProviderResponse
+            : matched?.Reason ?? ClassifyReplyFallback(context, enhanced);
         var strength = matched?.Strength ?? (reason == SmtpNormalizedReason.UnknownProviderResponse
             ? SmtpEvidenceStrength.None
             : SmtpEvidenceStrength.Low);
@@ -36,7 +41,7 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseIntelligenceCl
             observation?.ValidationId, observation?.RecipientDomain, observation?.MxTopologyFingerprint,
             observation?.OutboundIdentityId, observation?.SenderIdentityId,
             observation?.ObservedAtUtc, observation?.StrategyVersion,
-            sanitizationTimedOut || enhancedStatusTimedOut || matched?.Id == "regex_timeout");
+            regexTimedOut || matched?.Id == "regex_timeout");
     }
 
     public SmtpEvidence Classify(

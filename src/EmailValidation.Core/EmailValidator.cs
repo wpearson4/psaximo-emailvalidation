@@ -37,6 +37,7 @@ public sealed class EmailValidator(
         var normalized = normalizer.Normalize(email);
         if (!normalized.IsValid)
         {
+            if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
             var reason = normalized.FailureReason ?? ReasonCode.InvalidSyntax;
             var invalidResult = InvalidSyntaxResult(
                 email, reason, stopwatch.ElapsedMilliseconds, validatedAt, _options.Policy.ToVersions());
@@ -120,6 +121,11 @@ public sealed class EmailValidator(
             logger.LogDebug(
                 "Catch-all intelligence reused for {Domain}; randomized-recipient and mailbox SMTP probes skipped",
                 domain);
+        }
+        if (smtpRequested)
+        {
+            if (mailbox.ProbeAttempted) persistenceMetrics.RecordSmtpValidationPerformed();
+            else persistenceMetrics.RecordSmtpValidationAvoided();
         }
 
         var strategy = providerStrategyResolver.Resolve(domainData.Provider);
@@ -450,11 +456,13 @@ public sealed class EmailValidator(
                 domain.Provider.TopologyFingerprint), cancellationToken);
         }
 
-        if (mailbox.Status != SmtpMailboxStatus.NotAttempted)
+        if (mailbox.Status != SmtpMailboxStatus.NotAttempted || mailbox.Evidence?.Reputation is not null)
         {
             await observationStore.RecordAsync(new ValidationObservation(
                 domain.Domain,
-                ValidationObservationType.MailboxProbe,
+                mailbox.Status == SmtpMailboxStatus.NotAttempted
+                    ? ValidationObservationType.ReputationDecision
+                    : ValidationObservationType.MailboxProbe,
                 domain.Provider.Provider,
                 selectedMx,
                 domain.CatchAll.Status,
@@ -463,7 +471,8 @@ public sealed class EmailValidator(
                 DateTimeOffset.UtcNow,
                 mailbox.Evidence?.ElapsedMilliseconds ?? (long)mailbox.ConnectionDuration.TotalMilliseconds,
                 GatewayProvider: domain.Provider.GatewayProvider,
-                TopologyFingerprint: domain.Provider.TopologyFingerprint), cancellationToken);
+                TopologyFingerprint: domain.Provider.TopologyFingerprint,
+                Reputation: mailbox.Evidence?.Reputation), cancellationToken);
         }
     }
 

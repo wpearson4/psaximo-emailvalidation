@@ -74,7 +74,8 @@ public enum SmtpNormalizedReason
     TlsFailure,
     NoEligibleOutboundIdentity,
     OutboundIdentityDnsNotReady,
-    OutboundIdentityConfigurationInvalid
+    OutboundIdentityConfigurationInvalid,
+    ReputationPolicyDeferred
 }
 
 public enum SmtpEvidenceStrength { None, Low, Medium, High }
@@ -158,7 +159,7 @@ public sealed record SmtpResponseIntelligenceMetricsSnapshot(
     long CandidateFailures);
 
 public enum AcceptanceStrength { None, Low, Medium, High }
-public enum ValidationObservationType { Domain, CatchAllProbe, MailboxProbe }
+public enum ValidationObservationType { Domain, CatchAllProbe, MailboxProbe, ReputationDecision }
 
 public sealed record ProviderDetectionResult(
     MailProvider Provider,
@@ -190,7 +191,8 @@ public sealed record SmtpEvidence(
     SmtpResponseIntelligence? Intelligence = null,
     SmtpResponseDecision? Decision = null,
     SmtpResponseIntelligenceMode IntelligenceMode = SmtpResponseIntelligenceMode.Disabled,
-    bool CanonicalOutcomeChanged = false);
+    bool CanonicalOutcomeChanged = false,
+    SmtpReputationEvidence? Reputation = null);
 
 /// <summary>
 /// Evidence for one command in an SMTP conversation. A response is never
@@ -419,7 +421,8 @@ public sealed record ValidationObservation(
     int RandomRecipientProbeCount = 0,
     int RandomRecipientRejectedCount = 0,
     GatewayProvider GatewayProvider = GatewayProvider.Unknown,
-    string? TopologyFingerprint = null);
+    string? TopologyFingerprint = null,
+    SmtpReputationEvidence? Reputation = null);
 
 public sealed record HistoricalSignalSummary(
     int ObservationCount,

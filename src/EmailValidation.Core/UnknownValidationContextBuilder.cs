@@ -26,6 +26,11 @@ public static class UnknownValidationContextBuilder
                 "Correct outbound identity readiness or wait for the configured retry; do not fall back to default egress.",
                 category);
 
+        if (smtpReason == SmtpNormalizedReason.ReputationPolicyDeferred)
+            return Create(result, UnknownCause.LocalCooldown,
+                "Live SMTP was intentionally deferred to protect sender, identity, provider, domain, or network-block reputation.",
+                true, "Retry at or after the reputation policy recovery time.", category);
+
         if (reasons.Contains(ReasonCode.ProbeSenderNotConfigured) ||
             reasons.Contains(ReasonCode.ProbeSenderUnhealthy))
             return Create(

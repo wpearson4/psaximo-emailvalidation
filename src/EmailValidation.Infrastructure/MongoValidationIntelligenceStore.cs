@@ -704,6 +704,19 @@ public sealed class MongoValidationIntelligenceStore :
         [BsonRepresentation(BsonType.String)]
         public GatewayProvider GatewayProvider { get; set; }
         public string? TopologyFingerprint { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpProbeBudgetDecision? ReputationBudgetDecision { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpProbeBudgetDecision? ReputationWouldDecision { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpReputationProtectionMode? ReputationMode { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpReputationScopeType? ReputationRestrictingScope { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpReputationState? ReputationCircuitState { get; set; }
+        public DateTime? ReputationRetryAtUtc { get; set; }
+        public string? ReputationSuppressionReason { get; set; }
+        public string? ReputationPolicyVersion { get; set; }
 
         public static ValidationObservationDocument FromModel(ValidationObservation model) => new()
         {
@@ -720,7 +733,15 @@ public sealed class MongoValidationIntelligenceStore :
             RandomRecipientProbeCount = model.RandomRecipientProbeCount,
             RandomRecipientRejectedCount = model.RandomRecipientRejectedCount,
             GatewayProvider = model.GatewayProvider,
-            TopologyFingerprint = model.TopologyFingerprint
+            TopologyFingerprint = model.TopologyFingerprint,
+            ReputationBudgetDecision = model.Reputation?.Decision,
+            ReputationWouldDecision = model.Reputation?.WouldDecision,
+            ReputationMode = model.Reputation?.Mode,
+            ReputationRestrictingScope = model.Reputation?.RestrictingScope,
+            ReputationCircuitState = model.Reputation?.CircuitState,
+            ReputationRetryAtUtc = model.Reputation?.RetryAtUtc?.UtcDateTime,
+            ReputationSuppressionReason = model.Reputation?.SuppressionReason,
+            ReputationPolicyVersion = model.Reputation?.PolicyVersion
         };
 
         public ValidationObservation ToModel() => new(
@@ -737,6 +758,22 @@ public sealed class MongoValidationIntelligenceStore :
             RandomRecipientProbeCount,
             RandomRecipientRejectedCount,
             GatewayProvider,
-            TopologyFingerprint);
+            TopologyFingerprint,
+            ReputationBudgetDecision is null || ReputationWouldDecision is null
+                ? null
+                : new SmtpReputationEvidence
+                {
+                    Decision = ReputationBudgetDecision.Value,
+                    WouldDecision = ReputationWouldDecision.Value,
+                    Mode = ReputationMode ?? SmtpReputationProtectionMode.Observe,
+                    RestrictingScope = ReputationRestrictingScope,
+                    CircuitState = ReputationCircuitState ?? SmtpReputationState.Healthy,
+                    RetryAtUtc = ReputationRetryAtUtc is { } retryAt
+                        ? new DateTimeOffset(DateTime.SpecifyKind(retryAt, DateTimeKind.Utc))
+                        : null,
+                    SuppressionReason = ReputationSuppressionReason,
+                    EvaluatedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(ObservedAt, DateTimeKind.Utc)),
+                    PolicyVersion = ReputationPolicyVersion ?? string.Empty
+                });
     }
 }

@@ -45,6 +45,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMailProviderDetector, MailProviderDetector>();
         services.AddSingleton<ISmtpProviderDetector, SmtpBannerProviderDetector>();
         services.AddSingleton<ISmtpProbeThrottle, DomainSmtpProbeThrottle>();
+        services.AddSingleton<SmtpReputationPolicy>();
+        services.AddSingleton<InMemorySmtpReputationStateStore>();
+        services.AddSingleton<MongoSmtpReputationStateStore>();
+        services.AddSingleton<ISmtpReputationStateStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoSmtpReputationStateStore>()
+            : provider.GetRequiredService<InMemorySmtpReputationStateStore>());
+        services.AddSingleton<ISmtpReputationProtection, SmtpReputationProtectionService>();
         services.AddSingleton<ICanonicalSmtpResponseClassifier, CanonicalSmtpResponseClassifierAdapter>();
         services.AddSingleton<ISmtpResponseIntelligenceClassifier, SmtpResponseClassifier>();
         services.AddSingleton<ISmtpResponseDecisionPolicy, SmtpResponseDecisionPolicy>();

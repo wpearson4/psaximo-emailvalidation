@@ -89,7 +89,20 @@ public sealed record ValidationAttemptRecord(
     string? ExpectedPtrHostName = null,
     ForwardConfirmedReverseDnsState? FcrDnsState = null,
     DateTimeOffset? FcrDnsEvaluatedAtUtc = null,
-    string? FcrDnsPolicyVersion = null);
+    string? FcrDnsPolicyVersion = null,
+    SmtpProbeBudgetDecision? ReputationBudgetDecision = null,
+    SmtpProbeBudgetDecision? ReputationWouldDecision = null,
+    SmtpReputationScopeType? ReputationRestrictingScope = null,
+    SmtpReputationState? ReputationCircuitState = null,
+    DateTimeOffset? ReputationRetryAtUtc = null,
+    string? ReputationPolicyVersion = null,
+    SmtpReputationState? ReputationNetworkBlockState = null,
+    SmtpReputationState? ReputationProviderState = null,
+    SmtpReputationState? ReputationProviderIdentityState = null,
+    SmtpReputationState? ReputationDomainState = null,
+    int? ReputationMailboxProbeCount = null,
+    string? ReputationWouldHaveUsedIdentityId = null,
+    string? ReputationSuppressionReason = null);
 
 public sealed record PendingRevalidation(
     EmailRevalidationMessageV1 Message,

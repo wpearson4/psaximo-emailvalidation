@@ -162,6 +162,9 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
     private readonly Counter<long> _staleMailboxRefreshes;
     private readonly Counter<long> _liveSmtpAvoided;
     private readonly Counter<long> _validationRequests;
+    private readonly Counter<long> _smtpValidationRequired;
+    private readonly Counter<long> _smtpValidationAvoided;
+    private readonly Counter<long> _smtpValidationPerformed;
     private readonly Counter<long> _memoryCacheHits;
     private readonly Counter<long> _persistentReuseHits;
     private readonly Counter<long> _reuseMisses;
@@ -224,6 +227,9 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         _staleMailboxRefreshes = _meter.CreateCounter<long>("email_validation.persistence.stale_mailbox_refresh");
         _liveSmtpAvoided = _meter.CreateCounter<long>("email_validation.live_smtp.avoided");
         _validationRequests = _meter.CreateCounter<long>("email_validation.requests");
+        _smtpValidationRequired = _meter.CreateCounter<long>("smtp_validation_required_total");
+        _smtpValidationAvoided = _meter.CreateCounter<long>("smtp_validation_avoided_total");
+        _smtpValidationPerformed = _meter.CreateCounter<long>("smtp_validation_performed_total");
         _memoryCacheHits = _meter.CreateCounter<long>("email_validation.result_cache.hits");
         _persistentReuseHits = _meter.CreateCounter<long>("email_validation.persistent_reuse.hits");
         _reuseMisses = _meter.CreateCounter<long>("email_validation.reuse.misses");
@@ -250,6 +256,10 @@ public sealed class ValidationPersistenceMetrics : IValidationPersistenceMetrics
         _validationRequests.Add(1);
         Interlocked.Increment(ref _validationRequestCount);
     }
+
+    public void RecordSmtpValidationRequired() => _smtpValidationRequired.Add(1);
+    public void RecordSmtpValidationAvoided() => _smtpValidationAvoided.Add(1);
+    public void RecordSmtpValidationPerformed() => _smtpValidationPerformed.Add(1);
 
     public void RecordSmtpUtf8(bool required, bool supported)
     {
@@ -768,6 +778,7 @@ public sealed class IntelligenceEmailValidator(
         CancellationToken cancellationToken = default)
     {
         persistenceMetrics.RecordValidationRequest();
+        if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationRequired();
         var normalized = normalizer.Normalize(email);
         if (!normalized.IsValid)
         {
@@ -780,13 +791,19 @@ public sealed class IntelligenceEmailValidator(
         var key = CreateExecutionKey(normalized.NormalizedEmail!, request);
         var cached = await GetCachedAsync(key, cancellationToken).ConfigureAwait(false);
         if (cached is not null)
+        {
+            if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
             return ReturnFromSource(cached, email, ValidationResultSource.MemoryCache);
+        }
 
         var lookup = await LookupPersistentAsync(
             normalized.NormalizedEmail!, normalized.Domain!, request, cancellationToken).ConfigureAwait(false);
         RecordLookupDecision(lookup);
         if (lookup.Decision.CanReuse)
+        {
+            if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
             return await ReusePersistentAsync(email, key, lookup, cancellationToken).ConfigureAwait(false);
+        }
 
         async Task<EmailValidationResult> ExecuteLeaderAsync(CancellationToken operationToken)
         {
@@ -794,7 +811,10 @@ public sealed class IntelligenceEmailValidator(
             // this request becomes the next leader. Recheck the hot cache before live work.
             var leaderCached = await GetCachedAsync(key, operationToken).ConfigureAwait(false);
             if (leaderCached is not null)
+            {
+                if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
                 return ReturnFromSource(leaderCached, email, ValidationResultSource.MemoryCache);
+            }
 
             persistenceMetrics.RecordLiveValidation();
             var live = await inner.ValidateAsync(email, request, operationToken).ConfigureAwait(false);
@@ -855,6 +875,8 @@ public sealed class IntelligenceEmailValidator(
         var flight = await singleFlight.ExecuteWithStatusAsync(key, ExecuteLeaderAsync, cancellationToken)
             .ConfigureAwait(false);
         persistenceMetrics.RecordSingleFlight(flight.JoinedExistingOperation);
+        if (request.EnableSmtp && flight.JoinedExistingOperation)
+            persistenceMetrics.RecordSmtpValidationAvoided();
         return flight.JoinedExistingOperation
             ? ReturnFromSource(flight.Result, email, ValidationResultSource.JoinedInFlightValidation)
             : flight.Result with { Email = email };

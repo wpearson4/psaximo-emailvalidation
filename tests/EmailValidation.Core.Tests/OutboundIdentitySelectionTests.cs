@@ -349,6 +349,134 @@ public sealed class OutboundIdentitySelectionTests
         Assert.Equal(0, connection.Calls);
     }
 
+    [Fact]
+    public async Task SmtpProbe_EnforcedReputationDecisionPreventsConnection()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        var options = Options.Create(root);
+        var identity = IdentityModel();
+        var connection = new CountingConnectionFactory();
+        var protection = new FixedReputationProtection(new SmtpReputationEvidence
+        {
+            Decision = SmtpProbeBudgetDecision.CircuitOpen,
+            WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
+            Mode = SmtpReputationProtectionMode.Enforced,
+            RestrictingScope = SmtpReputationScopeType.NetworkBlock,
+            CircuitState = SmtpReputationState.CircuitOpen,
+            RetryAtUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            SuppressionReason = "NetworkBlockCircuitOpen",
+            EvaluatedAtUtc = DateTimeOffset.UtcNow,
+            PolicyVersion = "test-v1"
+        });
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(),
+            connection, protection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(SmtpMailboxStatus.NotAttempted, result.Status);
+        Assert.Equal(0, result.Attempts);
+        Assert.Equal(0, connection.Calls);
+        Assert.Equal(SmtpNormalizedReason.ReputationPolicyDeferred,
+            result.Evidence!.Intelligence!.Reason);
+        Assert.Equal(SmtpReputationScopeType.NetworkBlock,
+            result.Evidence.Reputation!.RestrictingScope);
+        Assert.Equal(0, protection.RecordCalls);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_ReputationEvaluationFailureFailsSafeWhenEnforced()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.SmtpReputationProtection.Mode = SmtpReputationProtectionMode.Enforced;
+        var options = Options.Create(root);
+        var connection = new CountingConnectionFactory();
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new FixedSelector(IdentityModel()), new FakeHealthStore(),
+            connection, new ThrowingReputationProtection());
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(SmtpMailboxStatus.NotAttempted, result.Status);
+        Assert.Equal(0, connection.Calls);
+        Assert.Equal(SmtpProbeBudgetDecision.SafeFallback, result.Evidence!.Reputation!.Decision);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_ObserveDecisionRecordsComparisonWithoutSuppressing()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.Smtp.RetryCount = 0;
+        var options = Options.Create(root);
+        var identity = IdentityModel();
+        using var connection = new ScriptedConnectionFactory(
+            "220 mx.example ESMTP\r\n250 mx.example\r\n250 sender accepted\r\n" +
+            "550 5.1.1 recipient rejected\r\n250 reset\r\n221 bye\r\n");
+        var protection = new FixedReputationProtection(new SmtpReputationEvidence
+        {
+            Decision = SmtpProbeBudgetDecision.Allow,
+            WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
+            Mode = SmtpReputationProtectionMode.Observe,
+            RestrictingScope = SmtpReputationScopeType.Provider,
+            CircuitState = SmtpReputationState.CircuitOpen,
+            RetryAtUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            EvaluatedAtUtc = DateTimeOffset.UtcNow,
+            PolicyVersion = "test-v1"
+        });
+        var selector = new FixedSelector(identity);
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), selector, new FakeHealthStore(),
+            connection, protection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(1, protection.RecordCalls);
+        Assert.Equal(1, selector.Calls);
+        Assert.Equal(SmtpProbeBudgetDecision.CircuitOpen, result.Evidence!.Reputation!.WouldDecision);
+        Assert.Contains("RCPT TO", connection.Commands, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_RetriesDoNotCycleOutboundIdentity()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.Smtp.RetryCount = 3;
+        var options = Options.Create(root);
+        var identity = IdentityModel();
+        var selector = new FixedSelector(identity);
+        using var connection = new ScriptedConnectionFactory("421 4.7.0 policy blocked\r\n");
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SenderPool(),
+            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), selector, new FakeHealthStore(), connection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(1, selector.Calls);
+        Assert.NotEmpty(connection.LocalAddresses);
+        Assert.All(connection.LocalAddresses, address => Assert.Equal(identity.Address, address));
+        Assert.Equal(identity.Address, connection.LocalAddress);
+        Assert.True(result.Attempts > 1);
+    }
+
     private static RendezvousOutboundIdentitySelector Selector(
         IOptions<EmailValidationOptions> options,
         FakeDiscovery discovery,
@@ -360,6 +488,17 @@ public sealed class OutboundIdentitySelectionTests
             health,
             TimeProvider.System,
             NullLogger<RendezvousOutboundIdentitySelector>.Instance);
+
+    private static OutboundIdentity IdentityModel() => new()
+    {
+        IdentityId = "smtp-162",
+        Address = IPAddress.Parse("64.182.22.162"),
+        InterfaceName = "ens19",
+        ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
+        EhloHostName = "smtp-162.email.digitalwarehouse.io",
+        Enabled = true,
+        FcrDnsState = ForwardConfirmedReverseDnsState.Valid
+    };
 
     private static EmailValidationOptions Config(bool sharedIdentity = false)
     {
@@ -481,11 +620,16 @@ public sealed class OutboundIdentitySelectionTests
 
     private sealed class FixedSelector(OutboundIdentity identity) : IOutboundIdentitySelector
     {
+        public int Calls { get; private set; }
+
         public Task<OutboundIdentitySelectionResult> SelectAsync(
             OutboundIdentitySelectionRequest request,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(new OutboundIdentitySelectionResult(
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new OutboundIdentitySelectionResult(
                 identity, OutboundIdentitySelectionReason.Selected, "Microsoft", "v1", []));
+        }
     }
 
     private sealed class UnavailableSelector : IOutboundIdentitySelector
@@ -536,6 +680,8 @@ public sealed class OutboundIdentitySelectionTests
         string? actualLocalAddress = null) : ISmtpConnectionFactory, IDisposable
     {
         private readonly ScriptedStream _stream = new(responses);
+        public int Calls { get; private set; }
+        public List<IPAddress> LocalAddresses { get; } = [];
         public IPAddress? LocalAddress { get; private set; }
         public string Commands => _stream.Commands;
 
@@ -545,6 +691,8 @@ public sealed class OutboundIdentitySelectionTests
             IPAddress localAddress,
             CancellationToken cancellationToken = default)
         {
+            Calls++;
+            LocalAddresses.Add(localAddress);
             LocalAddress = localAddress;
             return Task.FromResult<ISmtpConnection>(new Connection(
                 _stream, actualLocalAddress ?? localAddress.ToString()));
@@ -591,6 +739,36 @@ public sealed class OutboundIdentitySelectionTests
             Calls++;
             throw new InvalidOperationException("SMTP connection must not be attempted");
         }
+    }
+
+    private sealed class FixedReputationProtection(SmtpReputationEvidence decision)
+        : ISmtpReputationProtection
+    {
+        public int RecordCalls { get; private set; }
+
+        public Task<SmtpReputationEvidence> EvaluateAsync(
+            SmtpReputationBudgetContext context,
+            CancellationToken cancellationToken = default) => Task.FromResult(decision);
+
+        public Task RecordAsync(
+            SmtpReputationObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            RecordCalls++;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingReputationProtection : ISmtpReputationProtection
+    {
+        public Task<SmtpReputationEvidence> EvaluateAsync(
+            SmtpReputationBudgetContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("policy unavailable");
+
+        public Task RecordAsync(
+            SmtpReputationObservation observation,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class ScriptedStream(string responses) : Stream

@@ -120,6 +120,9 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
     {
         var evidence = probe.Evidence;
         if (evidence is null) return;
+        if (evidence.Reputation?.SuppressSmtp == true ||
+            evidence.Intelligence?.Reason == SmtpNormalizedReason.ReputationPolicyDeferred)
+            reasons.Add(ReasonCode.ReputationPolicyDeferred);
         if (evidence.Command == SmtpCommand.MailFrom && evidence.ResponseCode is >= 500 and < 600)
         {
             reasons.Add(ReasonCode.SenderIdentityRejected);

@@ -26,7 +26,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly IOutboundIdentitySelector? _outboundIdentitySelector;
     private readonly IOutboundIdentityHealthStore? _outboundIdentityHealthStore;
     private readonly ISmtpConnectionFactory _connectionFactory;
+    private readonly ISmtpReputationProtection? _reputationProtection;
     private readonly OutboundIdentityOptions _outboundIdentityOptions;
+    private readonly SmtpReputationProtectionOptions _reputationOptions;
     private readonly string _strategyVersion;
     private readonly string _classificationVersion;
     private readonly SmtpResponseIntelligenceMode _intelligenceMode;
@@ -42,7 +44,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         IProviderPolicyResolver providerPolicyResolver,
         IOutboundIdentitySelector? outboundIdentitySelector = null,
         IOutboundIdentityHealthStore? outboundIdentityHealthStore = null,
-        ISmtpConnectionFactory? connectionFactory = null)
+        ISmtpConnectionFactory? connectionFactory = null,
+        ISmtpReputationProtection? reputationProtection = null)
     {
         _options = options.Value.Smtp;
         _senderOptions = options.Value.ProbeSenderRotation;
@@ -56,7 +59,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _outboundIdentitySelector = outboundIdentitySelector;
         _outboundIdentityHealthStore = outboundIdentityHealthStore;
         _connectionFactory = connectionFactory ?? new SmtpConnectionFactory();
+        _reputationProtection = reputationProtection;
         _outboundIdentityOptions = options.Value.OutboundIdentities;
+        _reputationOptions = options.Value.SmtpReputationProtection;
         _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
         _classificationVersion = options.Value.SmtpResponseIntelligence.ClassificationVersion;
         _intelligenceMode = options.Value.SmtpResponseIntelligence.Mode;
@@ -89,6 +94,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 "Outbound identity {OutboundIdentityId} selected for provider {Provider} domain {Domain}",
                 outboundIdentity!.IdentityId, provider, domain);
         }
+        throttleContext = throttleContext with { OutboundIp = outboundIdentity?.Address.ToString() };
+        var reputationContext = new SmtpReputationBudgetContext(
+            recipient.Trim().ToLowerInvariant(), domain, provider,
+            outboundIdentity?.IdentityId, outboundIdentity?.Address.ToString(), mxHost);
+        SmtpReputationEvidence? reputation = null;
         var affinity = _affinityStore.GetAffinity(domain);
         var excludedSenders = new HashSet<string>(
             _affinityStore.GetIncompatibleSenders(domain), StringComparer.OrdinalIgnoreCase);
@@ -127,6 +137,13 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                         mxHost, provider,
                         new(false, throttleLease.RetryAfter, throttleLease.Reason),
                         sessions);
+                if (reputation is null && _reputationProtection is not null)
+                {
+                    reputation = await EvaluateReputationSafelyAsync(
+                        reputationContext, cancellationToken).ConfigureAwait(false);
+                    if (reputation.SuppressSmtp)
+                        return ReputationDeferred(mxHost, provider, reputation);
+                }
                 if (!_sessionBudget.TryConsume())
                 {
                     _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
@@ -137,6 +154,19 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 sessions++;
                 lastResult = await ProbeOnceAsync(
                     mxHost, recipient, provider, sessions, selected.Sender, outboundIdentity, cancellationToken);
+                if (reputation is not null)
+                    lastResult = WithReputation(lastResult, reputation);
+                if (_reputationProtection is not null)
+                {
+                    await _reputationProtection.RecordAsync(new SmtpReputationObservation(
+                        reputationContext,
+                        lastResult.Evidence?.Category ?? SmtpResponseCategory.Unknown,
+                        lastResult.Evidence?.Intelligence?.Reason,
+                        ConnectionAttempted: true,
+                        RcptAttempted: lastResult.SessionEvidence?.Stages.Any(
+                            stage => stage.Stage == SmtpCommand.RcptTo) == true,
+                        DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                }
                 if (outboundIdentity is not null)
                     await RecordOutboundIdentityOutcomeAsync(
                         outboundIdentity, provider, lastResult, cancellationToken).ConfigureAwait(false);
@@ -634,6 +664,71 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             Disposition = SmtpProbeDisposition.LocalCooldown,
             RetryAfter = DateTimeOffset.UtcNow.AddMinutes(5)
         };
+    }
+
+    private SmtpProbeResult ReputationDeferred(
+        string mxHost,
+        MailProvider provider,
+        SmtpReputationEvidence reputation)
+    {
+        var detail = $"Live SMTP was deferred by reputation policy ({reputation.SuppressionReason ?? reputation.Decision.ToString()}).";
+        var evidence = _responseClassifier.Classify(
+            SmtpCommand.Connect, null, detail, TimeSpan.Zero, provider, mxHost, 0) with
+        {
+            Category = SmtpResponseCategory.LocalCooldown,
+            TextClassification = SmtpResponseTextClassification.VerificationUnavailable,
+            Reputation = reputation
+        };
+        var intelligence = evidence.Intelligence is { } classified
+            ? classified with { Reason = SmtpNormalizedReason.ReputationPolicyDeferred }
+            : new SmtpResponseIntelligence(
+                SmtpCommand.Connect, null, null, null, SmtpNormalizedReason.ReputationPolicyDeferred,
+                SmtpEvidenceStrength.High, provider, _classificationVersion,
+                "smtp-reputation-policy-deferred", evidence.SanitizedResponse,
+                ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+        evidence = evidence with { Intelligence = intelligence, IntelligenceMode = _intelligenceMode };
+        return new(SmtpMailboxStatus.NotAttempted, null, evidence.SanitizedResponse,
+            TimeSpan.Zero, 0, evidence)
+        {
+            Disposition = SmtpProbeDisposition.LocalCooldown,
+            RetryAfter = reputation.RetryAtUtc
+        };
+    }
+
+    private static SmtpProbeResult WithReputation(
+        SmtpProbeResult result,
+        SmtpReputationEvidence reputation) => result with
+    {
+        Evidence = result.Evidence is null ? null : result.Evidence with { Reputation = reputation }
+    };
+
+    private async Task<SmtpReputationEvidence> EvaluateReputationSafelyAsync(
+        SmtpReputationBudgetContext context,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _reputationProtection!.EvaluateAsync(context, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogError(exception,
+                "SMTP reputation policy evaluation failed; applying mode-appropriate safe fallback");
+            var enforced = _reputationOptions.Mode == SmtpReputationProtectionMode.Enforced;
+            var now = DateTimeOffset.UtcNow;
+            return new SmtpReputationEvidence
+            {
+                Decision = enforced ? SmtpProbeBudgetDecision.SafeFallback : SmtpProbeBudgetDecision.Allow,
+                WouldDecision = SmtpProbeBudgetDecision.SafeFallback,
+                Mode = _reputationOptions.Mode,
+                CircuitState = SmtpReputationState.Degraded,
+                RetryAtUtc = now.AddMinutes(Math.Max(1, _reputationOptions.FailureFallbackMinutes)),
+                SuppressionReason = "ReputationPolicyEvaluationFailed",
+                WouldHaveUsedIdentityId = context.OutboundIdentityId,
+                EvaluatedAtUtc = now,
+                PolicyVersion = _reputationOptions.PolicyVersion
+            };
+        }
     }
 
     internal static int EffectiveRetryLimit(int globalRetryCount, ProviderPolicy policy) =>

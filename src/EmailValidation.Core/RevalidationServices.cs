@@ -25,6 +25,7 @@ public sealed class RevalidationPolicy(
         ReasonCode.ProviderVerificationBlocked,
         ReasonCode.PolicyBlock,
         ReasonCode.LocalCooldown,
+        ReasonCode.ReputationPolicyDeferred,
         ReasonCode.RetryRecommended,
         ReasonCode.MailboxAcceptanceAmbiguous,
         ReasonCode.MxResultsConflicting,
@@ -108,7 +109,7 @@ public sealed class RevalidationSchedulePolicy(
             ReasonCode.RateLimited => SmtpResponseCategory.RateLimited,
             ReasonCode.ProviderBlockedVerification or ReasonCode.ProviderVerificationBlocked or ReasonCode.PolicyBlock
                 => SmtpResponseCategory.VerificationBlocked,
-            ReasonCode.LocalCooldown => SmtpResponseCategory.LocalCooldown,
+            ReasonCode.LocalCooldown or ReasonCode.ReputationPolicyDeferred => SmtpResponseCategory.LocalCooldown,
             ReasonCode.SmtpTimeout or ReasonCode.Timeout => SmtpResponseCategory.Timeout,
             ReasonCode.SmtpConnectionFailure => SmtpResponseCategory.ConnectionRejected,
             ReasonCode.MailboxFull => SmtpResponseCategory.MailboxFull,
@@ -609,8 +610,26 @@ public sealed class ValidationLifecycleCoordinator(
             session?.ExpectedPtrHostName,
             session?.FcrDnsState,
             session?.FcrDnsEvaluatedAtUtc,
-            session?.FcrDnsPolicyVersion);
+            session?.FcrDnsPolicyVersion,
+            evidence?.Reputation?.Decision,
+            evidence?.Reputation?.WouldDecision,
+            evidence?.Reputation?.RestrictingScope,
+            evidence?.Reputation?.CircuitState,
+            evidence?.Reputation?.RetryAtUtc,
+            evidence?.Reputation?.PolicyVersion,
+            ReputationState(evidence?.Reputation, SmtpReputationScopeType.NetworkBlock),
+            ReputationState(evidence?.Reputation, SmtpReputationScopeType.Provider),
+            ReputationState(evidence?.Reputation, SmtpReputationScopeType.ProviderIdentity),
+            ReputationState(evidence?.Reputation, SmtpReputationScopeType.RecipientDomain),
+            evidence?.Reputation?.MailboxProbeCount,
+            evidence?.Reputation?.WouldHaveUsedIdentityId,
+            evidence?.Reputation?.SuppressionReason);
     }
+
+    private static SmtpReputationState? ReputationState(
+        SmtpReputationEvidence? evidence,
+        SmtpReputationScopeType scope) =>
+        evidence?.ScopeStates.TryGetValue(scope, out var state) == true ? state : null;
 
     private async Task PublishBestEffortAsync(ValidationLifecycle lifecycle)
     {
@@ -699,7 +718,8 @@ public sealed class EmailRevalidationProcessor(
     IRevalidationSchedulePolicy schedulePolicy,
     IRevalidationMetrics metrics,
     TimeProvider timeProvider,
-    IValidationStatusPublisher? statusPublisher = null) : IEmailRevalidationProcessor
+    IValidationStatusPublisher? statusPublisher = null,
+    ISmtpReputationProtection? reputationProtection = null) : IEmailRevalidationProcessor
 {
     public async Task<RevalidationProcessingResult> ProcessAsync(
         EmailRevalidationMessageV1 message,
@@ -741,11 +761,22 @@ public sealed class EmailRevalidationProcessor(
             (lifecycle.CurrentResult.MxRecords.Count > 0 ? lifecycle.CurrentResult.MxRecords[0].Host : string.Empty);
         var availability = throttle.GetAvailability(new(
             Domain(lifecycle.NormalizedEmail), mxHost, lifecycle.CurrentResult.MailProvider));
-        if (!availability.CanProbe && availability.RetryAfter is { } retryAfter && retryAfter > timeProvider.GetUtcNow())
+        SmtpReputationEvidence? reputation = null;
+        if (reputationProtection is not null)
+            reputation = await reputationProtection.EvaluateAsync(new SmtpReputationBudgetContext(
+                lifecycle.NormalizedEmail, Domain(lifecycle.NormalizedEmail),
+                lifecycle.CurrentResult.MailProvider, MxHost: mxHost, ReserveMailboxProbe: false),
+                cancellationToken).ConfigureAwait(false);
+        var retryAfter = Max(availability.RetryAfter, reputation?.SuppressSmtp == true
+            ? reputation.RetryAtUtc ?? timeProvider.GetUtcNow().AddMinutes(5)
+            : null);
+        if ((!availability.CanProbe || reputation?.SuppressSmtp == true) &&
+            retryAfter is { } deferredUntil && deferredUntil > timeProvider.GetUtcNow())
         {
             var schedule = schedulePolicy.CreateSchedule(new(
-                lifecycle.CurrentResult, ReasonCode.LocalCooldown, lifecycle.AttemptNumber,
-                timeProvider.GetUtcNow(), retryAfter));
+                lifecycle.CurrentResult,
+                reputation?.SuppressSmtp == true ? ReasonCode.ReputationPolicyDeferred : ReasonCode.LocalCooldown,
+                lifecycle.AttemptNumber, timeProvider.GetUtcNow(), deferredUntil));
             var rescheduled = lifecycle with
             {
                 NextRetryAt = schedule.ScheduledAt,
@@ -755,8 +786,12 @@ public sealed class EmailRevalidationProcessor(
                 CurrentResult = lifecycle.CurrentResult with { RetryAfter = schedule.ScheduledAt, RetryScheduled = false },
                 LifecycleState = ValidationLifecycleState.Provisional,
                 CurrentStage = ValidationProgressStage.Provisional,
-                RetryReason = ReasonCode.LocalCooldown.ToString(),
-                StatusMessage = "Provider or domain cooldown remains active; automatic revalidation will be rescheduled.",
+                RetryReason = reputation?.SuppressSmtp == true
+                    ? ReasonCode.ReputationPolicyDeferred.ToString()
+                    : ReasonCode.LocalCooldown.ToString(),
+                StatusMessage = reputation?.SuppressSmtp == true
+                    ? "SMTP reputation protection remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt."
+                    : "Provider or domain cooldown remains active; automatic revalidation will be rescheduled.",
                 LastUpdatedAt = timeProvider.GetUtcNow(),
                 Sequence = lifecycle.Sequence + 1,
                 Version = lifecycle.Version + 1
@@ -830,6 +865,9 @@ public sealed class EmailRevalidationProcessor(
         var separator = email.LastIndexOf('@');
         return separator >= 0 && separator < email.Length - 1 ? email[(separator + 1)..] : string.Empty;
     }
+
+    private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right) =>
+        left is null ? right : right is null ? left : left > right ? left : right;
 }
 
 public sealed class RevalidationMetrics : IRevalidationMetrics, IDisposable
