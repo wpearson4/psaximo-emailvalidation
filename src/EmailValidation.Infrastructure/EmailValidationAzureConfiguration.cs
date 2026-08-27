@@ -23,6 +23,12 @@ public static class EmailValidationAzureConfiguration
     public const string JobsServiceBusSecretUriKey = "Azure:JobsServiceBusConnectionSecretUri";
     public const string JobsServiceBusConnectionStringFileKey = "Azure:JobsServiceBusConnectionStringFile";
     public const string JobsServiceBusConnectionStringKey = "EmailValidation:Jobs:ServiceBusConnectionString";
+    public const string ProjectionServiceBusSecretUriKey = "Azure:ProjectionServiceBusConnectionSecretUri";
+    public const string ProjectionServiceBusConnectionStringFileKey = "Azure:ProjectionServiceBusConnectionStringFile";
+    public const string ProjectionServiceBusConnectionStringKey = "EmailValidation:Projection:ServiceBus:ConnectionString";
+    public const string ProjectionHmacSecretUriKey = "Azure:ProjectionHmacSecretUri";
+    public const string ProjectionHmacSecretFileKey = "Azure:ProjectionHmacSecretFile";
+    public const string ProjectionHmacKey = "EmailValidation:Projection:Privacy:EmailHashKey";
     public const string LabelKey = "Azure:AppConfigurationLabel";
     public const string EndpointEnvironmentVariable = "AZURE_APPCONFIG_ENDPOINT";
 
@@ -47,6 +53,13 @@ public static class EmailValidationAzureConfiguration
             JobsServiceBusConnectionStringFileKey,
             "validation jobs Service Bus connection string");
         var jobsServiceBusSecretUri = bootstrap[JobsServiceBusSecretUriKey]?.Trim() ?? string.Empty;
+        var localProjectionServiceBusConnectionString = ResolveSecret(
+            bootstrap, ProjectionServiceBusConnectionStringKey, ProjectionServiceBusConnectionStringFileKey,
+            "projection Service Bus connection string");
+        var projectionServiceBusSecretUri = bootstrap[ProjectionServiceBusSecretUriKey]?.Trim() ?? string.Empty;
+        var localProjectionHmacKey = ResolveSecret(
+            bootstrap, ProjectionHmacKey, ProjectionHmacSecretFileKey, "projection HMAC key");
+        var projectionHmacSecretUri = bootstrap[ProjectionHmacSecretUriKey]?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(endpoint) && string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException(
                 $"Azure App Configuration bootstrap is missing. Configure {ConnectionStringKey}, {EndpointKey}, or {EndpointEnvironmentVariable}.");
@@ -72,7 +85,12 @@ public static class EmailValidationAzureConfiguration
                             !string.IsNullOrWhiteSpace(serviceBusSecretUri);
                         var hasJobsServiceBusOverride = !string.IsNullOrWhiteSpace(localJobsServiceBusConnectionString) &&
                             !string.IsNullOrWhiteSpace(jobsServiceBusSecretUri);
-                        if (!hasMongoOverride && !hasServiceBusOverride && !hasJobsServiceBusOverride)
+                        var hasProjectionServiceBusOverride = !string.IsNullOrWhiteSpace(localProjectionServiceBusConnectionString) &&
+                            !string.IsNullOrWhiteSpace(projectionServiceBusSecretUri);
+                        var hasProjectionHmacOverride = !string.IsNullOrWhiteSpace(localProjectionHmacKey) &&
+                            !string.IsNullOrWhiteSpace(projectionHmacSecretUri);
+                        if (!hasMongoOverride && !hasServiceBusOverride && !hasJobsServiceBusOverride &&
+                            !hasProjectionServiceBusOverride && !hasProjectionHmacOverride)
                         {
                             keyVault.SetCredential(credential);
                             return;
@@ -86,6 +104,10 @@ public static class EmailValidationAzureConfiguration
                                 return localServiceBusConnectionString;
                             if (MatchesSecret(secretUri, jobsServiceBusSecretUri))
                                 return localJobsServiceBusConnectionString;
+                            if (MatchesSecret(secretUri, projectionServiceBusSecretUri))
+                                return localProjectionServiceBusConnectionString;
+                            if (MatchesSecret(secretUri, projectionHmacSecretUri))
+                                return localProjectionHmacKey;
                             var segments = secretUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
                             if (segments.Length < 2 || !string.Equals(segments[0], "secrets", StringComparison.OrdinalIgnoreCase))
                                 throw new InvalidOperationException("The Azure Key Vault reference URI is invalid.");

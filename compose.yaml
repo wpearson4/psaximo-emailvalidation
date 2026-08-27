@@ -44,6 +44,9 @@ services:
       Api__OpenApi__TokenUrl: ${OPENAPI_TOKEN_URL:-}
       Api__OpenApi__SwaggerClientId: ${OPENAPI_SWAGGER_CLIENT_ID:-}
       EmailValidation__ProbeSenderSource__Endpoint: ${PROBE_SENDER_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__Endpoint: ${PROJECTION_ELASTICSEARCH_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__DataStreamName: ${PROJECTION_DATA_STREAM:-email-validation-observations-prod-v1}
+      EmailValidation__Projection__Environment: ${PROJECTION_ENVIRONMENT:-prod}
       EmailValidation__ProbeSenderSource__Index: ${PROBE_SENDER_INDEX:-zi-b2b}
       EmailValidation__ProbeSenderSource__Query__bool__filter__0__term__business_email_validation_status: ${PROBE_SENDER_VALIDATION_STATUS:-valid (catch-all)}
       EmailValidation__ProbeSenderSource__Query__bool__filter__1__exists__field: ${PROBE_SENDER_EMAIL_FIELD:-business_email}
@@ -91,6 +94,9 @@ services:
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?set AZURE_CLIENT_ID}
       AZURE_CLIENT_CERTIFICATE_PATH: /run/secrets/azure_client_certificate.pem
       EmailValidation__ProbeSenderSource__Endpoint: ${PROBE_SENDER_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__Endpoint: ${PROJECTION_ELASTICSEARCH_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__DataStreamName: ${PROJECTION_DATA_STREAM:-email-validation-observations-prod-v1}
+      EmailValidation__Projection__Environment: ${PROJECTION_ENVIRONMENT:-prod}
       EmailValidation__ProbeSenderSource__Index: ${PROBE_SENDER_INDEX:-zi-b2b}
       EmailValidation__ProbeSenderSource__Query__bool__filter__0__term__business_email_validation_status: ${PROBE_SENDER_VALIDATION_STATUS:-valid (catch-all)}
       EmailValidation__ProbeSenderSource__Query__bool__filter__1__exists__field: ${PROBE_SENDER_EMAIL_FIELD:-business_email}

@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "_meta": {
+      "owner": "email-validation",
+      "schema": "email-validation-observations-v1"
+    },
+    "phases": {
+      "hot": {
+        "actions": {
+          "rollover": {
+            "max_primary_shard_size": "35gb",
+            "max_age": "7d"
+          }
+        }
+      },
+      "delete": {
+        "min_age": "180d",
+        "actions": { "delete": {} }
+      }
+    }
+  }
+}

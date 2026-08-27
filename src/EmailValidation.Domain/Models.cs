@@ -488,7 +488,10 @@ public sealed record ClassificationResult(
 public sealed record EmailValidationRequest(
     bool EnableSmtp = false,
     bool Verbose = false,
-    string? ValidationId = null);
+    string? ValidationId = null,
+    string? TenantId = null,
+    string? ConsumerId = null,
+    string? JobId = null);
 
 public sealed record SmtpThrottleContext(
     string Domain,

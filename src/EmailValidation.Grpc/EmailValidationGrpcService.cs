@@ -30,16 +30,18 @@ public sealed class EmailValidationGrpcService(
 
         try
         {
+            var consumer = consumers.GetRequiredConsumer();
             var result = await validator.ValidateAsync(
                 request.Email,
                 new EmailValidationRequest(
                     !request.HasEnableSmtp || request.EnableSmtp,
                     request.Verbose,
-                    request.HasValidationId ? request.ValidationId : null),
+                    request.HasValidationId ? request.ValidationId : null,
+                    consumer.TenantId,
+                    consumer.SubjectId),
                 context.CancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(result.ValidationId))
                 throw new InvalidOperationException("The validation engine did not return a validation identifier.");
-            var consumer = consumers.GetRequiredConsumer();
             await resources.GrantAsync(new ResourceOwnership(
                 OwnedResourceType.Validation,
                 result.ValidationId,
