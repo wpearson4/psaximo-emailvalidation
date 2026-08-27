@@ -107,6 +107,9 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<MongoValidationIntelligenceStore>();
         services.AddSingleton<NoOpEmailValidationPersistenceInitializer>();
+        services.AddSingleton<LocalClassificationEvidenceStore>();
+        services.AddSingleton<MongoClassificationEvidenceStore>();
+        services.AddSingleton<ClassificationPersistenceInitializer>();
         services.AddSingleton<IValidationIntelligenceStore>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
             : provider.GetRequiredService<JsonValidationIntelligenceStore>());
@@ -114,8 +117,25 @@ public static class ServiceCollectionExtensions
             ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
             : provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IEmailValidationPersistenceInitializer>(provider => IsMongo(provider)
-            ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
+            ? provider.GetRequiredService<ClassificationPersistenceInitializer>()
             : provider.GetRequiredService<NoOpEmailValidationPersistenceInitializer>());
+        services.AddSingleton<IEmailDeliveryOutcomeObservationStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoClassificationEvidenceStore>()
+            : provider.GetRequiredService<LocalClassificationEvidenceStore>());
+        services.AddSingleton<IEmailValidationFeatureSnapshotStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoClassificationEvidenceStore>()
+            : provider.GetRequiredService<LocalClassificationEvidenceStore>());
+        services.AddSingleton<IClassificationFoundationMetrics, ClassificationFoundationMetrics>();
+        services.AddSingleton<IOutcomeDefinitionCatalog, OutcomeDefinitionCatalog>();
+        services.AddSingleton<IEmailDeliveryOutcomeIngestionService, EmailDeliveryOutcomeIngestionService>();
+        services.AddSingleton<IEmailValidationFeatureSnapshotFactory, EmailValidationFeatureSnapshotFactory>();
+        services.AddSingleton<ITrainingDatasetBuilder, TrainingDatasetBuilder>();
+        services.AddSingleton<LogisticRegressionArtifactProvider>();
+        services.AddSingleton<IProbabilityScorer, LogisticRegressionProbabilityScorer>();
+        services.AddSingleton<IProbabilityCalibrator, PlattProbabilityCalibrator>();
+        services.AddSingleton<IPredictionUncertaintyPolicy, TransparentPredictionUncertaintyPolicy>();
+        services.AddSingleton<IValidationDecisionPolicy, VersionedValidationDecisionPolicy>();
+        services.AddSingleton<IClassificationPredictionOrchestrator, ClassificationPredictionOrchestrator>();
         services.AddSingleton<IDeliveryOutcomeStore>(provider =>
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDeliveryOutcomeRecorder>(provider =>
@@ -231,7 +251,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<EmailValidator>();
         services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
         services.AddSingleton<IntelligenceEmailValidator>();
-        services.AddSingleton<IEmailValidationService>(provider => provider.GetRequiredService<IntelligenceEmailValidator>());
+        services.AddSingleton<EvidenceBackedEmailValidationService>();
+        services.AddSingleton<IEmailValidationService>(provider =>
+            provider.GetRequiredService<EvidenceBackedEmailValidationService>());
         services.AddSingleton<IEmailValidator, LifecycleEmailValidator>();
         services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;

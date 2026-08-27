@@ -27,6 +27,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var outboundIdentities = options.OutboundIdentities;
         var reputation = options.SmtpReputationProtection;
         var projection = options.Projection;
+        var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
         ValidateOutboundIdentities(outboundIdentities, failures);
         ValidateSmtpReputation(reputation, outboundIdentities, failures);
@@ -130,15 +131,18 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
                 string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection) ||
                 string.IsNullOrWhiteSpace(persistence.OutboundIdentityHealthCollection) ||
-                string.IsNullOrWhiteSpace(persistence.SmtpReputationStateCollection))
+                string.IsNullOrWhiteSpace(persistence.SmtpReputationStateCollection) ||
+                string.IsNullOrWhiteSpace(persistence.FeatureSnapshotCollection) ||
+                string.IsNullOrWhiteSpace(persistence.OutcomeObservationCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
             if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection,
                     persistence.CommercialResourceCollection, persistence.OutboundIdentityHealthCollection,
-                    persistence.SmtpReputationStateCollection }
-                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 6)
-                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, commercial resource, outbound identity health, and SMTP reputation collections must be different.");
+                    persistence.SmtpReputationStateCollection, persistence.FeatureSnapshotCollection,
+                    persistence.OutcomeObservationCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 8)
+                failures.Add("EmailValidation MongoDB collection names must be different.");
         }
         if (revalidation.Enabled)
         {
@@ -206,7 +210,32 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             }.Any(string.IsNullOrWhiteSpace))
             failures.Add("EmailValidation:Policy versions are required.");
         ValidateProjection(projection, persistence, failures);
+        ValidateClassificationModel(classificationModel, failures);
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static void ValidateClassificationModel(
+        ClassificationModelOptions options,
+        List<string> failures)
+    {
+        if (options.LikelyInvalidThreshold is < 0 or > 1 ||
+            options.LikelyValidThreshold is < 0 or > 1 ||
+            options.LikelyInvalidThreshold >= options.LikelyValidThreshold)
+            failures.Add("EmailValidation classification probability thresholds are invalid.");
+        if (options.AbstentionLowerBound is < 0 or > 1 || options.AbstentionUpperBound is < 0 or > 1 ||
+            options.AbstentionLowerBound >= options.AbstentionUpperBound)
+            failures.Add("EmailValidation classification abstention bounds are invalid.");
+        if (options.MinimumVerificationReliability is < 0 or > 1 ||
+            options.MaximumMissingFeatureFraction is < 0 or > 1)
+            failures.Add("EmailValidation classification support thresholds must be between zero and one.");
+        if (string.IsNullOrWhiteSpace(options.DecisionPolicyVersion))
+            failures.Add("EmailValidation classification decision policy version is required.");
+        if (options.Mode != ModelRolloutMode.Disabled &&
+            (string.IsNullOrWhiteSpace(options.ArtifactPath) || string.IsNullOrWhiteSpace(options.ArtifactChecksum)))
+            failures.Add("Shadow, Advisory, and Enforced classification modes require a trusted artifact path and checksum.");
+        if (options.Mode != ModelRolloutMode.Disabled &&
+            (options.ArtifactChecksum.Length != 64 || options.ArtifactChecksum.Any(character => !Uri.IsHexDigit(character))))
+            failures.Add("EmailValidation classification artifact checksum must be a SHA-256 hexadecimal value.");
     }
 
     private static void ValidateProjection(

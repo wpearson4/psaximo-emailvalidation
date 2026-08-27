@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace EmailValidation.Core;
 
 // Append new values to preserve numeric compatibility with persisted intelligence.
@@ -408,10 +410,16 @@ public sealed record EmailValidationResult
     public double Confidence { get; init; }
     /// <summary>Confidence in the assigned classification, not a probability of delivery.</summary>
     public double ClassificationConfidence => Confidence;
+    /// <summary>The existing deterministic/heuristic score. It is not a probability.</summary>
+    [JsonIgnore]
+    public double HeuristicEvidenceStrength => Confidence;
     public ConfidenceType ConfidenceType { get; init; } = ConfidenceType.Heuristic;
     /// <summary>Populated only by a calibrated outcome model; heuristic classifications leave this null.</summary>
     public double? DeliverabilityProbability { get; init; }
     public double EvidenceConfidence => Confidence;
+    /// <summary>Internal prediction detail; omitted unless versioned model provenance is available.</summary>
+    [JsonIgnore]
+    public EmailValidationPrediction? Prediction { get; init; }
     public EvidenceQuality EvidenceQuality { get; init; } = EvidenceQuality.Unknown;
     public CatchAllClassification CatchAllClassification { get; init; } = CatchAllClassification.None;
     public bool ProbeAttempted { get; init; }

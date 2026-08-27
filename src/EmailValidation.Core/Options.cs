@@ -24,6 +24,21 @@ public sealed class EmailValidationOptions
     public ValidationJobsOptions Jobs { get; set; } = new();
     public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
     public EmailValidationProjectionOptions Projection { get; set; } = new();
+    public ClassificationModelOptions ClassificationModel { get; set; } = new();
+}
+
+public sealed class ClassificationModelOptions
+{
+    public ModelRolloutMode Mode { get; set; } = ModelRolloutMode.Disabled;
+    public string ArtifactPath { get; set; } = string.Empty;
+    public string ArtifactChecksum { get; set; } = string.Empty;
+    public double LikelyValidThreshold { get; set; } = 0.8;
+    public double LikelyInvalidThreshold { get; set; } = 0.2;
+    public double AbstentionLowerBound { get; set; } = 0.4;
+    public double AbstentionUpperBound { get; set; } = 0.6;
+    public double MinimumVerificationReliability { get; set; } = 0.25;
+    public double MaximumMissingFeatureFraction { get; set; } = 0.35;
+    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v1";
 }
 
 public sealed class EmailValidationProjectionOptions
@@ -251,6 +266,8 @@ public sealed class PersistenceOptions
     public string CommercialResourceCollection { get; set; } = "EmailValidationCommercialResources";
     public string OutboundIdentityHealthCollection { get; set; } = "EmailValidationOutboundIdentityHealth";
     public string SmtpReputationStateCollection { get; set; } = "EmailValidationSmtpReputationState";
+    public string FeatureSnapshotCollection { get; set; } = "EmailValidationFeatureSnapshots";
+    public string OutcomeObservationCollection { get; set; } = "EmailValidationOutcomeObservations";
 }
 
 public sealed class ResultReuseOptions
