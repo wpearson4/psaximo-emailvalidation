@@ -1,0 +1,76 @@
+---
+- name: Verify the EmailValidation host-local deployment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    emailvalidation_deploy_root: /opt/emailvalidation
+    emailvalidation_image_registry: acrpometadsiscussrch.azurecr.io
+
+  tasks:
+    - name: Read deployed revision marker
+      ansible.builtin.slurp:
+        src: "{{ emailvalidation_deploy_root }}/RELEASE"
+      register: emailvalidation_release_marker
+
+    - name: Require the expected deployed revision
+      ansible.builtin.assert:
+        that:
+          - (emailvalidation_release_marker.content | b64decode | trim) == emailvalidation_release_tag
+        fail_msg: The deployed release marker does not match the requested Git SHA.
+
+    - name: Require the API container to use the expected image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - name=^/emailvalidation-api$
+          - --filter
+          - "ancestor={{ emailvalidation_image_registry }}/emailvalidation-api:{{ emailvalidation_release_tag }}"
+      register: emailvalidation_api_container
+      changed_when: false
+      failed_when: emailvalidation_api_container.stdout | trim | length == 0
+
+    - name: Require the worker container to use the expected image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - name=^/emailvalidation-worker$
+          - --filter
+          - "ancestor={{ emailvalidation_image_registry }}/emailvalidation-worker:{{ emailvalidation_release_tag }}"
+      register: emailvalidation_worker_container
+      changed_when: false
+      failed_when: emailvalidation_worker_container.stdout | trim | length == 0
+
+    - name: Verify outbound identity network configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-outbound-identities.sh"
+          - --check
+      changed_when: false
+
+    - name: Verify API readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health/ready
+        method: GET
+        status_code: 200
+        return_content: false
+
+    - name: Verify local TLS readiness
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - --resolve
+          - email.digitalwarehouse.io:443:127.0.0.1
+          - https://email.digitalwarehouse.io/health/ready
+      changed_when: false

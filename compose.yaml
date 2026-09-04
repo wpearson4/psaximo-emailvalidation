@@ -17,6 +17,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    env_file:
+      - ./deploy/config/outbound-identities.env
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       Kestrel__Endpoints__Http__Url: http://${API_BIND_ADDRESS:-127.0.0.1}:${REST_PORT:-8080}
@@ -81,6 +83,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    env_file:
+      - ./deploy/config/outbound-identities.env
     environment:
       DOTNET_ENVIRONMENT: Production
       Azure__AppConfigurationEndpoint: ${AZURE_APPCONFIG_ENDPOINT:-https://appcs-p-ometa-dsi-scus.azconfig.io}

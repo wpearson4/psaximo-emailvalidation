@@ -1,0 +1,217 @@
+---
+- name: Build and deploy EmailValidation on the host-local Azure DevOps agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+
+  vars:
+    emailvalidation_deploy_root: /opt/emailvalidation
+    emailvalidation_local_registry: emailvalidation-local
+    emailvalidation_api_image: "{{ emailvalidation_local_registry }}/emailvalidation-api:{{ emailvalidation_release_tag }}"
+    emailvalidation_worker_image: "{{ emailvalidation_local_registry }}/emailvalidation-worker:{{ emailvalidation_release_tag }}"
+
+  pre_tasks:
+    - name: Validate required deployment inputs
+      ansible.builtin.assert:
+        that:
+          - emailvalidation_source_root is defined
+          - emailvalidation_source_root | length > 0
+          - emailvalidation_release_tag is defined
+          - emailvalidation_release_tag is match('^[0-9a-f]{40}$')
+        fail_msg: Source root and a full immutable Git SHA release tag are required.
+
+    - name: Inspect required source and host files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ emailvalidation_source_root }}/Dockerfile"
+        - "{{ emailvalidation_source_root }}/Dockerfile.worker"
+        - "{{ emailvalidation_source_root }}/compose.yaml"
+        - "{{ emailvalidation_source_root }}/deploy/nginx/emailvalidation.conf"
+        - "{{ emailvalidation_source_root }}/deploy/letsencrypt/bootstrap.sh"
+        - "{{ emailvalidation_source_root }}/deploy/config/outbound-identities.env"
+        - "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
+        - "{{ emailvalidation_deploy_root }}/.env"
+      register: emailvalidation_required_files
+
+    - name: Require every source and host file
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Required deployment file is missing: {{ item.item }}"
+      loop: "{{ emailvalidation_required_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Verify all outbound addresses, routing, and firewall policy before deployment
+      ansible.builtin.command:
+        argv:
+          - "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
+          - --check
+      changed_when: false
+
+  tasks:
+    - name: Build immutable API image locally
+      ansible.builtin.command:
+        argv:
+          - docker
+          - build
+          - --file
+          - "{{ emailvalidation_source_root }}/Dockerfile"
+          - --tag
+          - "{{ emailvalidation_api_image }}"
+          - "{{ emailvalidation_source_root }}"
+      changed_when: true
+
+    - name: Build immutable worker image locally
+      ansible.builtin.command:
+        argv:
+          - docker
+          - build
+          - --file
+          - "{{ emailvalidation_source_root }}/Dockerfile.worker"
+          - --tag
+          - "{{ emailvalidation_worker_image }}"
+          - "{{ emailvalidation_source_root }}"
+      changed_when: true
+
+    - name: Create deployment directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ emailvalidation_deploy_root }}", mode: "0755" }
+        - { path: "{{ emailvalidation_deploy_root }}/deploy", mode: "0755" }
+        - { path: "{{ emailvalidation_deploy_root }}/deploy/nginx", mode: "0755" }
+        - { path: "{{ emailvalidation_deploy_root }}/deploy/letsencrypt", mode: "0755" }
+        - { path: "{{ emailvalidation_deploy_root }}/deploy/config", mode: "0755" }
+        - { path: "{{ emailvalidation_deploy_root }}/ops/email-validation", mode: "0755" }
+
+    - name: Install deployment manifests with recoverable backups
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+        backup: true
+      loop:
+        - src: "{{ emailvalidation_source_root }}/compose.yaml"
+          dest: "{{ emailvalidation_deploy_root }}/compose.yaml"
+          mode: "0644"
+        - src: "{{ emailvalidation_source_root }}/deploy/nginx/emailvalidation.conf"
+          dest: "{{ emailvalidation_deploy_root }}/deploy/nginx/emailvalidation.conf"
+          mode: "0644"
+        - src: "{{ emailvalidation_source_root }}/deploy/letsencrypt/bootstrap.sh"
+          dest: "{{ emailvalidation_deploy_root }}/deploy/letsencrypt/bootstrap.sh"
+          mode: "0755"
+        - src: "{{ emailvalidation_source_root }}/deploy/config/outbound-identities.env"
+          dest: "{{ emailvalidation_deploy_root }}/deploy/config/outbound-identities.env"
+          mode: "0644"
+        - src: "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
+          dest: "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-outbound-identities.sh"
+          mode: "0755"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Validate rendered Compose configuration
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --env-file
+          - .env
+          - --file
+          - compose.yaml
+          - config
+          - --quiet
+      args:
+        chdir: "{{ emailvalidation_deploy_root }}"
+      environment:
+        RELEASE_TAG: "{{ emailvalidation_release_tag }}"
+        CONTAINER_REGISTRY: "{{ emailvalidation_local_registry }}"
+        IMAGE_PULL_POLICY: never
+      changed_when: false
+
+    - name: Deploy the immutable API and worker images
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --env-file
+          - .env
+          - --file
+          - compose.yaml
+          - up
+          - --detach
+          - --no-build
+          - emailvalidation-api
+          - emailvalidation-worker
+          - nginx
+          - certbot
+      args:
+        chdir: "{{ emailvalidation_deploy_root }}"
+      environment:
+        RELEASE_TAG: "{{ emailvalidation_release_tag }}"
+        CONTAINER_REGISTRY: "{{ emailvalidation_local_registry }}"
+        IMAGE_PULL_POLICY: never
+      changed_when: true
+
+    - name: Wait for local API readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health/ready
+        method: GET
+        status_code: 200
+        return_content: false
+      register: emailvalidation_local_health
+      retries: 30
+      delay: 2
+      until: emailvalidation_local_health.status == 200
+
+    - name: Verify the local TLS gateway
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - --resolve
+          - email.digitalwarehouse.io:443:127.0.0.1
+          - https://email.digitalwarehouse.io/health/ready
+      changed_when: false
+
+    - name: Record the successfully deployed immutable revision
+      ansible.builtin.copy:
+        dest: "{{ emailvalidation_deploy_root }}/RELEASE"
+        content: "{{ emailvalidation_release_tag }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Show deployed services
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --env-file
+          - .env
+          - --file
+          - compose.yaml
+          - ps
+      args:
+        chdir: "{{ emailvalidation_deploy_root }}"
+      environment:
+        RELEASE_TAG: "{{ emailvalidation_release_tag }}"
+        CONTAINER_REGISTRY: "{{ emailvalidation_local_registry }}"
+        IMAGE_PULL_POLICY: never
+      changed_when: false
+      register: emailvalidation_compose_status
+
+    - name: Print deployed service status
+      ansible.builtin.debug:
+        var: emailvalidation_compose_status.stdout_lines

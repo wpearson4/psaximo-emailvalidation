@@ -131,8 +131,8 @@ rollback_target() {
 
 case "$mode" in
     --check)
-        require_preflight
-        printf 'Preflight passed. Current addresses and source rules:\n'
+        verify_target
+        printf 'Outbound identity network configuration passed. Current addresses and source rules:\n'
         ip -4 -br addr show dev "$interface_name"
         ip rule show
         ;;
