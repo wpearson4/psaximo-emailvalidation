@@ -86,33 +86,35 @@ Restore a valid App Configuration credential (or register the configured certifi
 
 ## DNS and FCrDNS readiness
 
-At the latest inspection, all 13 `smtp-162.email.digitalwarehouse.io` through `smtp-174.email.digitalwarehouse.io` names had the correct single IPv4 A record. Reverse DNS is still not ready: `.162` has no PTR and `.163`–`.174` have PTRs pointing to unrelated historical hostnames. Therefore all 13 identities fail strict FCrDNS and must remain in `Observe` mode until the IP provider corrects PTR records.
+The deployment hostname convention is now `outbound-162.email.digitalwarehouse.io` through `outbound-174.email.digitalwarehouse.io`. Identity IDs remain `smtp-162` through `smtp-174`; those are stable internal identifiers, not DNS names. Both `ExpectedPtrHostName` and `EhloHostName` use the `outbound-*` hostname.
+
+The 2026-09-04 authoritative and public-resolver checks saw the new `outbound-*` PTR answers, but TTL propagation and cleanup were incomplete. `.163`–`.174` returned both the new hostname and one historical PTR, while `.162` returned the new PTR before its matching `outbound-162` A record was visible. Strict one-to-one FCrDNS therefore remains in `Observe` mode.
 
 For every identity, create:
 
-1. Retain `smtp-N.email.digitalwarehouse.io A 64.182.22.N` in authoritative forward DNS.
-2. Set `64.182.22.N PTR smtp-N.email.digitalwarehouse.io` through the IP provider or delegated reverse zone.
+1. Retain `outbound-N.email.digitalwarehouse.io A 64.182.22.N` in authoritative forward DNS.
+2. Set exactly one `64.182.22.N PTR outbound-N.email.digitalwarehouse.io` through the IP provider or delegated reverse zone, removing historical PTR answers.
 3. Recheck `IP -> exactly one PTR hostname -> exactly one A with the same IP` before switching from `Observe` to `Enforced`.
 
 Do not disable `RequireForwardConfirmedReverseDns` to work around missing external DNS.
 
-Latest read-only readiness matrix (2026-08-27 UTC):
+Latest read-only readiness matrix (2026-09-04 UTC, pending TTL expiry):
 
 | Identity | Source IP / forward A | Expected PTR and EHLO | Observed PTR | Local `ens19` | Strict FCrDNS | Observe eligibility | Cache expiry |
 |---|---|---|---|---|---|---|---|
-| `smtp-162` | `64.182.22.162` | `smtp-162.email.digitalwarehouse.io` | none | bound | `MissingPtr` | eligible | 5-minute negative cache |
-| `smtp-163` | `64.182.22.163` | `smtp-163.email.digitalwarehouse.io` | `camera.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-164` | `64.182.22.164` | `smtp-164.email.digitalwarehouse.io` | `el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-165` | `64.182.22.165` | `smtp-165.email.digitalwarehouse.io` | `intend.el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-166` | `64.182.22.166` | `smtp-166.email.digitalwarehouse.io` | `timing.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-167` | `64.182.22.167` | `smtp-167.email.digitalwarehouse.io` | `appeal.el3m3nts.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-168` | `64.182.22.168` | `smtp-168.email.digitalwarehouse.io` | `ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-169` | `64.182.22.169` | `smtp-169.email.digitalwarehouse.io` | `gender.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-170` | `64.182.22.170` | `smtp-170.email.digitalwarehouse.io` | `junior.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-171` | `64.182.22.171` | `smtp-171.email.digitalwarehouse.io` | `behind.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-172` | `64.182.22.172` | `smtp-172.email.digitalwarehouse.io` | `author.directgreenmail.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-173` | `64.182.22.173` | `smtp-173.email.digitalwarehouse.io` | `vendor.ameripjt.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
-| `smtp-174` | `64.182.22.174` | `smtp-174.email.digitalwarehouse.io` | `medium.abmarkset.com` | bound | `UnexpectedPtr` | eligible | 5-minute negative cache |
+| `smtp-162` | `64.182.22.162` | `outbound-162.email.digitalwarehouse.io` | new PTR only; matching A pending | bound | `ForwardMismatch` | eligible | TTL pending |
+| `smtp-163` | `64.182.22.163` | `outbound-163.email.digitalwarehouse.io` | new PTR plus `camera.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-164` | `64.182.22.164` | `outbound-164.email.digitalwarehouse.io` | new PTR plus `el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-165` | `64.182.22.165` | `outbound-165.email.digitalwarehouse.io` | new PTR plus `intend.el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-166` | `64.182.22.166` | `outbound-166.email.digitalwarehouse.io` | new PTR plus `timing.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-167` | `64.182.22.167` | `outbound-167.email.digitalwarehouse.io` | new PTR plus `appeal.el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-168` | `64.182.22.168` | `outbound-168.email.digitalwarehouse.io` | new PTR plus `ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-169` | `64.182.22.169` | `outbound-169.email.digitalwarehouse.io` | new PTR plus `gender.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-170` | `64.182.22.170` | `outbound-170.email.digitalwarehouse.io` | new PTR plus `junior.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-171` | `64.182.22.171` | `outbound-171.email.digitalwarehouse.io` | new PTR plus `behind.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-172` | `64.182.22.172` | `outbound-172.email.digitalwarehouse.io` | new PTR plus `author.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-173` | `64.182.22.173` | `outbound-173.email.digitalwarehouse.io` | new PTR plus `vendor.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| `smtp-174` | `64.182.22.174` | `outbound-174.email.digitalwarehouse.io` | new PTR plus `medium.abmarkset.com` | bound | `MultiplePtr` | eligible | TTL pending |
 
 “Eligible” above is the intended `Observe` behavior after this build is deployed and configured; it does not mean the currently restarting production containers are using this code. All 13 become ineligible if switched to `Enforced` before PTR correction.
 

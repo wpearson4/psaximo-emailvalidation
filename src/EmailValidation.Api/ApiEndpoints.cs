@@ -189,11 +189,12 @@ public static class ApiEndpoints
         if (input.ValidationId is not null && !ValidIdentifier(input.ValidationId, limits.MaximumIdentifierLength))
             return ValidationError("validationId", "ValidationId contains unsupported characters or is too long.");
 
+        var consumer = consumers.GetRequiredConsumer();
         var result = await validator.ValidateAsync(input.Email,
-            new EmailValidationRequest(input.EnableSmtp, input.Verbose, input.ValidationId), cancellationToken)
+            new EmailValidationRequest(input.EnableSmtp, input.Verbose, input.ValidationId,
+                consumer.TenantId, consumer.SubjectId), cancellationToken)
             .ConfigureAwait(false);
         var response = ApiContractMapper.Map(result);
-        var consumer = consumers.GetRequiredConsumer();
         await resources.GrantAsync(new ResourceOwnership(
             OwnedResourceType.Validation,
             response.ValidationId,

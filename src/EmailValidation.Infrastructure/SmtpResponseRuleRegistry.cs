@@ -22,10 +22,10 @@ internal sealed class SmtpResponseRuleRegistry
         _timeout = TimeSpan.FromMilliseconds(Math.Clamp(settings.RegexTimeoutMilliseconds, 10, 1000));
         _maximumResponseCharacters = Math.Clamp(settings.MaximumResponseCharacters, 256, 16_384);
         _email = Compile(@"[^\s<>]+@[^\s<>]+");
-        _ipv4 = Compile(@"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)");
-        _ipv6 = Compile(@"(?<![\p{L}\p{N}])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\p{L}\p{N}])");
+        _ipv4 = Compile(@"(?:\d{1,3}\.){3}\d{1,3}");
+        _ipv6 = Compile(@"(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}");
         _timestamp = Compile(@"\b(?:\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?(?:z|[+-]\d{2}:?\d{2})?)?|\d{1,2}:\d{2}:\d{2})\b");
-        _enhancedStatus = Compile(@"(?<!\d)([245]\.\d{1,3}\.\d{1,3})(?!\d)");
+        _enhancedStatus = Compile(@"([245]\.\d{1,3}\.\d{1,3})");
 
         _providerRules = CompileRules(ProviderRules());
         _genericRules = CompileRules(GenericRules());
@@ -57,9 +57,9 @@ internal sealed class SmtpResponseRuleRegistry
         try
         {
             var value = _email.Replace(bounded, "<redacted-email>");
+            value = _timestamp.Replace(value, "<redacted-time>");
             value = _ipv4.Replace(value, "<redacted-ip>");
-            value = _ipv6.Replace(value, "<redacted-ip>");
-            return _timestamp.Replace(value, "<redacted-time>");
+            return _ipv6.Replace(value, "<redacted-ip>");
         }
         catch (RegexMatchTimeoutException)
         {
@@ -97,7 +97,7 @@ internal sealed class SmtpResponseRuleRegistry
         return null;
     }
 
-    private CompiledRule[] CompileRules(IEnumerable<RuleDefinition> definitions) =>
+    private static CompiledRule[] CompileRules(IEnumerable<RuleDefinition> definitions) =>
         definitions.OrderByDescending(rule => rule.Stages.Count > 0)
             .ThenByDescending(rule => rule.Priority).ThenBy(rule => rule.Id, StringComparer.Ordinal)
             .Select(rule => new CompiledRule(
@@ -106,13 +106,16 @@ internal sealed class SmtpResponseRuleRegistry
 
     private Regex Compile(string pattern) => new(
         pattern,
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
-        _timeout);
-
-    private Regex CompileRule(string pattern) => new(
-        pattern,
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         _timeout);
+
+    private static Regex CompileRule(string pattern) => new(
+        pattern,
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
+        // Rule input is capped at 16,384 characters and NonBacktracking guarantees
+        // linear-time evaluation. A wall-clock timeout here can therefore only turn
+        // host scheduling pauses into incorrect classifications.
+        Regex.InfiniteMatchTimeout);
 
     private static void Validate(IEnumerable<CompiledRule> rules)
     {

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using EmailValidation.Application;
 using EmailValidation.Core;
@@ -25,6 +26,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var smtpResponseIntelligence = options.SmtpResponseIntelligence;
         var outboundIdentities = options.OutboundIdentities;
         var reputation = options.SmtpReputationProtection;
+        var projection = options.Projection;
+        var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
         ValidateOutboundIdentities(outboundIdentities, failures);
         ValidateSmtpReputation(reputation, outboundIdentities, failures);
@@ -128,15 +131,18 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (string.IsNullOrWhiteSpace(persistence.DomainCollection) || string.IsNullOrWhiteSpace(persistence.MailboxCollection) ||
                 string.IsNullOrWhiteSpace(persistence.LifecycleCollection) || string.IsNullOrWhiteSpace(persistence.CommercialResourceCollection) ||
                 string.IsNullOrWhiteSpace(persistence.OutboundIdentityHealthCollection) ||
-                string.IsNullOrWhiteSpace(persistence.SmtpReputationStateCollection))
+                string.IsNullOrWhiteSpace(persistence.SmtpReputationStateCollection) ||
+                string.IsNullOrWhiteSpace(persistence.FeatureSnapshotCollection) ||
+                string.IsNullOrWhiteSpace(persistence.OutcomeObservationCollection))
                 failures.Add("EmailValidation MongoDB collection names are required.");
             if (string.Equals(persistence.DomainCollection, persistence.MailboxCollection, StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation MongoDB domain and mailbox collection names must be different.");
             if (new[] { persistence.DomainCollection, persistence.MailboxCollection, persistence.LifecycleCollection,
                     persistence.CommercialResourceCollection, persistence.OutboundIdentityHealthCollection,
-                    persistence.SmtpReputationStateCollection }
-                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 6)
-                failures.Add("EmailValidation MongoDB domain, mailbox, lifecycle, commercial resource, outbound identity health, and SMTP reputation collections must be different.");
+                    persistence.SmtpReputationStateCollection, persistence.FeatureSnapshotCollection,
+                    persistence.OutcomeObservationCollection }
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 8)
+                failures.Add("EmailValidation MongoDB collection names must be different.");
         }
         if (revalidation.Enabled)
         {
@@ -203,7 +209,79 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 policy.ProviderStrategyVersion
             }.Any(string.IsNullOrWhiteSpace))
             failures.Add("EmailValidation:Policy versions are required.");
+        ValidateProjection(projection, persistence, failures);
+        ValidateClassificationModel(classificationModel, failures);
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static void ValidateClassificationModel(
+        ClassificationModelOptions options,
+        List<string> failures)
+    {
+        if (options.LikelyInvalidThreshold is < 0 or > 1 ||
+            options.LikelyValidThreshold is < 0 or > 1 ||
+            options.LikelyInvalidThreshold >= options.LikelyValidThreshold)
+            failures.Add("EmailValidation classification probability thresholds are invalid.");
+        if (options.AbstentionLowerBound is < 0 or > 1 || options.AbstentionUpperBound is < 0 or > 1 ||
+            options.AbstentionLowerBound >= options.AbstentionUpperBound)
+            failures.Add("EmailValidation classification abstention bounds are invalid.");
+        if (options.MinimumVerificationReliability is < 0 or > 1 ||
+            options.MaximumMissingFeatureFraction is < 0 or > 1)
+            failures.Add("EmailValidation classification support thresholds must be between zero and one.");
+        if (string.IsNullOrWhiteSpace(options.DecisionPolicyVersion))
+            failures.Add("EmailValidation classification decision policy version is required.");
+        if (options.Mode != ModelRolloutMode.Disabled &&
+            (string.IsNullOrWhiteSpace(options.ArtifactPath) || string.IsNullOrWhiteSpace(options.ArtifactChecksum)))
+            failures.Add("Shadow, Advisory, and Enforced classification modes require a trusted artifact path and checksum.");
+        if (options.Mode != ModelRolloutMode.Disabled &&
+            (options.ArtifactChecksum.Length != 64 || options.ArtifactChecksum.Any(character => !Uri.IsHexDigit(character))))
+            failures.Add("EmailValidation classification artifact checksum must be a SHA-256 hexadecimal value.");
+    }
+
+    private static void ValidateProjection(
+        EmailValidationProjectionOptions projection,
+        PersistenceOptions persistence,
+        List<string> failures)
+    {
+        if (!projection.Enabled) return;
+        if (!persistence.Enabled || !string.Equals(persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase))
+            failures.Add("EmailValidation projection requires MongoDB persistence for its durable outbox.");
+        if (string.IsNullOrWhiteSpace(projection.Environment) ||
+            projection.Environment.Any(character => !char.IsLower(character) && !char.IsDigit(character) && character != '-'))
+            failures.Add("EmailValidation:Projection:Environment must contain only lowercase letters, digits, and hyphens.");
+        if (projection.Privacy.IncludeRawEmail)
+            failures.Add("EmailValidation:Projection:Privacy:IncludeRawEmail must remain false.");
+        if ((!string.IsNullOrEmpty(projection.Privacy.EmailHashKey) &&
+             Encoding.UTF8.GetByteCount(projection.Privacy.EmailHashKey) < 32) ||
+            string.IsNullOrWhiteSpace(projection.Privacy.EmailHashKeyVersion))
+            failures.Add("EmailValidation projection HMAC keys, when available, must be at least 32 bytes and use a non-empty key version.");
+        if (string.IsNullOrWhiteSpace(projection.ServiceBus.ConnectionString) ||
+            string.IsNullOrWhiteSpace(projection.ServiceBus.TopicName) ||
+            string.IsNullOrWhiteSpace(projection.ServiceBus.SubscriptionName))
+            failures.Add("EmailValidation projection Service Bus connection, topic, and subscription are required.");
+        if (projection.ServiceBus.MaxDeliveryCount < 1 || projection.ServiceBus.PrefetchCount < 0 ||
+            projection.ServiceBus.MaxAutoLockRenewalMinutes < 1)
+            failures.Add("EmailValidation projection Service Bus delivery settings are invalid.");
+        if (!Uri.TryCreate(projection.Elasticsearch.Endpoint, UriKind.Absolute, out var endpoint) ||
+            endpoint.Scheme is not ("http" or "https"))
+            failures.Add("EmailValidation:Projection:Elasticsearch:Endpoint must be an absolute HTTP or HTTPS URI.");
+        if (string.IsNullOrWhiteSpace(projection.Elasticsearch.DataStreamName) ||
+            !projection.Elasticsearch.DataStreamName.EndsWith("-v1", StringComparison.Ordinal) ||
+            projection.Elasticsearch.DataStreamName.Contains('*') ||
+            !string.Equals(projection.Elasticsearch.DataStreamName,
+                $"email-validation-observations-{projection.Environment}-v1", StringComparison.Ordinal))
+            failures.Add("EmailValidation projection data stream must be the explicit versioned v1 name for its configured environment.");
+        if (projection.Outbox.BatchSize < 1 || projection.Outbox.LockDurationSeconds < 1 ||
+            projection.Outbox.DispatchIntervalSeconds < 1 || projection.Outbox.PublishedRetentionDays < 1 ||
+            projection.Outbox.MaximumPublishAttempts < 1)
+            failures.Add("EmailValidation projection outbox limits and retention must be positive.");
+        if (projection.Elasticsearch.MaximumBatchSize < 1 || projection.Elasticsearch.MaximumBatchBytes < 1024 ||
+            projection.Elasticsearch.ReceiveWaitSeconds < 1 || projection.Elasticsearch.RetryLimit < 1 ||
+            projection.Elasticsearch.RetryBackoffMilliseconds < 1)
+            failures.Add("EmailValidation projection Elasticsearch batch and retry settings are invalid.");
+        if (projection.Reconciliation.IntervalMinutes < 1 || projection.Reconciliation.OverlapMinutes < 1 ||
+            projection.Reconciliation.BatchSize < 1 || projection.Reconciliation.MaximumEventsPerRun < 1)
+            failures.Add("EmailValidation projection reconciliation limits must be positive.");
     }
 
     private static void ValidateProviderPolicy(

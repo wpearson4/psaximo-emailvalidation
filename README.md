@@ -6,8 +6,12 @@ A .NET 10 email-validation platform whose validation engine is isolated from its
 
 `EmailValidation.Api` is the secure, versioned commercial REST and gRPC integration host. It reuses the same validation core, canonical lifecycle, Mongo persistence, Service Bus retry/job workers, and status subscriptions used elsewhere in the solution.
 
+The optional Elasticsearch observation projection is documented in
+[`docs/elasticsearch-observation-projection.md`](docs/elasticsearch-observation-projection.md). Mongo remains authoritative; the projection uses a separate durable outbox, Service Bus topic, strict versioned data stream, tenant-scoped HMAC correlation, reconciliation, and dry-run-first backfill.
+
 See [API operations and deployment](docs/api-deployment.md) for OAuth scopes, REST/gRPC usage, OpenAPI/Swagger, the Azure Container Registry image, Let's Encrypt TLS for `email.digitalwarehouse.io`, health checks, and the 10.10.252.31 deployment. The discovery record is in [production API gap analysis](docs/production-api-gap-analysis.md).
 The GitHub-backed Azure DevOps build/release flow and `OMetaSearchPool` agent setup are documented in [Azure DevOps release pipeline](docs/azure-devops-release.md).
+Host-local Ansible deployment verification and the reviewed break-glass build path are documented in [EmailValidation Ansible deployment](deploy/ansible/README.md).
 
 ## Projects
 

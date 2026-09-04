@@ -68,8 +68,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<OutboundIdentityHealthPolicy>();
         services.AddSingleton<InMemoryOutboundIdentityHealthStore>();
         services.AddSingleton<MongoOutboundIdentityHealthStore>();
+        services.AddSingleton<ProjectionOutboundIdentityHealthStore>();
         services.AddSingleton<IOutboundIdentityHealthStore>(provider => IsMongo(provider)
-            ? provider.GetRequiredService<MongoOutboundIdentityHealthStore>()
+            ? provider.GetRequiredService<ProjectionOutboundIdentityHealthStore>()
             : provider.GetRequiredService<InMemoryOutboundIdentityHealthStore>());
         services.AddSingleton<IOutboundIdentitySelector, RendezvousOutboundIdentitySelector>();
         services.AddSingleton<ISmtpConnectionFactory, SmtpConnectionFactory>();
@@ -106,6 +107,9 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<MongoValidationIntelligenceStore>();
         services.AddSingleton<NoOpEmailValidationPersistenceInitializer>();
+        services.AddSingleton<LocalClassificationEvidenceStore>();
+        services.AddSingleton<MongoClassificationEvidenceStore>();
+        services.AddSingleton<ClassificationPersistenceInitializer>();
         services.AddSingleton<IValidationIntelligenceStore>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
             : provider.GetRequiredService<JsonValidationIntelligenceStore>());
@@ -113,8 +117,25 @@ public static class ServiceCollectionExtensions
             ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
             : provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IEmailValidationPersistenceInitializer>(provider => IsMongo(provider)
-            ? provider.GetRequiredService<MongoValidationIntelligenceStore>()
+            ? provider.GetRequiredService<ClassificationPersistenceInitializer>()
             : provider.GetRequiredService<NoOpEmailValidationPersistenceInitializer>());
+        services.AddSingleton<IEmailDeliveryOutcomeObservationStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoClassificationEvidenceStore>()
+            : provider.GetRequiredService<LocalClassificationEvidenceStore>());
+        services.AddSingleton<IEmailValidationFeatureSnapshotStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoClassificationEvidenceStore>()
+            : provider.GetRequiredService<LocalClassificationEvidenceStore>());
+        services.AddSingleton<IClassificationFoundationMetrics, ClassificationFoundationMetrics>();
+        services.AddSingleton<IOutcomeDefinitionCatalog, OutcomeDefinitionCatalog>();
+        services.AddSingleton<IEmailDeliveryOutcomeIngestionService, EmailDeliveryOutcomeIngestionService>();
+        services.AddSingleton<IEmailValidationFeatureSnapshotFactory, EmailValidationFeatureSnapshotFactory>();
+        services.AddSingleton<ITrainingDatasetBuilder, TrainingDatasetBuilder>();
+        services.AddSingleton<LogisticRegressionArtifactProvider>();
+        services.AddSingleton<IProbabilityScorer, LogisticRegressionProbabilityScorer>();
+        services.AddSingleton<IProbabilityCalibrator, PlattProbabilityCalibrator>();
+        services.AddSingleton<IPredictionUncertaintyPolicy, TransparentPredictionUncertaintyPolicy>();
+        services.AddSingleton<IValidationDecisionPolicy, VersionedValidationDecisionPolicy>();
+        services.AddSingleton<IClassificationPredictionOrchestrator, ClassificationPredictionOrchestrator>();
         services.AddSingleton<IDeliveryOutcomeStore>(provider =>
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDeliveryOutcomeRecorder>(provider =>
@@ -148,13 +169,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRevalidationSchedulePolicy, RevalidationSchedulePolicy>();
         services.AddSingleton<IRevalidationMessageSerializer, JsonRevalidationMessageSerializer>();
         services.AddSingleton<MongoValidationLifecycleStore>();
+        services.AddSingleton<ProjectionValidationLifecycleStore>();
         services.AddSingleton<InMemoryValidationLifecycleStore>();
         services.AddSingleton<NoOpValidationLifecycleStore>();
         services.AddSingleton<IValidationLifecycleStore>(provider => IsMongo(provider)
-            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            ? provider.GetRequiredService<ProjectionValidationLifecycleStore>()
             : provider.GetRequiredService<InMemoryValidationLifecycleStore>());
         services.AddSingleton<IRevalidationOutbox>(provider => IsRevalidationEnabled(provider)
-            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            ? provider.GetRequiredService<ProjectionValidationLifecycleStore>()
             : provider.GetRequiredService<NoOpValidationLifecycleStore>());
         services.AddSingleton<IRevalidationPersistenceInitializer>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationLifecycleStore>()
@@ -201,10 +223,37 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICommercialResourceInfrastructureInitializer>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoCommercialResourceStore>()
             : provider.GetRequiredService<InMemoryCommercialResourceStore>());
+        services.AddSingleton<IEmailCorrelationService, HmacEmailCorrelationService>();
+        services.AddSingleton<IObservationEventFactory, ObservationEventFactory>();
+        services.AddSingleton<MongoProjectionOutbox>();
+        services.AddSingleton<DisabledProjectionOutbox>();
+        services.AddSingleton<IProjectionOutbox>(provider => IsProjectionEnabled(provider)
+            ? provider.GetRequiredService<MongoProjectionOutbox>()
+            : provider.GetRequiredService<DisabledProjectionOutbox>());
+        services.AddSingleton<IProjectionPersistenceInitializer>(provider => IsProjectionEnabled(provider)
+            ? provider.GetRequiredService<MongoProjectionOutbox>()
+            : provider.GetRequiredService<DisabledProjectionOutbox>());
+        services.AddSingleton<ProjectionInfrastructureInitializer>();
+        services.AddSingleton<IProjectionOutboxDispatcher, ProjectionOutboxDispatcher>();
+        services.AddSingleton<MongoProjectionReconciler>();
+        services.AddSingleton<DisabledProjectionReconciler>();
+        services.AddSingleton<IProjectionReconciler>(provider => IsProjectionEnabled(provider)
+            ? provider.GetRequiredService<MongoProjectionReconciler>()
+            : provider.GetRequiredService<DisabledProjectionReconciler>());
+        services.AddHttpClient<IElasticsearchObservationSink, ElasticsearchObservationSink>((provider, client) =>
+        {
+            var projection = provider.GetRequiredService<IOptions<EmailValidationOptions>>()
+                .Value.Projection.Elasticsearch;
+            if (Uri.TryCreate(projection.Endpoint, UriKind.Absolute, out var endpoint))
+                client.BaseAddress = endpoint;
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
         services.AddSingleton<EmailValidator>();
         services.AddSingleton<IEmailValidationExecutor>(provider => provider.GetRequiredService<EmailValidator>());
         services.AddSingleton<IntelligenceEmailValidator>();
-        services.AddSingleton<IEmailValidationService>(provider => provider.GetRequiredService<IntelligenceEmailValidator>());
+        services.AddSingleton<EvidenceBackedEmailValidationService>();
+        services.AddSingleton<IEmailValidationService>(provider =>
+            provider.GetRequiredService<EvidenceBackedEmailValidationService>());
         services.AddSingleton<IEmailValidator, LifecycleEmailValidator>();
         services.AddOptions<EmailValidationOptions>().ValidateOnStart();
         return services;
@@ -221,4 +270,11 @@ public static class ServiceCollectionExtensions
 
     private static bool IsRevalidationEnabled(IServiceProvider provider) =>
         provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Revalidation.Enabled;
+
+    private static bool IsProjectionEnabled(IServiceProvider provider)
+    {
+        var options = provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value;
+        return options.Projection.Enabled && options.Persistence.Enabled && string.Equals(
+            options.Persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase);
+    }
 }

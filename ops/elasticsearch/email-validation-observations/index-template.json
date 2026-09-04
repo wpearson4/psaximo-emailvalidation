@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "priority": 250,
+  "index_patterns": ["email-validation-observations-*-v1"],
+  "data_stream": {},
+  "composed_of": [
+    "email-validation-observations-v1-settings",
+    "email-validation-observations-v1-mappings"
+  ],
+  "_meta": {
+    "schema": "email-validation-observations-v1",
+    "deploymentOrder": "template-before-projector-before-producer"
+  }
+}

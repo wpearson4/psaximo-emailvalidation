@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "_meta": { "schema": "email-validation-observations-v1" },
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 1,
+      "index.refresh_interval": "30s",
+      "index.lifecycle.name": "email-validation-observations-v1"
+    }
+  }
+}

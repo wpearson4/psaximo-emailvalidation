@@ -153,12 +153,19 @@ stages:
                         set -euo pipefail
                         sudo install -d -m 0755 \
                           /opt/emailvalidation/deploy/nginx \
-                          /opt/emailvalidation/deploy/letsencrypt
+                          /opt/emailvalidation/deploy/letsencrypt \
+                          /opt/emailvalidation/deploy/config \
+                          /opt/emailvalidation/ops/email-validation
                         sudo install -m 0644 compose.yaml /opt/emailvalidation/compose.yaml
                         sudo install -m 0644 deploy/nginx/emailvalidation.conf \
                           /opt/emailvalidation/deploy/nginx/emailvalidation.conf
                         sudo install -m 0755 deploy/letsencrypt/bootstrap.sh \
                           /opt/emailvalidation/deploy/letsencrypt/bootstrap.sh
+                        sudo install -m 0644 deploy/config/outbound-identities.env \
+                          /opt/emailvalidation/deploy/config/outbound-identities.env
+                        sudo install -m 0755 ops/email-validation/configure-outbound-identities.sh \
+                          /opt/emailvalidation/ops/email-validation/configure-outbound-identities.sh
+                        sudo /opt/emailvalidation/ops/email-validation/configure-outbound-identities.sh --check
                         sudo test -f /opt/emailvalidation/.env
                       displayName: Install deployment manifests
 
@@ -214,7 +221,20 @@ stages:
                             sleep 2
                           done
 
+                          printf '%s\n' "$(Build.SourceVersion)" | \
+                            sudo tee /opt/emailvalidation/RELEASE >/dev/null
                           sudo --preserve-env=RELEASE_TAG docker compose ps
                       env:
                         BOOTSTRAP_LETSENCRYPT: ${{ parameters.bootstrapLetsEncrypt }}
                         LETSENCRYPT_EMAIL: ${{ parameters.letsencryptEmail }}
+
+                    - bash: |
+                        set -euo pipefail
+                        if ! command -v ansible-playbook >/dev/null 2>&1; then
+                          sudo dnf install -y ansible-core
+                        fi
+                        ansible-playbook --inventory localhost, --connection local \
+                          deploy/ansible/verify-host-local.yml \
+                          --extra-vars "emailvalidation_release_tag=$(Build.SourceVersion)" \
+                          --extra-vars "emailvalidation_image_registry=$(acrLoginServer)"
+                      displayName: Verify deployed revision with Ansible

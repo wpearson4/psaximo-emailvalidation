@@ -258,7 +258,7 @@ public sealed class ValidationJobProcessor(
                     try
                     {
                         var result = await validator.ValidateAsync(item.Email,
-                            new EmailValidationRequest(job.EnableSmtp), token).ConfigureAwait(false);
+                            new EmailValidationRequest(job.EnableSmtp, JobId: job.JobId), token).ConfigureAwait(false);
                         await store.SaveResultAsync(jobId, item.Position, result, null, token).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)

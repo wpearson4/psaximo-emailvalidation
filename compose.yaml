@@ -17,6 +17,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    env_file:
+      - ./deploy/config/outbound-identities.env
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       Kestrel__Endpoints__Http__Url: http://${API_BIND_ADDRESS:-127.0.0.1}:${REST_PORT:-8080}
@@ -44,6 +46,9 @@ services:
       Api__OpenApi__TokenUrl: ${OPENAPI_TOKEN_URL:-}
       Api__OpenApi__SwaggerClientId: ${OPENAPI_SWAGGER_CLIENT_ID:-}
       EmailValidation__ProbeSenderSource__Endpoint: ${PROBE_SENDER_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__Endpoint: ${PROJECTION_ELASTICSEARCH_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__DataStreamName: ${PROJECTION_DATA_STREAM:-email-validation-observations-prod-v1}
+      EmailValidation__Projection__Environment: ${PROJECTION_ENVIRONMENT:-prod}
       EmailValidation__ProbeSenderSource__Index: ${PROBE_SENDER_INDEX:-zi-b2b}
       EmailValidation__ProbeSenderSource__Query__bool__filter__0__term__business_email_validation_status: ${PROBE_SENDER_VALIDATION_STATUS:-valid (catch-all)}
       EmailValidation__ProbeSenderSource__Query__bool__filter__1__exists__field: ${PROBE_SENDER_EMAIL_FIELD:-business_email}
@@ -78,6 +83,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    env_file:
+      - ./deploy/config/outbound-identities.env
     environment:
       DOTNET_ENVIRONMENT: Production
       Azure__AppConfigurationEndpoint: ${AZURE_APPCONFIG_ENDPOINT:-https://appcs-p-ometa-dsi-scus.azconfig.io}
@@ -91,6 +98,9 @@ services:
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?set AZURE_CLIENT_ID}
       AZURE_CLIENT_CERTIFICATE_PATH: /run/secrets/azure_client_certificate.pem
       EmailValidation__ProbeSenderSource__Endpoint: ${PROBE_SENDER_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__Endpoint: ${PROJECTION_ELASTICSEARCH_ENDPOINT:-http://10.10.252.28:9200}
+      EmailValidation__Projection__Elasticsearch__DataStreamName: ${PROJECTION_DATA_STREAM:-email-validation-observations-prod-v1}
+      EmailValidation__Projection__Environment: ${PROJECTION_ENVIRONMENT:-prod}
       EmailValidation__ProbeSenderSource__Index: ${PROBE_SENDER_INDEX:-zi-b2b}
       EmailValidation__ProbeSenderSource__Query__bool__filter__0__term__business_email_validation_status: ${PROBE_SENDER_VALIDATION_STATUS:-valid (catch-all)}
       EmailValidation__ProbeSenderSource__Query__bool__filter__1__exists__field: ${PROBE_SENDER_EMAIL_FIELD:-business_email}

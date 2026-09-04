@@ -23,6 +23,86 @@ public sealed class EmailValidationOptions
     public RevalidationOptions Revalidation { get; set; } = new();
     public ValidationJobsOptions Jobs { get; set; } = new();
     public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
+    public EmailValidationProjectionOptions Projection { get; set; } = new();
+    public ClassificationModelOptions ClassificationModel { get; set; } = new();
+}
+
+public sealed class ClassificationModelOptions
+{
+    public ModelRolloutMode Mode { get; set; } = ModelRolloutMode.Disabled;
+    public string ArtifactPath { get; set; } = string.Empty;
+    public string ArtifactChecksum { get; set; } = string.Empty;
+    public double LikelyValidThreshold { get; set; } = 0.8;
+    public double LikelyInvalidThreshold { get; set; } = 0.2;
+    public double AbstentionLowerBound { get; set; } = 0.4;
+    public double AbstentionUpperBound { get; set; } = 0.6;
+    public double MinimumVerificationReliability { get; set; } = 0.25;
+    public double MaximumMissingFeatureFraction { get; set; } = 0.35;
+    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v1";
+}
+
+public sealed class EmailValidationProjectionOptions
+{
+    public bool Enabled { get; set; }
+    public string Environment { get; set; } = "dev";
+    public ProjectionOutboxOptions Outbox { get; set; } = new();
+    public ProjectionServiceBusOptions ServiceBus { get; set; } = new();
+    public ProjectionElasticsearchOptions Elasticsearch { get; set; } = new();
+    public ProjectionPrivacyOptions Privacy { get; set; } = new();
+    public ProjectionReconciliationOptions Reconciliation { get; set; } = new();
+}
+
+public sealed class ProjectionOutboxOptions
+{
+    public string CollectionName { get; set; } = "EmailValidationProjectionOutbox";
+    public string CheckpointCollectionName { get; set; } = "EmailValidationProjectionCheckpoints";
+    public int BatchSize { get; set; } = 100;
+    public int DispatchIntervalSeconds { get; set; } = 5;
+    public int LockDurationSeconds { get; set; } = 60;
+    public int PublishedRetentionDays { get; set; } = 7;
+    public int MaximumPublishAttempts { get; set; } = 20;
+}
+
+public sealed class ProjectionServiceBusOptions
+{
+    public string ConnectionString { get; set; } = string.Empty;
+    public string TopicName { get; set; } = "email-validation-observations";
+    public string SubscriptionName { get; set; } = "email-validation-elasticsearch-projector";
+    public bool ProvisionEntities { get; set; }
+    public int MaxDeliveryCount { get; set; } = 10;
+    public int PrefetchCount { get; set; } = 200;
+    public int MaxAutoLockRenewalMinutes { get; set; } = 10;
+}
+
+public sealed class ProjectionElasticsearchOptions
+{
+    public string Endpoint { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string DataStreamName { get; set; } = "email-validation-observations-dev-v1";
+    public int MaximumBatchSize { get; set; } = 500;
+    public int MaximumBatchBytes { get; set; } = 5 * 1024 * 1024;
+    public int ReceiveWaitSeconds { get; set; } = 5;
+    public int RetryLimit { get; set; } = 5;
+    public int RetryBackoffMilliseconds { get; set; } = 1_000;
+}
+
+public sealed class ProjectionPrivacyOptions
+{
+    public bool IncludeRecipientDomain { get; set; } = true;
+    public bool IncludeRawEmail { get; set; }
+    public string EmailHashKey { get; set; } = string.Empty;
+    public string EmailHashKeyVersion { get; set; } = "v1";
+}
+
+public sealed class ProjectionReconciliationOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int IntervalMinutes { get; set; } = 10;
+    public int OverlapMinutes { get; set; } = 15;
+    public int BatchSize { get; set; } = 500;
+    public int MaximumEventsPerRun { get; set; } = 5_000;
 }
 
 public sealed class SmtpReputationProtectionOptions
@@ -186,6 +266,8 @@ public sealed class PersistenceOptions
     public string CommercialResourceCollection { get; set; } = "EmailValidationCommercialResources";
     public string OutboundIdentityHealthCollection { get; set; } = "EmailValidationOutboundIdentityHealth";
     public string SmtpReputationStateCollection { get; set; } = "EmailValidationSmtpReputationState";
+    public string FeatureSnapshotCollection { get; set; } = "EmailValidationFeatureSnapshots";
+    public string OutcomeObservationCollection { get; set; } = "EmailValidationOutcomeObservations";
 }
 
 public sealed class ResultReuseOptions
