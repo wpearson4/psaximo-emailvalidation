@@ -97,7 +97,7 @@ internal sealed class SmtpResponseRuleRegistry
         return null;
     }
 
-    private CompiledRule[] CompileRules(IEnumerable<RuleDefinition> definitions) =>
+    private static CompiledRule[] CompileRules(IEnumerable<RuleDefinition> definitions) =>
         definitions.OrderByDescending(rule => rule.Stages.Count > 0)
             .ThenByDescending(rule => rule.Priority).ThenBy(rule => rule.Id, StringComparer.Ordinal)
             .Select(rule => new CompiledRule(
@@ -109,10 +109,13 @@ internal sealed class SmtpResponseRuleRegistry
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         _timeout);
 
-    private Regex CompileRule(string pattern) => new(
+    private static Regex CompileRule(string pattern) => new(
         pattern,
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
-        _timeout);
+        // Rule input is capped at 16,384 characters and NonBacktracking guarantees
+        // linear-time evaluation. A wall-clock timeout here can therefore only turn
+        // host scheduling pauses into incorrect classifications.
+        Regex.InfiniteMatchTimeout);
 
     private static void Validate(IEnumerable<CompiledRule> rules)
     {
