@@ -61,6 +61,10 @@ stages:
           - bash: |
               set -euo pipefail
               docker compose --file compose.yaml config --quiet
+              docker compose --file compose.yaml config --format json | \
+                jq --exit-status \
+                  '.services["emailvalidation-api"].environment.Api__OpenMeta__BaseUrl == "https://api.digitalwarehouse.io"' \
+                  >/dev/null
             displayName: Validate Compose configuration
             env:
               AZURE_TENANT_ID: 00000000-0000-0000-0000-000000000000

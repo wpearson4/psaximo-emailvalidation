@@ -44,7 +44,7 @@ builder.Services.RemoveAll<IValidationAccessPolicy>();
 builder.Services.AddSingleton<IValidationAccessPolicy, CommercialValidationAccessPolicy>();
 builder.Services.AddSingleton<IValidationJobAccessPolicy, CommercialValidationJobAccessPolicy>();
 builder.Services.AddEmailValidationSecurity(builder.Configuration, builder.Environment);
-builder.Services.AddEmailValidationApiPlatform(builder.Configuration);
+builder.Services.AddEmailValidationApiPlatform(builder.Configuration, builder.Environment);
 builder.Services.AddEmailValidationOpenApi(builder.Configuration);
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {

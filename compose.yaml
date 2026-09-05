@@ -41,6 +41,7 @@ services:
       Authentication__Audience: ${AUDIENCE:-emailvalidation-api}
       Authentication__RequireHttpsMetadata: "true"
       Api__Cors__AllowedOrigins__0: https://app.digitalwarehouse.io
+      Api__OpenMeta__BaseUrl: ${OPENMETA_API_ORIGIN:-https://api.digitalwarehouse.io}
       Api__OpenApi__ExposeInProduction: ${OPENAPI_EXPOSE_IN_PRODUCTION:-false}
       Api__OpenApi__AuthorizationUrl: ${OPENAPI_AUTHORIZATION_URL:-}
       Api__OpenApi__TokenUrl: ${OPENAPI_TOKEN_URL:-}

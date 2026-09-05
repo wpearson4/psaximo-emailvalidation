@@ -26,7 +26,7 @@ All business operations deny unauthenticated callers. Tokens must be issued by `
 
 Job creation may include `sourceFileId`, `sourceFileName`, and `emailColumn`. These non-secret display fields are stored with the durable job so the owner-scoped history endpoint can support cross-browser status and validated-file downloads. History is ordered newest first and never relies on browser storage for authorization or discovery.
 
-Set `Api:OpenMeta:BaseUrl` to the OpenMeta API origin. Before job creation, the email-column endpoint forwards the caller's bearer token to the existing purchased-file download route and profiles a bounded stream identified only by `sourceFileId`. It returns detected column metadata without returning, persisting, or logging sampled values. Sampling limits and confidence policy are configured under `EmailValidation:ColumnDetection`.
+Set `Api:OpenMeta:BaseUrl` to the OpenMeta API origin. Production Compose maps `OPENMETA_API_ORIGIN` to this setting and defaults it to `https://api.digitalwarehouse.io`; production startup rejects loopback origins so the API cannot silently use the local-development fallback. Before job creation, the email-column endpoint forwards the caller's bearer token to the existing purchased-file download route and profiles a bounded stream identified only by `sourceFileId`. It returns detected column metadata without returning, persisting, or logging sampled values. Sampling limits and confidence policy are configured under `EmailValidation:ColumnDetection`.
 
 ## Development and contracts
 
@@ -97,7 +97,7 @@ Swagger is anonymous only in Development. Business operations still require thei
 
 ## Configuration and secrets
 
-Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
+Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Api__OpenMeta__BaseUrl`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
 
 Existing App Configuration/Key Vault keys remain authoritative for MongoDB, Service Bus, Elasticsearch, and validation behavior. Compose mounts the App Configuration and MongoDB connection strings as Docker secrets at `/run/secrets/azure_app_configuration_connection_string` and `/run/secrets/mongo_connection_string`. Set `AZURE_MONGO_SECRET_URI` to the matching Key Vault reference URI so the application substitutes the mounted value when it loads App Configuration. A service-principal certificate remains available at `/run/secrets/azure_client_certificate.pem` for any other Key Vault references. This avoids production `az login` and keeps credentials out of environment variables. Keep source secret files outside the repository.
 

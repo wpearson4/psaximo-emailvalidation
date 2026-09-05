@@ -23,7 +23,8 @@ public static class ApiPlatformExtensions
 {
     public static IServiceCollection AddEmailValidationApiPlatform(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IHostEnvironment environment)
     {
         services.AddOptions<ApiHostOptions>()
             .Bind(configuration.GetSection("Api"))
@@ -32,6 +33,8 @@ public static class ApiPlatformExtensions
             .Validate(options => options.RateLimiting.PermitLimit > 0 &&
                     options.RateLimiting.WindowSeconds > 0 && options.RateLimiting.StreamConcurrencyLimit > 0,
                 "API rate limit values must be positive.")
+            .Validate(options => IsUsableOpenMetaOrigin(options.OpenMeta.BaseUrl, environment),
+                "Api:OpenMeta:BaseUrl must be an absolute HTTP or HTTPS URL and cannot use a loopback address in Production.")
             .ValidateOnStart();
 
         var hostOptions = configuration.GetSection("Api").Get<ApiHostOptions>() ?? new();
@@ -81,6 +84,15 @@ public static class ApiPlatformExtensions
             .AddCheck<OutboundIdentityReadinessHealthCheck>("outbound-identities", tags: ["ready"]);
         services.AddSingleton<ApiTelemetry>();
         return services;
+    }
+
+    internal static bool IsUsableOpenMetaOrigin(string? value, IHostEnvironment environment)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var origin) ||
+            origin.Scheme is not ("http" or "https"))
+            return false;
+
+        return !environment.IsProduction() || !origin.IsLoopback;
     }
 
     public static WebApplication UseEmailValidationApiPlatform(this WebApplication app)
