@@ -23,7 +23,7 @@
 
 Use `examples/appsettings.outbound-identities.json` as the source for Azure App Configuration keys. Identity values are not secrets. Production must retain `RequireAddressToBeBound=true` and `RequireForwardConfirmedReverseDns=true`.
 
-Each identity now explicitly configures both `ExpectedPtrHostName` and `EhloHostName`. `DnsReadiness` defaults to `Observe` with `StrictOneToOne` validation, five-minute minimum freshness, 24-hour maximum freshness, 60-minute fallback freshness, five-minute negative caching, a 60-second transient retry, and a 15-minute bounded last-known-good grace. Configuration/policy version changes invalidate the in-memory DNS cache.
+Each identity now explicitly configures both `ExpectedPtrHostName` and `EhloHostName`. The code default remains `Observe`; the verified production deployment configuration uses `Enforced` with `StrictOneToOne` validation, five-minute minimum freshness, 24-hour maximum freshness, 60-minute fallback freshness, five-minute negative caching, a 60-second transient retry, and a 15-minute bounded last-known-good grace. Configuration/policy version changes invalidate the in-memory DNS cache.
 
 Rollout modes are:
 
@@ -72,57 +72,36 @@ sudo ops/email-validation/configure-outbound-identities.sh --rollback
 - A NetworkManager down/up cycle restored all 13 addresses, the `/28` rule, table 200, and `outbound-only`.
 - `--rollback` was executed successfully, restoring only `.162/28` and the narrow `.162` rule; `--apply` then restored and reverified the 13-address target state.
 
-## Application deployment blocker
+## Current application deployment
 
-The host-network configuration was applied after the user explicitly accepted the pre-existing Azure outage. Application image/configuration deployment remains blocked:
-
-- `emailvalidation-api` and `emailvalidation-worker` remain in a restart loop (220+ restarts observed during the latest inspection).
-- Nginx health returned 502 and the API did not listen on loopback port 8080.
-- The mounted App Configuration connection string returned HTTP 401 `Invalid Credential`.
-- The certificate fallback also failed with Entra error `AADSTS700026` (the client application has no configured keys).
-- The Compose `.env` selected image tag `64694cf...`, which could not be pulled with the host's current registry authorization; running containers used `0fdaf15...`.
-
-Restore a valid App Configuration credential (or register the configured certificate with the Entra application), restore ACR pull authorization for the selected immutable tag, and confirm `/health/live` and public readiness are healthy before deploying and enabling the application feature.
+The earlier App Configuration and registry authorization blockers were repaired. The API and worker are deployed through the production Azure DevOps pipeline, and the public liveness endpoint is healthy. Before this configuration promotion, readiness remained degraded because the running DNS-readiness cache still contained observations from the PTR cleanup window.
 
 ## DNS and FCrDNS readiness
 
 The deployment hostname convention is now `outbound-162.email.digitalwarehouse.io` through `outbound-174.email.digitalwarehouse.io`. Identity IDs remain `smtp-162` through `smtp-174`; those are stable internal identifiers, not DNS names. Both `ExpectedPtrHostName` and `EhloHostName` use the `outbound-*` hostname.
 
-The 2026-09-04 authoritative and public-resolver checks saw the new `outbound-*` PTR answers, but TTL propagation and cleanup were incomplete. `.163`–`.174` returned both the new hostname and one historical PTR, while `.162` returned the new PTR before its matching `outbound-162` A record was visible. Strict one-to-one FCrDNS therefore remains in `Observe` mode.
+The 2026-09-05 verification found exactly one expected `outbound-*` PTR on every address from all four authoritative Corespace nameservers. Every expected hostname returned exactly one matching IPv4 address. Cloudflare and the local recursive resolver returned the clean set for all 13 identities. Google Public DNS intermittently returned legacy answers from a few cache nodes with short remaining TTLs; because every authoritative server was already clean, these were propagation artifacts rather than authoritative defects.
 
-For every identity, create:
+The resulting production invariant is:
 
-1. Retain `outbound-N.email.digitalwarehouse.io A 64.182.22.N` in authoritative forward DNS.
-2. Set exactly one `64.182.22.N PTR outbound-N.email.digitalwarehouse.io` through the IP provider or delegated reverse zone, removing historical PTR answers.
-3. Recheck `IP -> exactly one PTR hostname -> exactly one A with the same IP` before switching from `Observe` to `Enforced`.
+1. `outbound-N.email.digitalwarehouse.io A 64.182.22.N`.
+2. Exactly one `64.182.22.N PTR outbound-N.email.digitalwarehouse.io`.
+3. `EHLO outbound-N.email.digitalwarehouse.io` for the selected identity.
 
 Do not disable `RequireForwardConfirmedReverseDns` to work around missing external DNS.
 
-Latest read-only readiness matrix (2026-09-04 UTC, pending TTL expiry):
+Latest read-only DNS matrix (2026-09-05 UTC):
 
-| Identity | Source IP / forward A | Expected PTR and EHLO | Observed PTR | Local `ens19` | Strict FCrDNS | Observe eligibility | Cache expiry |
-|---|---|---|---|---|---|---|---|
-| `smtp-162` | `64.182.22.162` | `outbound-162.email.digitalwarehouse.io` | new PTR only; matching A pending | bound | `ForwardMismatch` | eligible | TTL pending |
-| `smtp-163` | `64.182.22.163` | `outbound-163.email.digitalwarehouse.io` | new PTR plus `camera.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-164` | `64.182.22.164` | `outbound-164.email.digitalwarehouse.io` | new PTR plus `el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-165` | `64.182.22.165` | `outbound-165.email.digitalwarehouse.io` | new PTR plus `intend.el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-166` | `64.182.22.166` | `outbound-166.email.digitalwarehouse.io` | new PTR plus `timing.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-167` | `64.182.22.167` | `outbound-167.email.digitalwarehouse.io` | new PTR plus `appeal.el3m3nts.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-168` | `64.182.22.168` | `outbound-168.email.digitalwarehouse.io` | new PTR plus `ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-169` | `64.182.22.169` | `outbound-169.email.digitalwarehouse.io` | new PTR plus `gender.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-170` | `64.182.22.170` | `outbound-170.email.digitalwarehouse.io` | new PTR plus `junior.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-171` | `64.182.22.171` | `outbound-171.email.digitalwarehouse.io` | new PTR plus `behind.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-172` | `64.182.22.172` | `outbound-172.email.digitalwarehouse.io` | new PTR plus `author.directgreenmail.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-173` | `64.182.22.173` | `outbound-173.email.digitalwarehouse.io` | new PTR plus `vendor.ameripjt.com` | bound | `MultiplePtr` | eligible | TTL pending |
-| `smtp-174` | `64.182.22.174` | `outbound-174.email.digitalwarehouse.io` | new PTR plus `medium.abmarkset.com` | bound | `MultiplePtr` | eligible | TTL pending |
+| Identity range | Source IP range | Expected PTR/A/EHLO | Authoritative PTR count | Strict FCrDNS |
+|---|---|---|---|---|
+| `smtp-162`–`smtp-174` | `64.182.22.162`–`64.182.22.174` | `outbound-162`–`outbound-174.email.digitalwarehouse.io` | one per IP | `Valid` |
 
-“Eligible” above is the intended `Observe` behavior after this build is deployed and configured; it does not mean the currently restarting production containers are using this code. All 13 become ineligible if switched to `Enforced` before PTR correction.
+Production deployment configuration now uses `DnsReadiness:Mode=Enforced` and policy version `2026.09.2`. The policy-version change invalidates stale application readiness entries so the next deployment re-evaluates the corrected DNS.
 
-## Remaining verification after application blockers are cleared
+## Post-rollout verification
 
-After deploying a healthy application image:
+After deploying the enforced configuration:
 
-1. Configure and verify matching PTR records for all identities; reverify the existing A records.
-2. Publish the outbound identity settings through Azure App Configuration.
-3. Confirm startup validation admits every configured group.
-4. Confirm API ingress, worker health, loopback Kestrel binding, no worker listener, and `outbound-only` firewall state after application restart.
+1. Confirm startup validation admits at least one identity in every configured group and all 13 after recursive caches expire.
+2. Confirm `/health/ready` returns `Healthy` after the background refresh completes.
+3. Confirm API ingress, worker health, loopback Kestrel binding, no worker listener, and `outbound-only` firewall state after application restart.
