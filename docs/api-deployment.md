@@ -41,8 +41,8 @@ through public address `64.182.20.183`. DNS, HTTP-to-HTTPS redirection, the
 public readiness endpoint, and the Let's Encrypt HTTP-01 renewal path were
 verified externally. The initial certificate for `email.digitalwarehouse.io`
 expires November 23, 2026; the Certbot service checks for renewal every 12
-hours. API and worker images use the same immutable Git revision as their
-release tag.
+hours. API, worker, and mail-forwarder images use the same immutable Git revision
+as their release tag.
 
 Durable front-end jobs require both `emailvalidation-api` and
 `emailvalidation-worker`. They share MongoDB job storage and use the
@@ -147,6 +147,12 @@ az acr build \
   --image "emailvalidation-worker:${RELEASE_TAG}" \
   --image emailvalidation-worker:latest \
   .
+az acr build \
+  --registry acrpometadsiscussrch \
+  --file Dockerfile.mail-forwarder \
+  --image "emailvalidation-mail-forwarder:${RELEASE_TAG}" \
+  --image emailvalidation-mail-forwarder:latest \
+  .
 ```
 
 Give the production host only pull access. Prefer an ACR scope-map token or service principal restricted to `repositories/emailvalidation-api/content/read`; do not enable the registry admin account. Authenticate Docker once using that pull identity, with the password supplied through standard input rather than command-line arguments.
@@ -155,21 +161,21 @@ Give the production host only pull access. Prefer an ACR scope-map token or serv
 
 Create an uncommitted `.env` on the host containing the non-secret settings,
 selected `RELEASE_TAG`, and paths to the source secret files. The release tag
-must identify both the API and worker images. Compose explicitly allows the sole
+must identify the API, worker, and mail-forwarder images. Compose explicitly allows the sole
 browser origin `https://app.digitalwarehouse.io`; do not replace it with a
 wildcard. Confirm public ports 80 and 443 reach this host, authenticate Docker
 to ACR, and pull both application images:
 
 ```bash
 docker compose config --quiet
-docker compose pull emailvalidation-api emailvalidation-worker nginx certbot
+docker compose pull emailvalidation-api emailvalidation-worker mail-forwarder nginx certbot
 export LETSENCRYPT_EMAIL=operations@digitalwarehouse.io
 ./deploy/letsencrypt/bootstrap.sh
 docker compose ps
 curl --fail --silent http://127.0.0.1:8080/health/live
 curl --fail --silent http://127.0.0.1:8080/health/ready
 curl --fail --silent https://email.digitalwarehouse.io/health/ready
-docker compose logs --tail=200 emailvalidation-api emailvalidation-worker nginx certbot
+docker compose logs --tail=200 emailvalidation-api emailvalidation-worker mail-forwarder nginx certbot
 ```
 
 Replace the example Let's Encrypt contact address with the monitored operational address. For a rate-limit-safe rehearsal, set `LETSENCRYPT_STAGING=true`; remove the staging certificate volume before the first production issuance because staging certificates are not trusted. The bootstrap script briefly reserves host port 80 with Certbot's standalone HTTP-01 server, then starts Nginx and the renewal service.

@@ -8,8 +8,9 @@
 - Production agent pool: `OMetaSearchPool`
 - Production environment: `emailvalidation-production`
 
-Every `master` update validates the .NET solution, Compose model, Nginx configuration, and Certbot image, publishes
-both the immutable Git commit tag and `latest` to ACR, and deploys that same immutable API/worker tag to production.
+Every `master` update validates the .NET solution, Compose model, Nginx configuration, Certbot image, and receive-only
+mail forwarder; publishes both the immutable Git commit tag and `latest` to ACR; and deploys the same immutable
+API/worker/mail-forwarder tag to production.
 Manual runs may set `deployProduction=false` when validation and image publication are desired without a rollout.
 Certificate bootstrap remains disabled by default and is only appropriate for a coordinated first deployment.
 

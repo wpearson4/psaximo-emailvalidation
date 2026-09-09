@@ -5,15 +5,20 @@ These playbooks provide auditable deployment verification and a break-glass host
 The deployment:
 
 - validates the complete `.162`–`.174` source-address, route, and firewall state;
-- builds API and worker images from the already-tested Git checkout;
-- tags both images with the full immutable Git SHA;
+- builds API, worker, and receive-only mail-forwarder images from the already-tested Git checkout;
+- tags all three images with the full immutable Git SHA;
 - preserves `/opt/emailvalidation/.env` and all secret source files;
 - installs versioned Compose, Nginx, Certbot, identity configuration, and network-check artifacts;
-- starts API and worker from the same revision;
-- verifies Kestrel and the local TLS gateway; and
+- starts API, worker, and mail forwarder from the same revision;
+- verifies Kestrel and the local TLS gateway;
+- verifies catch-all acceptance, open-relay denial, and SMTP isolation from the outbound identity interface; and
 - writes `/opt/emailvalidation/RELEASE` only after readiness succeeds.
 
-The production pipeline uses `verify-host-local.yml` after its ACR deployment to prove that both running containers and `/opt/emailvalidation/RELEASE` match the Git SHA. `deploy-host-local.yml` builds images named `emailvalidation-local/emailvalidation-api:<sha>` and `emailvalidation-local/emailvalidation-worker:<sha>` without pushing to a registry; reserve it for a reviewed break-glass deployment when ACR is unavailable.
+The production pipeline uses `verify-host-local.yml` after its ACR deployment to prove that all three running
+release containers and `/opt/emailvalidation/RELEASE` match the Git SHA. `deploy-host-local.yml` builds images named
+`emailvalidation-local/emailvalidation-api:<sha>`, `emailvalidation-local/emailvalidation-worker:<sha>`, and
+`emailvalidation-local/emailvalidation-mail-forwarder:<sha>` without pushing to a registry; reserve it for a reviewed
+break-glass deployment when ACR is unavailable.
 
 Syntax validation from the repository root:
 

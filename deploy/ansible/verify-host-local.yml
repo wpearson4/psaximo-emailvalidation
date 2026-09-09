@@ -49,11 +49,38 @@
       changed_when: false
       failed_when: emailvalidation_worker_container.stdout | trim | length == 0
 
+    - name: Require the mail-forwarder container to use the expected image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - name=^/emailvalidation-mail-forwarder$
+          - --filter
+          - "ancestor={{ emailvalidation_image_registry }}/emailvalidation-mail-forwarder:{{ emailvalidation_release_tag }}"
+      register: emailvalidation_mail_forwarder_container
+      changed_when: false
+      failed_when: emailvalidation_mail_forwarder_container.stdout | trim | length == 0
+
     - name: Verify outbound identity network configuration
       ansible.builtin.command:
         argv:
           - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-outbound-identities.sh"
           - --check
+      changed_when: false
+
+    - name: Verify mail-forwarder firewall isolation
+      ansible.builtin.command:
+        argv:
+          - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
+          - --check
+      changed_when: false
+
+    - name: Verify catch-all acceptance and relay denial
+      ansible.builtin.command:
+        argv:
+          - "{{ emailvalidation_deploy_root }}/ops/email-validation/verify-mail-forwarder.py"
       changed_when: false
 
     - name: Verify API readiness

@@ -1,0 +1,54 @@
+# Dedicated receive-only forwarder for the owned SMTP probe sender domain.
+# It deliberately listens only on the management interface; the validation
+# source addresses on ens19 remain outbound-only.
+compatibility_level = 3.10
+queue_directory = /var/spool/postfix
+command_directory = /usr/sbin
+daemon_directory = /usr/libexec/postfix
+data_directory = /var/lib/postfix
+mail_owner = postfix
+
+myhostname = email.digitalwarehouse.io
+mydomain = digitalwarehouse.io
+myorigin = $myhostname
+inet_interfaces = 10.10.252.31, 127.0.0.1
+inet_protocols = ipv4
+mydestination = localhost.localdomain, localhost
+mynetworks = 127.0.0.1/32
+relay_domains =
+
+virtual_alias_domains = validation.email.digitalwarehouse.io, srs.validation.email.digitalwarehouse.io
+virtual_alias_maps = lmdb:/etc/postfix/virtual, socketmap:inet:127.0.0.1:10003:reverse
+
+# Rewrite forwarded envelope senders so SPF does not evaluate the original
+# sender against this host. PostSRSd signatures also make bounce reversal safe.
+sender_canonical_maps = socketmap:inet:127.0.0.1:10003:forward
+sender_canonical_classes = envelope_sender
+recipient_canonical_maps = socketmap:inet:127.0.0.1:10003:reverse
+recipient_canonical_classes = envelope_recipient
+
+# Never relay arbitrary destinations, including for clients on the host.
+smtpd_relay_restrictions = reject_unauth_destination
+smtpd_recipient_restrictions = reject_unauth_destination
+smtpd_helo_required = yes
+disable_vrfy_command = yes
+smtpd_delay_reject = yes
+smtpd_client_connection_rate_limit = 30
+smtpd_client_message_rate_limit = 60
+anvil_rate_time_unit = 60s
+message_size_limit = 10485760
+recipient_delimiter = +
+
+# Opportunistic transport encryption. The certificate matches the MX target,
+# email.digitalwarehouse.io, and is maintained by the existing Certbot service.
+smtpd_tls_security_level = may
+smtpd_tls_cert_file = /etc/letsencrypt/live/email.digitalwarehouse.io/fullchain.pem
+smtpd_tls_key_file = /etc/letsencrypt/live/email.digitalwarehouse.io/privkey.pem
+smtpd_tls_loglevel = 1
+smtp_tls_security_level = may
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+smtp_bind_address = 10.10.252.31
+
+# Keep operational logs in the container log stream.
+maillog_file = /dev/stdout
+maillog_file_prefixes = /dev/stdout
