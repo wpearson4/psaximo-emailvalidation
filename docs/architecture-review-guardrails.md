@@ -27,7 +27,6 @@ Review baseline: `5623b16` (2026-08-22). This review evaluated the repository ag
 
 - `EmailValidation.Core` is a compatibility assembly that still combines ports, mailbox orchestration, classification, and confidence policy. It also retains an ASP.NET framework reference. New domain semantics and use cases should continue moving into Domain/Application when touched, with type forwarding or other compatibility measures; a mass namespace/project migration is not justified.
 - `EmailValidator` remains a broad mailbox-use-case orchestrator. Its duplicate domain-analysis implementation has been removed, but future changes should keep extracting focused application services only when a responsibility can be separated without duplicating policy.
-- `ProbeSenderHealthChecker.GetSnapshot` takes a synchronous semaphore for an in-memory diagnostic snapshot. It is not on a network/storage path, but an immutable/lock-free snapshot would remove the remaining synchronous wait if contention becomes observable.
 - There is no REST API or application-level tenant/metering context yet. Public contracts should gain tenant attribution when the commercial API requirement is concrete, rather than introducing speculative global state now.
 
 ## HIGH RISK
@@ -60,6 +59,6 @@ No unresolved correctness, security, SMTP-circumvention, retry-idempotency, or s
 
 ## Enforced guardrails
 
-Tests now fail if Domain references Application, Infrastructure, hosts, ASP.NET, or gRPC, or if Application references Infrastructure, host, Mongo, Azure, or Elasticsearch assemblies. The same guardrail verifies that reusable domain scheduling remains in Application. Existing behavior tests cover single-flight, persistence reuse, catch-all compatibility/invalidation, sender rotation, retry identity/idempotency, status-stream cancellation, risk/validity separation, and provider-policy cooldown.
+Tests now fail if Domain references Application, Infrastructure, hosts, ASP.NET, or gRPC, or if Application references Infrastructure, host, Mongo, Azure, or Elasticsearch assemblies. The same guardrail verifies that reusable domain scheduling remains in Application. Existing behavior tests cover single-flight, persistence reuse, catch-all compatibility/invalidation, stable outbound identity binding, retry identity/idempotency, status-stream cancellation, risk/validity separation, and provider-policy cooldown.
 
 The operating principle remains: reuse known evidence, perform only work that can improve the decision, persist useful observations, and learn from real outcomes.

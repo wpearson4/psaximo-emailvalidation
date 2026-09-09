@@ -376,8 +376,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
                 ["EmailValidation:Persistence:Enabled"] = "false",
                 ["EmailValidation:Persistence:Provider"] = "Json",
                 ["EmailValidation:Persistence:StoragePath"] = "test-data",
-                ["EmailValidation:ProbeSenderSource:Index"] = "test",
-                ["EmailValidation:ProbeSenderSource:Query:match_all:enabled"] = "true"
+                ["EmailValidation:Smtp:Enabled"] = "false"
             }));
         builder.ConfigureServices(services =>
         {

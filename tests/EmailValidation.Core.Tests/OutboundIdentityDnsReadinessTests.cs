@@ -420,6 +420,7 @@ public sealed class OutboundIdentityDnsReadinessTests
                 {
                     IdentityId = "smtp-162",
                     Address = "64.182.22.162",
+                    ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
                     InterfaceName = "ens19",
                     ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
                     EhloHostName = "smtp-162.email.digitalwarehouse.io"
@@ -432,6 +433,7 @@ public sealed class OutboundIdentityDnsReadinessTests
     {
         IdentityId = "smtp-162",
         Address = IPAddress.Parse("64.182.22.162"),
+        ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
         InterfaceName = "ens19",
         ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
         EhloHostName = "smtp-162.email.digitalwarehouse.io",

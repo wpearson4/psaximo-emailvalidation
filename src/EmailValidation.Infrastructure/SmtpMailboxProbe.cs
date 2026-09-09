@@ -15,16 +15,13 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private static readonly Meter Meter = new("EmailValidation.OutboundSmtp", "1.0.0");
     private static readonly Counter<long> BindFailures = Meter.CreateCounter<long>("outbound_identity_bind_failure_total");
     private readonly SmtpOptions _options;
-    private readonly ProbeSenderRotationOptions _senderOptions;
     private readonly ILogger<SmtpMailboxProbe> _logger;
     private readonly ISmtpProbeThrottle _throttle;
     private readonly ISmtpResponseClassifier _responseClassifier;
-    private readonly IProbeSenderPool _senderPool;
-    private readonly IProbeSenderAffinityStore _affinityStore;
     private readonly ISmtpSessionBudget _sessionBudget;
     private readonly IProviderPolicyResolver _providerPolicyResolver;
-    private readonly IOutboundIdentitySelector? _outboundIdentitySelector;
-    private readonly IOutboundIdentityHealthStore? _outboundIdentityHealthStore;
+    private readonly IOutboundIdentitySelector _outboundIdentitySelector;
+    private readonly IOutboundIdentityHealthStore _outboundIdentityHealthStore;
     private readonly ISmtpConnectionFactory _connectionFactory;
     private readonly ISmtpReputationProtection? _reputationProtection;
     private readonly OutboundIdentityOptions _outboundIdentityOptions;
@@ -38,22 +35,17 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         ILogger<SmtpMailboxProbe> logger,
         ISmtpProbeThrottle throttle,
         ISmtpResponseClassifier responseClassifier,
-        IProbeSenderPool senderPool,
-        IProbeSenderAffinityStore affinityStore,
         ISmtpSessionBudget sessionBudget,
         IProviderPolicyResolver providerPolicyResolver,
-        IOutboundIdentitySelector? outboundIdentitySelector = null,
-        IOutboundIdentityHealthStore? outboundIdentityHealthStore = null,
+        IOutboundIdentitySelector outboundIdentitySelector,
+        IOutboundIdentityHealthStore outboundIdentityHealthStore,
         ISmtpConnectionFactory? connectionFactory = null,
         ISmtpReputationProtection? reputationProtection = null)
     {
         _options = options.Value.Smtp;
-        _senderOptions = options.Value.ProbeSenderRotation;
         _logger = logger;
         _throttle = throttle;
         _responseClassifier = responseClassifier;
-        _senderPool = senderPool;
-        _affinityStore = affinityStore;
         _sessionBudget = sessionBudget;
         _providerPolicyResolver = providerPolicyResolver;
         _outboundIdentitySelector = outboundIdentitySelector;
@@ -81,136 +73,89 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var availability = _throttle.GetAvailability(throttleContext);
         if (!availability.CanProbe)
             return CooldownActive(mxHost, provider, availability, attempts: 0);
-        OutboundIdentity? outboundIdentity = null;
-        if (_outboundIdentityOptions.Enabled)
-        {
-            var selection = await (_outboundIdentitySelector ?? throw new InvalidOperationException(
-                "Outbound identity selection is enabled but no selector is registered.")).SelectAsync(
-                new(domain, provider), cancellationToken).ConfigureAwait(false);
-            if (!selection.Selected)
-                return IdentityUnavailable(mxHost, provider, selection);
-            outboundIdentity = selection.Identity;
-            _logger.LogInformation(
-                "Outbound identity {OutboundIdentityId} selected for provider {Provider} domain {Domain}",
-                outboundIdentity!.IdentityId, provider, domain);
-        }
-        throttleContext = throttleContext with { OutboundIp = outboundIdentity?.Address.ToString() };
+        var selection = await _outboundIdentitySelector.SelectAsync(
+            new(domain, provider), cancellationToken).ConfigureAwait(false);
+        if (!selection.Selected)
+            return IdentityUnavailable(mxHost, provider, selection);
+        var outboundIdentity = selection.Identity!;
+        _logger.LogInformation(
+            "Stable outbound identity {OutboundIdentityId} selected for provider {Provider} domain {Domain}; sender {ProbeSender}, source IP {SourceIp}, EHLO {EhloHost}",
+            outboundIdentity.IdentityId, provider, domain, outboundIdentity.ProbeSenderAddress,
+            outboundIdentity.Address, outboundIdentity.EhloHostName);
+        throttleContext = throttleContext with { OutboundIp = outboundIdentity.Address.ToString() };
         var reputationContext = new SmtpReputationBudgetContext(
             recipient.Trim().ToLowerInvariant(), domain, provider,
-            outboundIdentity?.IdentityId, outboundIdentity?.Address.ToString(), mxHost);
+            outboundIdentity.IdentityId, outboundIdentity.Address.ToString(), mxHost);
         SmtpReputationEvidence? reputation = null;
-        var affinity = _affinityStore.GetAffinity(domain);
-        var excludedSenders = new HashSet<string>(
-            _affinityStore.GetIncompatibleSenders(domain), StringComparer.OrdinalIgnoreCase);
         var sessions = 0;
         var sessionHistory = new List<SmtpSessionEvidence>();
         SmtpProbeResult? lastResult = null;
-        string? previousSenderForDomainChange = null;
-        var maximumSenders = Math.Max(1, _senderOptions.MaxSenderAttemptsPerValidation);
         var maximumRetries = EffectiveRetryLimit(
             _options.RetryCount, _providerPolicyResolver.Resolve(provider));
-        for (var senderAttempt = 0; senderAttempt < maximumSenders; senderAttempt++)
+        var transientAttempt = 0;
+        do
         {
-            var selected = await _senderPool.GetSenderAsync(new ProbeSenderContext(
-                excludedSenders, domain, affinity?.Sender), cancellationToken);
-            if (selected is null) break;
-            if (affinity is null || !string.Equals(affinity.Sender, selected.Sender, StringComparison.OrdinalIgnoreCase))
+            await using var throttleLease = await _throttle.AcquireAsync(throttleContext, cancellationToken);
+            if (!throttleLease.Acquired)
+                return lastResult ?? CooldownActive(
+                    mxHost, provider,
+                    new(false, throttleLease.RetryAfter, throttleLease.Reason),
+                    sessions);
+            if (reputation is null && _reputationProtection is not null)
             {
-                var previous = affinity?.Sender ?? previousSenderForDomainChange;
-                _affinityStore.SetAffinity(domain, selected.Sender);
-                affinity = _affinityStore.GetAffinity(domain);
-                previousSenderForDomainChange = null;
-                if (previous is null)
-                    _logger.LogDebug("Sender affinity created: {Domain} -> {ProbeSender}", domain, selected.Sender);
-                else
-                    _logger.LogInformation(
-                        "Probe sender changed for {Domain}: {PreviousSender} -> {ProbeSender}. Reason: sender-specific MAIL FROM rejection",
-                        domain, previous, selected.Sender);
+                reputation = await EvaluateReputationSafelyAsync(
+                    reputationContext, cancellationToken).ConfigureAwait(false);
+                if (reputation.SuppressSmtp)
+                    return ReputationDeferred(mxHost, provider, reputation);
+            }
+            if (!_sessionBudget.TryConsume())
+            {
+                _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
+                return lastResult ?? BudgetExhausted(mxHost, provider);
             }
 
-            var transientAttempt = 0;
-            do
+            transientAttempt++;
+            sessions++;
+            lastResult = await ProbeOnceAsync(
+                mxHost, recipient, provider, sessions, outboundIdentity.ProbeSenderAddress,
+                outboundIdentity, cancellationToken);
+            if (reputation is not null)
+                lastResult = WithReputation(lastResult, reputation);
+            if (_reputationProtection is not null)
             {
-                await using var throttleLease = await _throttle.AcquireAsync(throttleContext, cancellationToken);
-                if (!throttleLease.Acquired)
-                    return lastResult ?? CooldownActive(
-                        mxHost, provider,
-                        new(false, throttleLease.RetryAfter, throttleLease.Reason),
-                        sessions);
-                if (reputation is null && _reputationProtection is not null)
-                {
-                    reputation = await EvaluateReputationSafelyAsync(
-                        reputationContext, cancellationToken).ConfigureAwait(false);
-                    if (reputation.SuppressSmtp)
-                        return ReputationDeferred(mxHost, provider, reputation);
-                }
-                if (!_sessionBudget.TryConsume())
-                {
-                    _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
-                    return lastResult ?? BudgetExhausted(mxHost, provider);
-                }
+                await _reputationProtection.RecordAsync(new SmtpReputationObservation(
+                    reputationContext,
+                    lastResult.Evidence?.Category ?? SmtpResponseCategory.Unknown,
+                    lastResult.Evidence?.Intelligence?.Reason,
+                    ConnectionAttempted: true,
+                    RcptAttempted: lastResult.SessionEvidence?.Stages.Any(
+                        stage => stage.Stage == SmtpCommand.RcptTo) == true,
+                    DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            }
+            await RecordOutboundIdentityOutcomeAsync(
+                outboundIdentity, provider, lastResult, cancellationToken).ConfigureAwait(false);
+            _throttle.RecordOutcome(throttleContext, lastResult);
+            if (lastResult.SessionEvidence is not null)
+                sessionHistory.Add(lastResult.SessionEvidence);
+            lastResult = lastResult with
+            {
+                Attempts = sessions,
+                SessionHistory = sessionHistory.ToArray()
+            };
+            if (!IsTransient(lastResult.Status) || IsProviderPolicyOutcome(lastResult))
+                return lastResult;
+            if (transientAttempt > maximumRetries)
+            {
+                _throttle.RecordProviderRetry(provider, exhausted: true);
+                return lastResult;
+            }
 
-                transientAttempt++;
-                sessions++;
-                lastResult = await ProbeOnceAsync(
-                    mxHost, recipient, provider, sessions, selected.Sender, outboundIdentity, cancellationToken);
-                if (reputation is not null)
-                    lastResult = WithReputation(lastResult, reputation);
-                if (_reputationProtection is not null)
-                {
-                    await _reputationProtection.RecordAsync(new SmtpReputationObservation(
-                        reputationContext,
-                        lastResult.Evidence?.Category ?? SmtpResponseCategory.Unknown,
-                        lastResult.Evidence?.Intelligence?.Reason,
-                        ConnectionAttempted: true,
-                        RcptAttempted: lastResult.SessionEvidence?.Stages.Any(
-                            stage => stage.Stage == SmtpCommand.RcptTo) == true,
-                        DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
-                }
-                if (outboundIdentity is not null)
-                    await RecordOutboundIdentityOutcomeAsync(
-                        outboundIdentity, provider, lastResult, cancellationToken).ConfigureAwait(false);
-                _throttle.RecordOutcome(throttleContext, lastResult);
-                if (lastResult.SessionEvidence is not null)
-                    sessionHistory.Add(lastResult.SessionEvidence);
-                lastResult = lastResult with
-                {
-                    Attempts = sessions,
-                    SessionHistory = sessionHistory.ToArray()
-                };
-                if (SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
-                    !IsTransient(lastResult.Status) || IsProviderPolicyOutcome(lastResult)) break;
-                if (transientAttempt > maximumRetries)
-                {
-                    _throttle.RecordProviderRetry(provider, exhausted: true);
-                    break;
-                }
-
-                _throttle.RecordProviderRetry(provider, exhausted: false);
-                _logger.LogWarning(
-                    "Transient SMTP result {Result}; domain/provider backoff will apply before retry {Attempt}",
-                    lastResult.Status, transientAttempt);
-            } while (true);
-
-            var senderOutcome = SmtpSenderFailureClassifier.Classify(lastResult);
-            var failureScope = SmtpSenderFailureClassifier.Scope(lastResult);
-            await _senderPool.RecordOutcomeAsync(
-                new ProbeSenderOutcome(selected.Sender, senderOutcome, lastResult, domain, failureScope),
-                cancellationToken);
-            if (!SmtpSenderFailureClassifier.ShouldTryAlternate(lastResult) ||
-                !_senderOptions.RotateOnSenderSpecificFailure) return lastResult;
-
-            _affinityStore.Remove(domain);
-            _affinityStore.MarkIncompatible(domain, selected.Sender);
-            previousSenderForDomainChange = selected.Sender;
-            affinity = null;
-            excludedSenders.Add(selected.Sender);
+            _throttle.RecordProviderRetry(provider, exhausted: false);
             _logger.LogWarning(
-                "Probe sender {ProbeSender} was rejected for {Domain} at MAIL FROM; trying one healthy alternate sender",
-                selected.Sender, domain);
-        }
+                "Transient SMTP result {Result}; retrying the same stable identity {OutboundIdentityId}",
+                lastResult.Status, outboundIdentity.IdentityId);
+        } while (true);
 
-        return lastResult ?? BudgetExhausted(mxHost, provider);
     }
 
     private async Task<SmtpProbeResult> ProbeOnceAsync(
@@ -603,16 +548,25 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         CancellationToken cancellationToken)
     {
         var decision = result.Evidence?.Decision;
+        var stableSenderRejected =
+            (result.SessionEvidence?.FailedStage == SmtpCommand.MailFrom ||
+             result.Evidence?.Command == SmtpCommand.MailFrom) &&
+            result.Evidence?.ResponseCode is >= 400 and < 600;
         var scope = result.LocalBindFailure
             ? SmtpCooldownScope.SourceIp
+            : stableSenderRejected
+                ? SmtpCooldownScope.OutboundIdentity
             : decision?.CooldownScope ?? SmtpCooldownScope.None;
         var impact = result.LocalBindFailure
             ? SmtpHealthImpact.PermanentFailure
+            : stableSenderRejected
+                ? result.Evidence?.ResponseCode is >= 400 and < 500
+                    ? SmtpHealthImpact.TemporaryFailure
+                    : SmtpHealthImpact.PermanentFailure
             : decision?.HealthImpact ?? (result.Evidence?.Category == SmtpResponseCategory.Accepted
                 ? SmtpHealthImpact.Success
                 : SmtpHealthImpact.None);
-        await (_outboundIdentityHealthStore ?? throw new InvalidOperationException(
-            "Outbound identity selection is enabled but no health store is registered.")).RecordAsync(new OutboundIdentityOutcome(
+        await _outboundIdentityHealthStore.RecordAsync(new OutboundIdentityOutcome(
             identity.IdentityId,
             provider,
             result.Evidence?.Category ?? SmtpResponseCategory.Unknown,
@@ -698,9 +652,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private static SmtpProbeResult WithReputation(
         SmtpProbeResult result,
         SmtpReputationEvidence reputation) => result with
-    {
-        Evidence = result.Evidence is null ? null : result.Evidence with { Reputation = reputation }
-    };
+        {
+            Evidence = result.Evidence is null ? null : result.Evidence with { Reputation = reputation }
+        };
 
     private async Task<SmtpReputationEvidence> EvaluateReputationSafelyAsync(
         SmtpReputationBudgetContext context,

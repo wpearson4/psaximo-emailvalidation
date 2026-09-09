@@ -463,7 +463,7 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         SmtpResponseCategory.Accepted or SmtpResponseCategory.RecipientRejected or SmtpResponseCategory.MailboxFull;
     private static bool IsPolicyBlock(SmtpProbeResult result) =>
         (result.Evidence?.Category is SmtpResponseCategory.VerificationBlocked or SmtpResponseCategory.RateLimited) &&
-        SmtpSenderFailureClassifier.Scope(result) is ValidationFailureScope.Provider or ValidationFailureScope.SourceIp;
+        SmtpFailureScopeClassifier.Scope(result) is ValidationFailureScope.Provider or ValidationFailureScope.SourceIp;
     private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right) =>
         left is null ? right : right is null ? left : left > right ? left : right;
     private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left > right ? left : right;

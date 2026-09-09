@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using EmailValidation.Core;
 using EmailValidation.Application;
 using EmailValidation.Infrastructure;
@@ -22,9 +21,6 @@ catch (EmailValidationConfigurationException exception)
 }
 builder.Configuration.AddEnvironmentVariables();
 builder.Services.Configure<EmailValidationOptions>(builder.Configuration.GetSection("EmailValidation"));
-builder.Services.PostConfigure<EmailValidationOptions>(options =>
-    options.ProbeSenderSource.QueryJson = SerializeConfigurationNode(
-        builder.Configuration.GetSection("EmailValidation:ProbeSenderSource:Query")).ToJsonString());
 builder.Services.AddEmailValidation();
 builder.Services.AddHostedService<ServiceBusRevalidationWorker>();
 builder.Services.AddHostedService<RevalidationOutboxPublisherService>();
@@ -76,26 +72,4 @@ static string? GetArgument(string[] arguments, string name)
 {
     var index = Array.FindIndex(arguments, item => string.Equals(item, name, StringComparison.Ordinal));
     return index >= 0 && index + 1 < arguments.Length ? arguments[index + 1] : null;
-}
-
-static JsonNode SerializeConfigurationNode(IConfigurationSection section)
-{
-    var children = section.GetChildren().ToArray();
-    if (children.Length == 0)
-    {
-        var value = section.Value;
-        if (bool.TryParse(value, out var boolean)) return JsonValue.Create(boolean);
-        if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer))
-            return JsonValue.Create(integer);
-        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-            return JsonValue.Create(number);
-        if (string.Equals(value, "null", StringComparison.OrdinalIgnoreCase)) return null!;
-        return JsonValue.Create(value ?? string.Empty);
-    }
-    if (children.Select(child => child.Key).SequenceEqual(
-            Enumerable.Range(0, children.Length).Select(index => index.ToString(CultureInfo.InvariantCulture))))
-        return new JsonArray(children.Select(SerializeConfigurationNode).ToArray());
-    var result = new JsonObject();
-    foreach (var child in children) result[child.Key] = SerializeConfigurationNode(child);
-    return result;
 }

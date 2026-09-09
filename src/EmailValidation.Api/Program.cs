@@ -1,7 +1,5 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Net;
-using System.Text.Json.Nodes;
 using EmailValidation.Api;
 using EmailValidation.Application;
 using EmailValidation.Core;
@@ -28,17 +26,12 @@ if (exportingOpenApi)
         ["EmailValidation:Persistence:Enabled"] = "false",
         ["EmailValidation:Persistence:Provider"] = "Json",
         ["EmailValidation:Persistence:StoragePath"] = "openapi-generation",
-        ["EmailValidation:ProbeSenderSource:Index"] = "openapi-generation",
-        ["EmailValidation:ProbeSenderSource:Query:match_all:enabled"] = "true",
         ["Kestrel:Endpoints:Http:Url"] = "http://127.0.0.1:0",
         ["Kestrel:Endpoints:Grpc:Url"] = "http://127.0.0.1:0"
     });
 }
 
 builder.Services.Configure<EmailValidationOptions>(builder.Configuration.GetSection("EmailValidation"));
-builder.Services.PostConfigure<EmailValidationOptions>(options =>
-    options.ProbeSenderSource.QueryJson = SerializeConfigurationNode(
-        builder.Configuration.GetSection("EmailValidation:ProbeSenderSource:Query")).ToJsonString());
 builder.Services.AddEmailValidation();
 builder.Services.RemoveAll<IValidationAccessPolicy>();
 builder.Services.AddSingleton<IValidationAccessPolicy, CommercialValidationAccessPolicy>();
@@ -129,28 +122,6 @@ static async Task<int> RunContainerHealthCheckAsync()
     {
         return 1;
     }
-}
-
-static JsonNode SerializeConfigurationNode(IConfigurationSection section)
-{
-    var children = section.GetChildren().ToArray();
-    if (children.Length == 0)
-    {
-        var value = section.Value;
-        if (bool.TryParse(value, out var boolean)) return JsonValue.Create(boolean);
-        if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer))
-            return JsonValue.Create(integer);
-        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-            return JsonValue.Create(number);
-        if (string.Equals(value, "null", StringComparison.OrdinalIgnoreCase)) return null!;
-        return JsonValue.Create(value ?? string.Empty);
-    }
-    if (children.Select(child => child.Key).SequenceEqual(
-            Enumerable.Range(0, children.Length).Select(index => index.ToString(CultureInfo.InvariantCulture))))
-        return new JsonArray(children.Select(SerializeConfigurationNode).ToArray());
-    var result = new JsonObject();
-    foreach (var child in children) result[child.Key] = SerializeConfigurationNode(child);
-    return result;
 }
 
 #pragma warning disable CA1050

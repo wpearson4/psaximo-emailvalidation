@@ -42,7 +42,7 @@ public sealed class SmtpResponseDecisionPolicy(IOptions<EmailValidationOptions> 
             SmtpNormalizedReason.SenderPolicyRejected)
             return Decision(SmtpMailboxImpact.None, SmtpRetryDisposition.None,
                 SmtpCooldownScope.OutboundIdentity,
-                classification.ReplyClass == 4 ? SmtpHealthImpact.TemporaryFailure : SmtpHealthImpact.PermanentFailure, true,
+                classification.ReplyClass == 4 ? SmtpHealthImpact.TemporaryFailure : SmtpHealthImpact.PermanentFailure, false,
                 SmtpResponseCategory.VerificationBlocked, "sender_specific_mail_from_rejection");
 
         if (reason == SmtpNormalizedReason.Greylisted)

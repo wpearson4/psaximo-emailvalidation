@@ -7,42 +7,23 @@ namespace EmailValidation.Core.Tests;
 public sealed class EmailValidationOptionsValidatorTests
 {
     [Fact]
-    public void InvalidSenderSourceConfiguration_ReturnsActionableFailures()
+    public void InvalidOutboundIdentitySenderConfiguration_ReturnsActionableFailures()
     {
-        var options = new EmailValidationOptions
-        {
-            ProbeSenderSource = new ProbeSenderSourceOptions
-            {
-                Endpoint = "not-a-uri",
-                Index = "",
-                EmailField = "",
-                QueryLimit = 6_000,
-                RefreshThreshold = 6_000,
-                QueryJson = ""
-            }
-        };
+        var options = ValidOptions();
+        options.OutboundIdentities = ValidOutboundIdentities();
+        options.OutboundIdentities.Identities[0].ProbeSenderAddress = "not-an-email";
 
         var result = new EmailValidationOptionsValidator().Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains(result.Failures, failure => failure.Contains("Endpoint", StringComparison.Ordinal));
-        Assert.Contains(result.Failures, failure => failure.Contains("Index", StringComparison.Ordinal));
-        Assert.Contains(result.Failures, failure => failure.Contains("EmailField", StringComparison.Ordinal));
-        Assert.Contains(result.Failures, failure => failure.Contains("QueryLimit", StringComparison.Ordinal));
-        Assert.Contains(result.Failures, failure => failure.Contains("Query is required", StringComparison.Ordinal));
+        Assert.Contains(result.Failures, failure =>
+            failure.Contains("probe sender", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
     public void DefaultOperationalConfiguration_IsAccepted()
     {
-        var options = new EmailValidationOptions
-        {
-            ProbeSenderSource = new ProbeSenderSourceOptions
-            {
-                Index = "authorized-senders",
-                QueryJson = "{\"match_all\":{}}"
-            }
-        };
+        var options = new EmailValidationOptions();
 
         var result = new EmailValidationOptionsValidator().Validate(null, options);
 
@@ -237,12 +218,33 @@ public sealed class EmailValidationOptionsValidatorTests
         }
     }
 
-    private static EmailValidationOptions ValidOptions() => new()
+    private static EmailValidationOptions ValidOptions() => new();
+
+    private static OutboundIdentityOptions ValidOutboundIdentities() => new()
     {
-        ProbeSenderSource = new ProbeSenderSourceOptions
+        Enabled = true,
+        InterfaceName = "ens19",
+        AllowedCidr = "64.182.22.160/28",
+        GatewayAddress = "64.182.22.161",
+        ProviderGroups = new(StringComparer.OrdinalIgnoreCase)
         {
-            Index = "authorized-senders",
-            QueryJson = "{\"match_all\":{}}"
-        }
+            [MailProvider.Unknown.ToString()] = "General"
+        },
+        IdentityGroups = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["General"] = ["smtp-162"]
+        },
+        Identities =
+        [
+            new()
+            {
+                IdentityId = "smtp-162",
+                Address = "64.182.22.162",
+                ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
+                InterfaceName = "ens19",
+                ExpectedPtrHostName = "outbound-162.email.digitalwarehouse.io",
+                EhloHostName = "outbound-162.email.digitalwarehouse.io"
+            }
+        ]
     };
 }

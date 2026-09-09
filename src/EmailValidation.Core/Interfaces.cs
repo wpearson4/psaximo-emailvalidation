@@ -327,52 +327,9 @@ public interface IProbeSenderHealthChecker
     Task<ProbeSenderHealth> CheckAsync(CancellationToken cancellationToken = default);
 }
 
-public interface IProbeSenderPool
-{
-    Task InitializeAsync(CancellationToken cancellationToken = default);
-    Task<ProbeSenderSelection?> GetSenderAsync(
-        ProbeSenderContext context,
-        CancellationToken cancellationToken = default);
-    Task RecordOutcomeAsync(ProbeSenderOutcome outcome, CancellationToken cancellationToken = default);
-    ProbeSenderPoolSnapshot GetSnapshot();
-}
-
-public interface IProbeSenderSource
-{
-    Task<IReadOnlyCollection<ProbeSenderCandidate>> GetCandidatesAsync(
-        int limit,
-        CancellationToken cancellationToken = default);
-}
-
-public interface IProbeSenderRotationPolicy
-{
-    ProbeSenderRotationDecision Evaluate(
-        ProbeSenderRuntimeStatistics sender,
-        int validationThreshold,
-        DateTimeOffset now,
-        bool alternateAvailable);
-}
-
-public interface IProbeSenderJitter
-{
-    int Apply(int target, int percent);
-}
-
 public interface IDomainPacingJitter
 {
     TimeSpan Apply(TimeSpan interval, int maximumJitterMilliseconds);
-}
-
-public interface IProbeSenderAffinityStore
-{
-    ProbeSenderAffinity? GetAffinity(string recipientDomain);
-    void SetAffinity(string recipientDomain, string sender);
-    void Remove(string recipientDomain);
-    void RemoveSender(string sender);
-    void MarkIncompatible(string recipientDomain, string sender);
-    IReadOnlySet<string> GetIncompatibleSenders(string recipientDomain);
-    int Count { get; }
-    ProbeSenderAffinitySnapshot GetSnapshot();
 }
 
 public interface IDomainBackoffPolicy

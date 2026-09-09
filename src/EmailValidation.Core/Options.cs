@@ -10,8 +10,6 @@ public sealed class EmailValidationOptions
     public SmtpOptions Smtp { get; set; } = new();
     public SmtpResponseIntelligenceOptions SmtpResponseIntelligence { get; set; } = new();
     public SchedulingOptions Scheduling { get; set; } = new();
-    public ProbeSenderSourceOptions ProbeSenderSource { get; set; } = new();
-    public ProbeSenderRotationOptions ProbeSenderRotation { get; set; } = new();
     public OutboundIdentityOptions OutboundIdentities { get; set; } = new();
     public SmtpReputationProtectionOptions SmtpReputationProtection { get; set; } = new();
     public CatchAllOptions CatchAll { get; set; } = new();
@@ -341,7 +339,6 @@ public sealed class SmtpOptions
     public int GreylistingRetryDelayMilliseconds { get; set; } = 2000;
     public int MaxMxAttempts { get; set; } = 3;
     public int MaxSmtpSessionsPerAddress { get; set; } = 8;
-    public int ProbeSenderHealthCacheMinutes { get; set; } = 60;
 }
 
 public sealed class OutboundIdentityOptions
@@ -369,6 +366,7 @@ public sealed class OutboundIdentityConfiguration
 {
     public string IdentityId { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
+    public string ProbeSenderAddress { get; set; } = string.Empty;
     public string InterfaceName { get; set; } = string.Empty;
     public string ExpectedPtrHostName { get; set; } = string.Empty;
     public string EhloHostName { get; set; } = string.Empty;
@@ -395,39 +393,6 @@ public sealed class OutboundIdentityDnsReadinessOptions
     public int MaximumConcurrentLookups { get; set; } = 4;
     public int RefreshJitterPercent { get; set; } = 10;
     public string ValidationPolicyVersion { get; set; } = "2026.08.1";
-}
-
-public sealed class ProbeSenderSourceOptions
-{
-    public string Provider { get; set; } = "Elasticsearch";
-    public string Endpoint { get; set; } = "http://localhost:9200";
-    public string Index { get; set; } = string.Empty;
-    public string EmailField { get; set; } = "business_email";
-    public int QueryLimit { get; set; } = 500;
-    public int RefreshThreshold { get; set; } = 100;
-    public int RefreshIntervalSeconds { get; set; } = 300;
-    public int StaleAfterMinutes { get; set; } = 30;
-    public int RecentlyUsedLimit { get; set; } = 1_000;
-    public string Username { get; set; } = string.Empty;
-    public string Password { get; set; } = string.Empty;
-    public string ApiKey { get; set; } = string.Empty;
-
-    /// <summary>Populated from the Query configuration object during application startup.</summary>
-    public string QueryJson { get; set; } = string.Empty;
-}
-
-public sealed class ProbeSenderRotationOptions
-{
-    public int MaxValidationsPerSender { get; set; } = 50;
-    public int MaxActiveMinutes { get; set; } = 15;
-    public int MaxSenderAttemptsPerValidation { get; set; } = 2;
-    public int SenderCooldownSeconds { get; set; } = 300;
-    public int JitterPercent { get; set; } = 20;
-    public int MinimumSuccessRateSampleSize { get; set; } = 10;
-    public double MinimumMailFromSuccessRate { get; set; } = 0.8;
-    public int SenderAffinityMinutes { get; set; } = 60;
-    public bool RotateOnSenderSpecificFailure { get; set; } = true;
-    public int SenderCompatibilityMinutes { get; set; } = 60;
 }
 
 public sealed class CatchAllOptions

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Mail;
 using System.Net.Sockets;
 using EmailValidation.Core;
 using Microsoft.Extensions.Options;
@@ -37,6 +38,27 @@ public static class OutboundIdentityHostName
     }
 }
 
+public static class OutboundIdentityProbeSender
+{
+    public static bool TryNormalize(string? value, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(value) ||
+            !string.Equals(value, value.Trim(), StringComparison.Ordinal) ||
+            !MailAddress.TryCreate(value, out var address) ||
+            !string.Equals(address.Address, value, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var separator = address.Address.LastIndexOf('@');
+        if (separator <= 0 || separator == address.Address.Length - 1 ||
+            !OutboundIdentityHostName.TryNormalize(address.Address[(separator + 1)..], out var domain))
+            return false;
+
+        normalized = $"{address.Address[..separator].ToLowerInvariant()}@{domain}";
+        return true;
+    }
+}
+
 public static class OutboundIdentityFactory
 {
     public static bool TryCreate(
@@ -50,6 +72,7 @@ public static class OutboundIdentityFactory
         if (string.IsNullOrWhiteSpace(configured.IdentityId) ||
             !IPAddress.TryParse(configured.Address, out var address) ||
             address.AddressFamily != AddressFamily.InterNetwork ||
+            !OutboundIdentityProbeSender.TryNormalize(configured.ProbeSenderAddress, out var probeSender) ||
             !string.Equals(interfaceName, options.InterfaceName, StringComparison.Ordinal) ||
             !OutboundIdentityHostName.TryNormalize(configured.ExpectedPtrHostName, out var expected) ||
             !OutboundIdentityHostName.TryNormalize(configured.EhloHostName, out var ehlo))
@@ -62,6 +85,7 @@ public static class OutboundIdentityFactory
         {
             IdentityId = configured.IdentityId.Trim(),
             Address = address,
+            ProbeSenderAddress = probeSender,
             InterfaceName = interfaceName,
             ExpectedPtrHostName = expected,
             EhloHostName = ehlo,

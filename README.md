@@ -92,32 +92,24 @@ DNS/MX lookup is part of normal validation. SMTP mailbox and catch-all probing r
 dotnet run --project src/EmailValidation.Console -- validate test@example.com --live --verbose
 ```
 
-Before live use, configure Elasticsearch as the source of authorized sender identities. Individual addresses are not stored in application settings. The Query DSL object is deployment-owned and is sent as the request's `query`; only the configured email field is returned:
+Before live use, configure each sender as part of one stable outbound identity tuple. The complete production topology is maintained in `deploy/config/outbound-identities.env`; this abbreviated JSON shows the shape:
 
 ```json
 {
   "EmailValidation": {
-    "ProbeSenderSource": {
-      "Provider": "Elasticsearch",
-      "Endpoint": "https://elasticsearch.example-owned-domain.com:9200",
-      "Index": "authorized-probe-senders",
-      "EmailField": "business_email",
-      "QueryLimit": 500,
-      "RefreshThreshold": 100,
-      "Query": {
-        "bool": {
-          "filter": [
-            { "exists": { "field": "business_email" } }
-          ]
+    "OutboundIdentities": {
+      "Enabled": true,
+      "InterfaceName": "ens19",
+      "Identities": [
+        {
+          "IdentityId": "smtp-162",
+          "Address": "64.182.22.162",
+          "ProbeSenderAddress": "probe-162@validation.email.digitalwarehouse.io",
+          "ExpectedPtrHostName": "outbound-162.email.digitalwarehouse.io",
+          "EhloHostName": "outbound-162.email.digitalwarehouse.io",
+          "Enabled": true
         }
-      }
-    },
-    "ProbeSenderRotation": {
-      "MaxValidationsPerSender": 50,
-      "MaxActiveMinutes": 15,
-      "MaxSenderAttemptsPerValidation": 2,
-      "SenderAffinityMinutes": 60,
-      "RotateOnSenderSpecificFailure": true
+      ]
     },
     "Scheduling": {
       "GlobalConcurrency": 8,
@@ -192,9 +184,7 @@ Before live use, configure Elasticsearch as the source of authorized sender iden
 }
 ```
 
-Store `Username`/`Password` or `ApiKey` through user secrets or environment variables (for example, `EmailValidation__ProbeSenderSource__ApiKey`), never in committed configuration. Anonymous Elasticsearch is also supported when the deployment allows it.
-
-The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. A bounded, process-wide pool is loaded once and shared by interactive and CSV validation. Healthy senders are held by domain-scoped affinity even when the routine pool rotation threshold is reached. Syntax is checked while loading; sender-domain DNS health is checked lazily before first use. A sender-specific rejection clears only that recipient domain's affinity and records domain/sender incompatibility; globally invalid sender health removes every matching affinity. Recipient rejection, rate limiting, anti-abuse, provider-wide, and source-IP failures never trigger identity rotation. Sender fallback and all other SMTP work share the strict per-address session budget.
+The live probe opens port 25, issues `EHLO`, `MAIL FROM`, and `RCPT TO`, resets the envelope, then quits. It never sends `DATA` or message content. The selected outbound identity supplies the MAIL FROM address, bound source IP, and EHLO as one indivisible tuple. Transient retries reuse that same tuple, and sender rejection can affect that identity's health but can never reassign its sender address to another IP. All SMTP work shares the strict per-address session budget.
 
 Provider-aware outbound identities use explicit source IP, interface, expected PTR, and EHLO configuration. DNS readiness supports `Disabled`, `Observe`, and `Enforced` rollout modes plus strict one-PTR/one-A validation, TTL-aware caching, bounded negative caching, single-flight refresh, and a limited last-known-good grace for transient resolver failures. Local binding is mandatory in every mode. The SMTP connection verifies its actual local endpoint before reading the greeting and never falls back to default egress. Run `diagnostics outbound-identities` for a no-SMTP readiness report.
 
@@ -261,11 +251,9 @@ Domain observations include target/random acceptance rates, recipient rejection,
 Defaults are in `src/EmailValidation.Console/appsettings.json` and can be overridden with environment variables. Available controls include:
 
 - DNS timeout/cache lifetime;
-- SMTP enablement, sender cooldown/fallback limit, total session budget, connection/command timeout, retry count, and bounded greylisting retry delay;
-- Elasticsearch endpoint/authentication, index, email field, configurable Query DSL, bounded query/refresh limits, and stale refresh interval;
-- sticky sender rotation validation/time thresholds, bounded jitter, and MAIL FROM health threshold;
+- SMTP enablement, total session budget, connection/command timeout, retry count, and bounded greylisting retry delay;
+- stable outbound identity sender/source-IP/PTR/EHLO tuples and provider-group membership;
 - global/per-domain/per-provider concurrency, bounded active domains, domain/provider pacing, bounded jitter, provider overrides, and exponential temporary-failure cooldown;
-- sender-affinity and domain/sender compatibility lifetimes;
 - catch-all enablement, probe count (clamped to 1–3), minimum accepted probes, and cache lifetime;
 - configurable role names, disposable/free domains, and safe typo mappings;
 - application-owned toxic-domain, known-trap, abuse-risk, suppression, and MX-forward intelligence;

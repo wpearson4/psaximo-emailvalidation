@@ -245,8 +245,7 @@ public sealed class ProviderPolicyTests
             ("Yahoo", Policy(1, 0, 30, 1))), time);
         var microsoftContext = Context("microsoft.test", MailProvider.Microsoft365);
         var blocked = PolicyBlock(MailProvider.Microsoft365);
-        Assert.False(SmtpSenderFailureClassifier.ShouldTryAlternate(blocked));
-        Assert.Equal(ValidationFailureScope.Provider, SmtpSenderFailureClassifier.Scope(blocked));
+        Assert.Equal(ValidationFailureScope.Provider, SmtpFailureScopeClassifier.Scope(blocked));
         await using (var lease = await throttle.AcquireAsync(microsoftContext))
             throttle.RecordOutcome(microsoftContext, blocked);
 
@@ -293,16 +292,16 @@ public sealed class ProviderPolicyTests
         var context = ContextWithMx("blocked.test", "blocked.test", MailProvider.Microsoft365);
         await using (var initial = await throttle.AcquireAsync(context))
             throttle.RecordOutcome(context, PolicyBlock(MailProvider.Microsoft365));
-        var senderPool = new NoCallSenderPool();
+        var selector = new NoCallOutboundSelector();
         var probe = new SmtpMailboxProbe(
             options,
             NullLogger<SmtpMailboxProbe>.Instance,
             throttle,
             new SmtpResponseClassifier(),
-            senderPool,
-            new ProbeSenderAffinityStore(time, options),
             new SmtpSessionBudget(),
-            resolver);
+            resolver,
+            selector,
+            new NoCallOutboundHealthStore());
 
         var result = await probe.ProbeAsync(
             "blocked.test", "person@blocked.test", MailProvider.Microsoft365);
@@ -313,7 +312,7 @@ public sealed class ProviderPolicyTests
         Assert.False(result.ProbeAttempted);
         Assert.NotNull(result.RetryAfter);
         Assert.Equal(0, result.Attempts);
-        Assert.Equal(0, senderPool.Selections);
+        Assert.Equal(0, selector.Selections);
     }
 
     [Fact]
@@ -503,19 +502,7 @@ public sealed class ProviderPolicyTests
         Assert.Equal(retries, policy.MaxRetries);
     }
 
-    private static EmailValidationOptions ValidBaseOptions() => new()
-    {
-        ProbeSenderSource = new ProbeSenderSourceOptions
-        {
-            Provider = "Elasticsearch",
-            Endpoint = "http://localhost:9200",
-            Index = "senders",
-            EmailField = "email",
-            QueryLimit = 100,
-            RefreshThreshold = 10,
-            QueryJson = "{}"
-        }
-    };
+    private static EmailValidationOptions ValidBaseOptions() => new();
 
     private static async Task WaitForAsync(Func<bool> condition)
     {
@@ -614,24 +601,28 @@ public sealed class ProviderPolicyTests
         }
     }
 
-    private sealed class NoCallSenderPool : IProbeSenderPool
+    private sealed class NoCallOutboundSelector : IOutboundIdentitySelector
     {
         public int Selections { get; private set; }
-        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public Task<ProbeSenderSelection?> GetSenderAsync(
-            ProbeSenderContext context,
+        public Task<OutboundIdentitySelectionResult> SelectAsync(
+            OutboundIdentitySelectionRequest request,
             CancellationToken cancellationToken = default)
         {
             Selections++;
-            return Task.FromResult<ProbeSenderSelection?>(new("probe@example.test", ProbeSenderCandidateState.Healthy));
+            throw new InvalidOperationException("The selector must not run while the throttle is cooling down.");
         }
+    }
 
-        public Task RecordOutcomeAsync(
-            ProbeSenderOutcome outcome,
+    private sealed class NoCallOutboundHealthStore : IOutboundIdentityHealthStore
+    {
+        public Task<OutboundIdentityHealth> GetAsync(
+            string identityId,
+            MailProvider provider,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The health store must not run while the throttle is cooling down.");
+
+        public Task RecordAsync(
+            OutboundIdentityOutcome outcome,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public ProbeSenderPoolSnapshot GetSnapshot() => new(
-            "test", "test", 1, 1, 1, 0, null, 0, 0, 0, 0, 0, 0, 0, TimeSpan.Zero);
     }
 }

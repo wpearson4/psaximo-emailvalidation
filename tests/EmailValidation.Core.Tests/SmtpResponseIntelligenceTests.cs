@@ -124,7 +124,7 @@ public sealed class SmtpResponseIntelligenceTests
     }
 
     [Fact]
-    public void MailFromRejection_NeverInvalidatesRecipientAndOnlyRotatesOutboundIdentity()
+    public void MailFromRejection_NeverInvalidatesRecipientAndQuarantinesStableOutboundIdentity()
     {
         var options = DefaultOptions();
         var classifier = new SmtpResponseClassifier(options);
@@ -136,7 +136,7 @@ public sealed class SmtpResponseIntelligenceTests
         var decision = policy.Decide(classification);
 
         Assert.Equal(SmtpMailboxImpact.None, decision.MailboxImpact);
-        Assert.True(decision.AllowSenderRotation);
+        Assert.False(decision.AllowSenderRotation);
         Assert.Equal(SmtpCooldownScope.OutboundIdentity, decision.CooldownScope);
         Assert.NotEqual(SmtpResponseCategory.RecipientRejected, decision.CanonicalCategory);
     }

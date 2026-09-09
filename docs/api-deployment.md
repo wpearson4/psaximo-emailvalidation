@@ -75,9 +75,9 @@ The production Compose deployment maps `OPENAPI_EXPOSE_IN_PRODUCTION`,
 `OPENAPI_SWAGGER_CLIENT_ID` into those API settings. Set the expose flag to
 `true` on the host when the authorized production documentation endpoint is
 required; the secure default remains `false` for other deployments.
-The production Compose defaults also select the existing private `zi-b2b`
-probe-sender source at `10.10.252.28:9200`; each value can be overridden with
-the corresponding `PROBE_SENDER_*` variable without changing an image.
+Production SMTP sender, source-IP, PTR, and EHLO tuples are configured together
+in `deploy/config/outbound-identities.env` and deployed with the host network
+topology. The validator does not load probe senders from Elasticsearch.
 
 Generate the machine-readable contract with:
 

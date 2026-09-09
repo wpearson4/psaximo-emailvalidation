@@ -107,6 +107,7 @@ public sealed record OutboundIdentity
 {
     public required string IdentityId { get; init; }
     public required IPAddress Address { get; init; }
+    public required string ProbeSenderAddress { get; init; }
     public required string InterfaceName { get; init; }
     public required string ExpectedPtrHostName { get; init; }
     public required string EhloHostName { get; init; }

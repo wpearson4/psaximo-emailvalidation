@@ -10,11 +10,11 @@
 | Reply class and enhanced status parsing | PARTIALLY IMPLEMENTED | Corrected | Structured reply/enhanced-code interpretation now precedes provider and generic text rules. |
 | Provider-aware interpretation | PARTIALLY IMPLEMENTED | Corrected | High-confidence Microsoft, Yahoo, Google, Proofpoint, and Mimecast refinements run only for an already detected provider. Generic rules do not guess a provider. |
 | Normalized reason taxonomy | NOT IMPLEMENTED | Added | Added command, mailbox, sender, routing, greylist/temporary, provider pressure/policy, connection, greeting, EHLO, protocol, DNS, TLS, and unknown reasons. |
-| Deterministic decision policy | NOT IMPLEMENTED | Added | Application policy independently maps classification to mailbox impact, result state, retry, cooldown scope, health impact, sender rotation, and compatibility category. |
+| Deterministic decision policy | NOT IMPLEMENTED | Added | Application policy independently maps classification to mailbox impact, result state, retry, cooldown scope, health impact, outbound-identity quarantine, and compatibility category. |
 | Regex safety and rule validation | IMPLEMENTED BUT INCORRECT | Corrected | Developer-owned rules are centralized, compiled outside the hot path with non-backtracking matching where compatible, explicit timeouts, bounded input, stable priority/tie-break ordering, duplicate-id validation, and safe timeout fallback. |
 | Stable response fingerprints | NOT IMPLEMENTED | Added | Stable semantic fingerprints (for example `yahoo-ts01` and `generic-mailbox-not-found`) exclude raw responses, addresses, IPs, MX hosts, timestamps, and customer identifiers. |
 | Domain/provider backoff and circuit breaking | IMPLEMENTED | Reused | Candidate policy feeds the existing throttle only in Enforced mode. Rate/connection pressure uses MX-provider scope; IP policy/reputation uses source-IP scope. No IP cycling was added. |
-| Sender health and strict sender rotation | IMPLEMENTED | Corrected | Existing sender pool remains authoritative. Enforced candidate decisions rotate only for strongly sender-specific MAIL FROM failures; recipient or provider failures cannot rotate a sender. |
+| Stable outbound sender identity | IMPLEMENTED | Corrected | Each configured MAIL FROM address is permanently bound to one source IP and EHLO. MAIL FROM rejection affects that tuple's health and cannot move the sender to another IP. |
 | Durable retry and idempotency | IMPLEMENTED | Reused | Existing lifecycle/outbox, deterministic `ValidationId:AttemptNumber` message ids, Service Bus queue, stale/final checks, and Mongo 4.4-compatible persistence remain unchanged. |
 | Mailbox-full revalidation | IMPLEMENTED BUT INCORRECT | Corrected | In Enforced mode only, mailbox full can enter existing provisional retry/backoff. Shadow mode retains prior canonical behavior. |
 | Immutable attempt evidence | PARTIALLY IMPLEMENTED | Corrected | Existing attempt history now retains stage, reply/enhanced code, normalized reason, fingerprint, scopes/health, provider identity, optional identity/topology context, versions, and rollout mode without storing raw SMTP text. No parallel Mongo aggregate was added. |
@@ -28,7 +28,7 @@ Reused without duplication:
 - `SmtpMailboxProbe` and its single bounded SMTP session sequence.
 - Existing MX/banner provider detection and provider strategy resolver.
 - `DomainSmtpProbeThrottle`, provider circuits, pacing, half-open recovery, and optional outbound-IP dimension.
-- Probe-sender pool, affinity, health state, and strict attempt budget.
+- Outbound-identity sender-domain health, tuple health state, and strict attempt budget.
 - Revalidation lifecycle/outbox, `email-validation-retry`, deterministic message ids, worker idempotency/final-state guards, and status publishing.
 - Existing Mongo lifecycle document and append-only attempt list; no new collection or destructive migration.
 
@@ -128,7 +128,7 @@ Labels are limited to rollout mode, provider enum, SMTP stage, and normalized re
 
 Replay corpus: `tests/EmailValidation.Core.Tests/Fixtures/smtp-response-intelligence-v1.json`.
 
-Tests verify normalized interpretation, policy outcomes, stage safety, shadow immutability, enforced changes, strict sender rotation, stable sanitized fingerprints, bounded response processing, mailbox-full retry gating, and Mongo attempt-history round trips.
+Tests verify normalized interpretation, policy outcomes, stage safety, shadow immutability, stable sender/IP/EHLO binding, stable sanitized fingerprints, bounded response processing, mailbox-full retry gating, and Mongo attempt-history round trips.
 
 Verification result: solution build succeeded with zero warnings/errors; all 401 tests passed (372 Core, 24 API, 3 integration, 2 gRPC).
 
@@ -140,7 +140,7 @@ Verification result: solution build succeeded with zero warnings/errors; all 401
 - `EmailValidation.Infrastructure/SmtpResponseClassifier.cs`: stage/reply/structured/provider/generic classification pipeline.
 - `EmailValidation.Infrastructure/SmtpResponseIntelligenceMetrics.cs`: low-cardinality rollout and disagreement telemetry.
 - `EmailValidation.Core/RevalidationModels.cs` and `RevalidationServices.cs`: compact immutable attempt fields and existing retry integration.
-- `EmailValidation.Infrastructure/SmtpMailboxProbe.cs` and `ProbeSenderHealthChecker.cs`: observation context capture and Enforced-only scoped health/rotation consumption.
+- `EmailValidation.Infrastructure/SmtpMailboxProbe.cs` and `OutboundIdentityProbeSenderHealthChecker.cs`: observation context capture and stable outbound-identity health consumption.
 - `tests/EmailValidation.Core.Tests/Fixtures/smtp-response-intelligence-v1.json`: sanitized replay corpus.
 - `tests/EmailValidation.Core.Tests/SmtpResponseIntelligenceTests.cs`: parsing, policy, rollout, precedence, privacy, and safety coverage.
 

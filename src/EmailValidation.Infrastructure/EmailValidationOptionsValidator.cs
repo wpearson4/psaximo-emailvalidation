@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Text;
-using System.Text.Json;
 using EmailValidation.Application;
 using EmailValidation.Core;
 using Microsoft.Extensions.Options;
@@ -12,8 +11,6 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
 {
     public ValidateOptionsResult Validate(string? name, EmailValidationOptions options)
     {
-        var source = options.ProbeSenderSource;
-        var rotation = options.ProbeSenderRotation;
         var scheduling = options.Scheduling;
         var persistence = options.Persistence;
         var reuse = options.ResultReuse;
@@ -29,6 +26,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var projection = options.Projection;
         var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
+        if (options.Smtp.Enabled && !outboundIdentities.Enabled)
+            failures.Add("Live SMTP validation requires EmailValidation:OutboundIdentities:Enabled=true.");
         ValidateOutboundIdentities(outboundIdentities, failures);
         ValidateSmtpReputation(reputation, outboundIdentities, failures);
         if (string.IsNullOrWhiteSpace(smtpResponseIntelligence.ClassificationVersion) ||
@@ -60,45 +59,6 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             columnDetection.InvalidEmailShapeWeight is < 0 or > 1 ||
             columnDetection.HeaderConfidenceBoost is < 0 or > 1)
             failures.Add("EmailValidation:ColumnDetection confidence thresholds must be between zero and one.");
-        if (!string.Equals(source.Provider, "Elasticsearch", StringComparison.OrdinalIgnoreCase))
-            failures.Add("EmailValidation:ProbeSenderSource:Provider must be Elasticsearch.");
-        if (!Uri.TryCreate(source.Endpoint, UriKind.Absolute, out var endpoint) ||
-            endpoint.Scheme is not ("http" or "https"))
-            failures.Add("EmailValidation:ProbeSenderSource:Endpoint must be an absolute HTTP or HTTPS URI.");
-        if (string.IsNullOrWhiteSpace(source.Index))
-            failures.Add("EmailValidation:ProbeSenderSource:Index is required.");
-        if (string.IsNullOrWhiteSpace(source.EmailField))
-            failures.Add("EmailValidation:ProbeSenderSource:EmailField is required.");
-        if (source.QueryLimit is < 10 or > 5_000)
-            failures.Add("EmailValidation:ProbeSenderSource:QueryLimit must be between 10 and 5000.");
-        if (source.RefreshThreshold < 1 || source.RefreshThreshold >= source.QueryLimit)
-            failures.Add("EmailValidation:ProbeSenderSource:RefreshThreshold must be positive and less than QueryLimit.");
-        if (source.RefreshIntervalSeconds <= 0 || source.StaleAfterMinutes <= 0 || source.RecentlyUsedLimit <= 0)
-            failures.Add("Probe sender refresh and recently-used limits must be greater than zero.");
-        if (string.IsNullOrWhiteSpace(source.QueryJson))
-            failures.Add("EmailValidation:ProbeSenderSource:Query is required.");
-        else
-        {
-            try
-            {
-                using var query = JsonDocument.Parse(source.QueryJson);
-                if (query.RootElement.ValueKind != JsonValueKind.Object)
-                    failures.Add("EmailValidation:ProbeSenderSource:Query must be a JSON object.");
-            }
-            catch (JsonException)
-            {
-                failures.Add("EmailValidation:ProbeSenderSource:Query is not valid JSON.");
-            }
-        }
-        if (rotation.MaxValidationsPerSender <= 0 || rotation.MaxActiveMinutes <= 0 ||
-            rotation.MaxSenderAttemptsPerValidation <= 0 || rotation.SenderCooldownSeconds <= 0)
-            failures.Add("Probe sender rotation thresholds and attempt limits must be greater than zero.");
-        if (rotation.JitterPercent is < 0 or > 50)
-            failures.Add("EmailValidation:ProbeSenderRotation:JitterPercent must be between 0 and 50.");
-        if (rotation.MinimumMailFromSuccessRate is < 0 or > 1)
-            failures.Add("EmailValidation:ProbeSenderRotation:MinimumMailFromSuccessRate must be between 0 and 1.");
-        if (rotation.SenderAffinityMinutes <= 0 || rotation.SenderCompatibilityMinutes <= 0)
-            failures.Add("Probe sender affinity and compatibility lifetimes must be greater than zero.");
         if (scheduling.GlobalConcurrency < 0 || scheduling.PerDomainConcurrency < 0 ||
             scheduling.PerProviderConcurrency < 0 || scheduling.MaxActiveDomains <= 0)
             failures.Add("Scheduling concurrency cannot be negative and active-domain limits must be positive (zero concurrency uses the legacy setting).");
@@ -348,6 +308,7 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var addresses = new HashSet<string>(StringComparer.Ordinal);
         var expectedPtrNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var ehloNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var probeSenders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var identity in options.Identities)
         {
             if (string.IsNullOrWhiteSpace(identity.IdentityId) || !ids.Add(identity.IdentityId))
@@ -365,6 +326,9 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
                 failures.Add($"Outbound identity address '{address}' is outside the approved CIDR.");
             if (numeric == network || numeric == broadcast || address.Equals(gateway))
                 failures.Add($"Outbound identity address '{address}' is reserved and cannot be assigned.");
+            if (!OutboundIdentityProbeSender.TryNormalize(identity.ProbeSenderAddress, out var probeSender) ||
+                !probeSenders.Add(probeSender))
+                failures.Add("EmailValidation outbound identity probe sender addresses must be valid and unique.");
             if (!string.IsNullOrWhiteSpace(identity.InterfaceName) &&
                 !string.Equals(identity.InterfaceName, options.InterfaceName, StringComparison.Ordinal))
                 failures.Add($"Outbound identity '{identity.IdentityId}' uses an unapproved interface.");

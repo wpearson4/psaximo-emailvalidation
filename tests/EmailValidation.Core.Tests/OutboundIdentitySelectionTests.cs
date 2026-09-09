@@ -203,6 +203,7 @@ public sealed class OutboundIdentitySelectionTests
         {
             IdentityId = "smtp-162",
             Address = IPAddress.Parse("64.182.22.162"),
+            ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
             InterfaceName = "ens19",
             ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
             EhloHostName = "smtp-162.email.digitalwarehouse.io",
@@ -233,8 +234,6 @@ public sealed class OutboundIdentitySelectionTests
             NullLogger<SmtpMailboxProbe>.Instance,
             new AllowThrottle(),
             new SmtpResponseClassifier(),
-            new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options),
             new SmtpSessionBudget(),
             new ProviderPolicyResolver(options),
             new FixedSelector(identity),
@@ -254,7 +253,40 @@ public sealed class OutboundIdentitySelectionTests
         Assert.Equal("test-v1", result.SessionEvidence.FcrDnsPolicyVersion);
         Assert.Equal(identity.EhloHostName, result.SessionEvidence.EhloHost);
         Assert.Contains($"EHLO {identity.EhloHostName}\r\n", connection.Commands, StringComparison.Ordinal);
+        Assert.Contains($"MAIL FROM:<{identity.ProbeSenderAddress}>\r\n", connection.Commands, StringComparison.Ordinal);
         Assert.DoesNotContain("EHLO example.test", connection.Commands, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SmtpProbe_MailFromRejectionKeepsStableIdentityAndDoesNotRetryAnotherTuple()
+    {
+        var root = Config();
+        root.Smtp.Enabled = true;
+        root.Smtp.RetryCount = 3;
+        var options = Options.Create(root);
+        var identity = IdentityModel();
+        var health = new FakeHealthStore();
+        using var connection = new ScriptedConnectionFactory(
+            "220 mx.example ESMTP\r\n" +
+            "250 mx.example\r\n" +
+            "550 5.7.1 sender rejected by policy\r\n");
+        var probe = new SmtpMailboxProbe(
+            options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
+            new ProviderPolicyResolver(options), new FixedSelector(identity), health, connection);
+
+        var result = await probe.ProbeAsync(
+            "mx.example", "person@company.example", MailProvider.Microsoft365);
+
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(1, connection.Calls);
+        Assert.Single(connection.LocalAddresses);
+        Assert.Equal(identity.Address, connection.LocalAddresses[0]);
+        Assert.Contains($"EHLO {identity.EhloHostName}\r\n", connection.Commands, StringComparison.Ordinal);
+        Assert.Contains($"MAIL FROM:<{identity.ProbeSenderAddress}>\r\n", connection.Commands, StringComparison.Ordinal);
+        Assert.Single(health.Outcomes);
+        Assert.Equal(identity.IdentityId, health.Outcomes[0].IdentityId);
+        Assert.Equal(SmtpCooldownScope.OutboundIdentity, health.Outcomes[0].CooldownScope);
     }
 
     [Fact]
@@ -268,6 +300,7 @@ public sealed class OutboundIdentitySelectionTests
         {
             IdentityId = "smtp-162",
             Address = IPAddress.Parse("64.182.22.162"),
+            ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
             InterfaceName = "ens19",
             ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
             EhloHostName = "smtp-162.email.digitalwarehouse.io",
@@ -278,8 +311,7 @@ public sealed class OutboundIdentitySelectionTests
             "220 mx.example ESMTP\r\n", "64.182.232.51");
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(), connection);
 
         var result = await probe.ProbeAsync(
@@ -302,6 +334,7 @@ public sealed class OutboundIdentitySelectionTests
         {
             IdentityId = "smtp-162",
             Address = IPAddress.Parse("64.182.22.162"),
+            ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
             InterfaceName = "ens19",
             ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
             EhloHostName = "smtp-162.email.digitalwarehouse.io",
@@ -311,8 +344,7 @@ public sealed class OutboundIdentitySelectionTests
         var connection = new ThrowingBindConnectionFactory();
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(), connection);
 
         var result = await probe.ProbeAsync(
@@ -334,8 +366,7 @@ public sealed class OutboundIdentitySelectionTests
         var connection = new CountingConnectionFactory();
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), new UnavailableSelector(), new FakeHealthStore(), connection);
 
         var result = await probe.ProbeAsync(
@@ -371,8 +402,7 @@ public sealed class OutboundIdentitySelectionTests
         });
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), new FixedSelector(identity), new FakeHealthStore(),
             connection, protection);
 
@@ -399,8 +429,7 @@ public sealed class OutboundIdentitySelectionTests
         var connection = new CountingConnectionFactory();
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), new FixedSelector(IdentityModel()), new FakeHealthStore(),
             connection, new ThrowingReputationProtection());
 
@@ -437,8 +466,7 @@ public sealed class OutboundIdentitySelectionTests
         var selector = new FixedSelector(identity);
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), selector, new FakeHealthStore(),
             connection, protection);
 
@@ -463,8 +491,7 @@ public sealed class OutboundIdentitySelectionTests
         using var connection = new ScriptedConnectionFactory("421 4.7.0 policy blocked\r\n");
         var probe = new SmtpMailboxProbe(
             options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(),
-            new SmtpResponseClassifier(), new SenderPool(),
-            new ProbeSenderAffinityStore(TimeProvider.System, options), new SmtpSessionBudget(),
+            new SmtpResponseClassifier(), new SmtpSessionBudget(),
             new ProviderPolicyResolver(options), selector, new FakeHealthStore(), connection);
 
         var result = await probe.ProbeAsync(
@@ -493,6 +520,7 @@ public sealed class OutboundIdentitySelectionTests
     {
         IdentityId = "smtp-162",
         Address = IPAddress.Parse("64.182.22.162"),
+        ProbeSenderAddress = "probe-162@validation.email.digitalwarehouse.io",
         InterfaceName = "ens19",
         ExpectedPtrHostName = "smtp-162.email.digitalwarehouse.io",
         EhloHostName = "smtp-162.email.digitalwarehouse.io",
@@ -530,19 +558,13 @@ public sealed class OutboundIdentitySelectionTests
         return options;
     }
 
-    private static EmailValidationOptions ValidRoot() => new()
-    {
-        ProbeSenderSource = new ProbeSenderSourceOptions
-        {
-            Index = "senders",
-            QueryJson = "{}"
-        }
-    };
+    private static EmailValidationOptions ValidRoot() => new();
 
     private static OutboundIdentityConfiguration Identity(int octet) => new()
     {
         IdentityId = $"smtp-{octet}",
         Address = $"64.182.22.{octet}",
+        ProbeSenderAddress = $"probe-{octet}@validation.email.digitalwarehouse.io",
         InterfaceName = "ens19",
         ExpectedPtrHostName = $"smtp-{octet}.email.digitalwarehouse.io",
         EhloHostName = $"smtp-{octet}.email.digitalwarehouse.io"
@@ -597,6 +619,7 @@ public sealed class OutboundIdentitySelectionTests
     private sealed class FakeHealthStore : IOutboundIdentityHealthStore
     {
         private readonly Dictionary<(string, MailProvider), OutboundIdentityHealth> _states = [];
+        public List<OutboundIdentityOutcome> Outcomes { get; } = [];
 
         public void Set(
             string identityId,
@@ -615,7 +638,11 @@ public sealed class OutboundIdentitySelectionTests
 
         public Task RecordAsync(
             OutboundIdentityOutcome outcome,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            Outcomes.Add(outcome);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FixedSelector(OutboundIdentity identity) : IOutboundIdentitySelector
@@ -639,24 +666,6 @@ public sealed class OutboundIdentitySelectionTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new OutboundIdentitySelectionResult(
                 null, OutboundIdentitySelectionReason.NoDnsReadyIdentities, "Microsoft", "v1", []));
-    }
-
-    private sealed class SenderPool : IProbeSenderPool
-    {
-        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public Task<ProbeSenderSelection?> GetSenderAsync(
-            ProbeSenderContext context,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<ProbeSenderSelection?>(new(
-                "probe@example.test", ProbeSenderCandidateState.Healthy));
-
-        public Task RecordOutcomeAsync(
-            ProbeSenderOutcome outcome,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public ProbeSenderPoolSnapshot GetSnapshot() => new(
-            "test", "test", 1, 1, 1, 0, null, 0, 0, 0, 0, 0, 0, 0, TimeSpan.Zero);
     }
 
     private sealed class AllowThrottle : ISmtpProbeThrottle

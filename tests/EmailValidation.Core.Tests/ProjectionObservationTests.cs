@@ -198,11 +198,7 @@ public sealed class ProjectionObservationTests
     public void DisabledProjection_DoesNotResolveMongoProjectionInfrastructure()
     {
         var services = new ServiceCollection();
-        services.Configure<EmailValidationOptions>(configured =>
-        {
-            configured.ProbeSenderSource.Index = "authorized-senders";
-            configured.ProbeSenderSource.QueryJson = "{\"match_all\":{}}";
-        });
+        services.Configure<EmailValidationOptions>(_ => { });
         services.AddLogging();
         services.AddEmailValidation();
         using var provider = services.BuildServiceProvider();
@@ -226,11 +222,6 @@ public sealed class ProjectionObservationTests
             Provider = "MongoDB",
             ConnectionString = "mongodb://unit-test.invalid/email-validation",
             DatabaseName = "email-validation"
-        },
-        ProbeSenderSource = new ProbeSenderSourceOptions
-        {
-            Index = "authorized-senders",
-            QueryJson = "{\"match_all\":{}}"
         },
         Projection = new EmailValidationProjectionOptions
         {

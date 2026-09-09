@@ -1,5 +1,3 @@
-using Elastic.Clients.Elasticsearch;
-using Elastic.Transport;
 using EmailValidation.Core;
 using EmailValidation.Application;
 using Microsoft.Extensions.DependencyInjection;
@@ -75,24 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IOutboundIdentitySelector, RendezvousOutboundIdentitySelector>();
         services.AddSingleton<ISmtpConnectionFactory, SmtpConnectionFactory>();
         services.AddHostedService<OutboundIdentityStartupValidator>();
-        services.AddSingleton<IProbeSenderAffinityStore, ProbeSenderAffinityStore>();
-        services.AddSingleton<IProbeSenderJitter, ProbeSenderJitter>();
-        services.AddSingleton<IProbeSenderRotationPolicy, ProbeSenderRotationPolicy>();
-        services.AddSingleton(provider =>
-        {
-            var source = provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.ProbeSenderSource;
-            var settings = new ElasticsearchClientSettings(new Uri(source.Endpoint));
-            if (!string.IsNullOrWhiteSpace(source.ApiKey))
-                settings.Authentication(new ApiKey(source.ApiKey));
-            else if (!string.IsNullOrWhiteSpace(source.Username))
-                settings.Authentication(new BasicAuthentication(source.Username, source.Password));
-            return new ElasticsearchClient(settings);
-        });
-        services.AddSingleton<IElasticsearchSearchClient, ElasticsearchSearchClient>();
-        services.AddSingleton<IProbeSenderSource, ElasticsearchProbeSenderSource>();
-        services.AddSingleton<ProbeSenderHealthChecker>();
-        services.AddSingleton<IProbeSenderHealthChecker>(provider => provider.GetRequiredService<ProbeSenderHealthChecker>());
-        services.AddSingleton<IProbeSenderPool>(provider => provider.GetRequiredService<ProbeSenderHealthChecker>());
+        services.AddSingleton<IProbeSenderHealthChecker, OutboundIdentityProbeSenderHealthChecker>();
         services.AddSingleton<ISmtpSessionBudget, SmtpSessionBudget>();
         services.AddSingleton<ISmtpMailboxProbe, SmtpMailboxProbe>();
         services.AddSingleton<ICatchAllDetector, CatchAllDetector>();
