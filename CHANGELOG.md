@@ -2,10 +2,9 @@
 
 ## Unreleased
 
-- Added a receive-only Postfix/PostSRSd service for the owned probe-sender subdomain. It accepts the
-  `validation.email.digitalwarehouse.io` catch-all only on the management interface, forwards to the monitored
-  `contact@appendpros.com` mailbox, rewrites forwarded envelope senders for SPF compatibility, persists its queue
-  and generated SRS secret, and includes deployment checks for open-relay denial and outbound-interface isolation.
+- Moved the probe-sender catch-all to direct Google Workspace delivery and retired the Postfix/PostSRSd forwarding
+  service. Production rollout now removes the legacy container and inbound TCP/25 firewalld exception while
+  preserving its detached volumes temporarily for rollback and keeping all validation identities outbound-only.
 - Enabled production live SMTP verification with the labeled Azure App Configuration key
   `EmailValidation:Smtp:Enabled=true`; the API and worker were restarted and readiness remained healthy.
 - Changed the Azure DevOps `master` pipeline to deploy validated immutable API/worker images to production by

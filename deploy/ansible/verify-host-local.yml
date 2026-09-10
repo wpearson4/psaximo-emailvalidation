@@ -8,6 +8,7 @@
   vars:
     emailvalidation_deploy_root: /opt/emailvalidation
     emailvalidation_image_registry: acrpometadsiscussrch.azurecr.io
+    emailvalidation_legacy_smtp_rule: 'rule family="ipv4" destination address="10.10.252.31/32" port port="25" protocol="tcp" accept'
 
   tasks:
     - name: Read deployed revision marker
@@ -49,19 +50,18 @@
       changed_when: false
       failed_when: emailvalidation_worker_container.stdout | trim | length == 0
 
-    - name: Require the mail-forwarder container to use the expected image
+    - name: Require the retired mail-forwarder container to be absent
       ansible.builtin.command:
         argv:
           - docker
           - ps
+          - --all
           - --quiet
           - --filter
           - name=^/emailvalidation-mail-forwarder$
-          - --filter
-          - "ancestor={{ emailvalidation_image_registry }}/emailvalidation-mail-forwarder:{{ emailvalidation_release_tag }}"
       register: emailvalidation_mail_forwarder_container
       changed_when: false
-      failed_when: emailvalidation_mail_forwarder_container.stdout | trim | length == 0
+      failed_when: emailvalidation_mail_forwarder_container.stdout | trim | length > 0
 
     - name: Verify outbound identity network configuration
       ansible.builtin.command:
@@ -70,18 +70,37 @@
           - --check
       changed_when: false
 
-    - name: Verify mail-forwarder firewall isolation
+    - name: Resolve the management-interface firewall zone
       ansible.builtin.command:
         argv:
-          - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
-          - --check
+          - firewall-cmd
+          - --get-zone-of-interface=ens18
+      register: emailvalidation_private_zone
       changed_when: false
 
-    - name: Verify catch-all acceptance and relay denial
+    - name: Require the retired inbound SMTP firewall rule to be absent
       ansible.builtin.command:
         argv:
-          - "{{ emailvalidation_deploy_root }}/ops/email-validation/verify-mail-forwarder.py"
+          - firewall-cmd
+          - --permanent
+          - "--zone={{ emailvalidation_private_zone.stdout | trim }}"
+          - "--query-rich-rule={{ emailvalidation_legacy_smtp_rule }}"
+      register: emailvalidation_legacy_smtp_firewall
       changed_when: false
+      failed_when: emailvalidation_legacy_smtp_firewall.rc != 1
+
+    - name: Require no process to listen on TCP port 25
+      ansible.builtin.command:
+        argv:
+          - ss
+          - --no-header
+          - --listening
+          - --numeric
+          - --tcp
+          - sport = :25
+      register: emailvalidation_smtp_listeners
+      changed_when: false
+      failed_when: emailvalidation_smtp_listeners.stdout | trim | length > 0
 
     - name: Verify API readiness
       ansible.builtin.uri:

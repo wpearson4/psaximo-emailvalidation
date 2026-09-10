@@ -10,7 +10,7 @@
     emailvalidation_local_registry: emailvalidation-local
     emailvalidation_api_image: "{{ emailvalidation_local_registry }}/emailvalidation-api:{{ emailvalidation_release_tag }}"
     emailvalidation_worker_image: "{{ emailvalidation_local_registry }}/emailvalidation-worker:{{ emailvalidation_release_tag }}"
-    emailvalidation_mail_forwarder_image: "{{ emailvalidation_local_registry }}/emailvalidation-mail-forwarder:{{ emailvalidation_release_tag }}"
+    emailvalidation_legacy_smtp_rule: 'rule family="ipv4" destination address="10.10.252.31/32" port port="25" protocol="tcp" accept'
 
   pre_tasks:
     - name: Validate required deployment inputs
@@ -28,15 +28,11 @@
       loop:
         - "{{ emailvalidation_source_root }}/Dockerfile"
         - "{{ emailvalidation_source_root }}/Dockerfile.worker"
-        - "{{ emailvalidation_source_root }}/Dockerfile.mail-forwarder"
         - "{{ emailvalidation_source_root }}/compose.yaml"
         - "{{ emailvalidation_source_root }}/deploy/nginx/emailvalidation.conf"
         - "{{ emailvalidation_source_root }}/deploy/letsencrypt/bootstrap.sh"
         - "{{ emailvalidation_source_root }}/deploy/config/outbound-identities.env"
-        - "{{ emailvalidation_source_root }}/deploy/mail-forwarder/README.md"
         - "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
-        - "{{ emailvalidation_source_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
-        - "{{ emailvalidation_source_root }}/ops/email-validation/verify-mail-forwarder.py"
         - "{{ emailvalidation_deploy_root }}/.env"
       register: emailvalidation_required_files
 
@@ -82,18 +78,6 @@
           - "{{ emailvalidation_source_root }}"
       changed_when: true
 
-    - name: Build immutable mail-forwarder image locally
-      ansible.builtin.command:
-        argv:
-          - docker
-          - build
-          - --file
-          - "{{ emailvalidation_source_root }}/Dockerfile.mail-forwarder"
-          - --tag
-          - "{{ emailvalidation_mail_forwarder_image }}"
-          - "{{ emailvalidation_source_root }}"
-      changed_when: true
-
     - name: Create deployment directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -107,7 +91,6 @@
         - { path: "{{ emailvalidation_deploy_root }}/deploy/nginx", mode: "0755" }
         - { path: "{{ emailvalidation_deploy_root }}/deploy/letsencrypt", mode: "0755" }
         - { path: "{{ emailvalidation_deploy_root }}/deploy/config", mode: "0755" }
-        - { path: "{{ emailvalidation_deploy_root }}/deploy/mail-forwarder", mode: "0755" }
         - { path: "{{ emailvalidation_deploy_root }}/ops/email-validation", mode: "0755" }
 
     - name: Install deployment manifests with recoverable backups
@@ -131,27 +114,63 @@
         - src: "{{ emailvalidation_source_root }}/deploy/config/outbound-identities.env"
           dest: "{{ emailvalidation_deploy_root }}/deploy/config/outbound-identities.env"
           mode: "0644"
-        - src: "{{ emailvalidation_source_root }}/deploy/mail-forwarder/README.md"
-          dest: "{{ emailvalidation_deploy_root }}/deploy/mail-forwarder/README.md"
-          mode: "0644"
         - src: "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
           dest: "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-outbound-identities.sh"
-          mode: "0755"
-        - src: "{{ emailvalidation_source_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
-          dest: "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
-          mode: "0755"
-        - src: "{{ emailvalidation_source_root }}/ops/email-validation/verify-mail-forwarder.py"
-          dest: "{{ emailvalidation_deploy_root }}/ops/email-validation/verify-mail-forwarder.py"
           mode: "0755"
       loop_control:
         label: "{{ item.dest }}"
 
-    - name: Allow inbound SMTP on the management interface only
+    - name: Stop and remove the retired mail-forwarder container
       ansible.builtin.command:
         argv:
-          - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
-          - --apply
-      changed_when: true
+          - docker
+          - rm
+          - --force
+          - emailvalidation-mail-forwarder
+      register: emailvalidation_retired_mail_forwarder
+      changed_when: emailvalidation_retired_mail_forwarder.rc == 0
+      failed_when: emailvalidation_retired_mail_forwarder.rc not in [0, 1]
+
+    - name: Resolve the management-interface firewall zone
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --get-zone-of-interface=ens18
+      register: emailvalidation_private_zone
+      changed_when: false
+
+    - name: Check for the retired inbound SMTP firewall rule
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - "--zone={{ emailvalidation_private_zone.stdout | trim }}"
+          - "--query-rich-rule={{ emailvalidation_legacy_smtp_rule }}"
+      register: emailvalidation_legacy_smtp_firewall
+      changed_when: false
+      failed_when: emailvalidation_legacy_smtp_firewall.rc not in [0, 1]
+
+    - name: Remove the retired inbound SMTP firewall rule
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - "--zone={{ emailvalidation_private_zone.stdout | trim }}"
+          - "--remove-rich-rule={{ emailvalidation_legacy_smtp_rule }}"
+      when: emailvalidation_legacy_smtp_firewall.rc == 0
+      notify: Reload firewalld
+
+    - name: Apply the retired firewall-rule removal immediately
+      ansible.builtin.meta: flush_handlers
+
+    - name: Remove retired mail-forwarder deployment artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ emailvalidation_deploy_root }}/deploy/mail-forwarder"
+        - "{{ emailvalidation_deploy_root }}/ops/email-validation/configure-mail-forwarder-firewall.sh"
+        - "{{ emailvalidation_deploy_root }}/ops/email-validation/verify-mail-forwarder.py"
 
     - name: Validate rendered Compose configuration
       ansible.builtin.command:
@@ -172,7 +191,7 @@
         IMAGE_PULL_POLICY: never
       changed_when: false
 
-    - name: Deploy the immutable API, worker, and mail-forwarder images
+    - name: Deploy the immutable API and worker images
       ansible.builtin.command:
         argv:
           - docker
@@ -184,9 +203,9 @@
           - up
           - --detach
           - --no-build
+          - --remove-orphans
           - emailvalidation-api
           - emailvalidation-worker
-          - mail-forwarder
           - nginx
           - certbot
       args:
@@ -220,12 +239,6 @@
           - https://email.digitalwarehouse.io/health/ready
       changed_when: false
 
-    - name: Verify catch-all acceptance and relay denial
-      ansible.builtin.command:
-        argv:
-          - "{{ emailvalidation_deploy_root }}/ops/email-validation/verify-mail-forwarder.py"
-      changed_when: false
-
     - name: Record the successfully deployed immutable revision
       ansible.builtin.copy:
         dest: "{{ emailvalidation_deploy_root }}/RELEASE"
@@ -256,3 +269,10 @@
     - name: Print deployed service status
       ansible.builtin.debug:
         var: emailvalidation_compose_status.stdout_lines
+
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --reload

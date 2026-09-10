@@ -32,7 +32,6 @@ variables:
   acrLoginServer: acrpometadsiscussrch.azurecr.io
   imageRepository: emailvalidation-api
   workerImageRepository: emailvalidation-worker
-  mailForwarderImageRepository: emailvalidation-mail-forwarder
   buildConfiguration: Release
 
 stages:
@@ -65,7 +64,7 @@ stages:
               docker compose --file compose.yaml config --format json | \
                 jq --exit-status \
                   '.services["emailvalidation-api"].environment.Api__OpenMeta__BaseUrl == "https://api.digitalwarehouse.io" and
-                   .services["mail-forwarder"].network_mode == "host"' \
+                   .services["mail-forwarder"] == null' \
                   >/dev/null
             displayName: Validate Compose configuration
             env:
@@ -96,18 +95,6 @@ stages:
                 nginx:1.28-alpine -t
               docker run --rm certbot/certbot:v5.1.0 --version
             displayName: Validate Nginx and Certbot
-
-          - bash: |
-              set -euo pipefail
-              docker build \
-                --file Dockerfile.mail-forwarder \
-                --tag emailvalidation-mail-forwarder:validation \
-                .
-              docker run --rm --entrypoint postconf \
-                emailvalidation-mail-forwarder:validation -c /etc/postfix
-              bash -n ops/email-validation/configure-mail-forwarder-firewall.sh
-              python3 -m py_compile ops/email-validation/verify-mail-forwarder.py
-            displayName: Validate mail forwarder image and operations
 
   - stage: Publish
     displayName: Publish immutable image to Azure Container Registry
@@ -142,12 +129,6 @@ stages:
                   --image "$(workerImageRepository):$(Build.SourceVersion)" \
                   --image "$(workerImageRepository):latest" \
                   "$(Build.SourcesDirectory)"
-                az acr build \
-                  --registry "$(acrName)" \
-                  --file Dockerfile.mail-forwarder \
-                  --image "$(mailForwarderImageRepository):$(Build.SourceVersion)" \
-                  --image "$(mailForwarderImageRepository):latest" \
-                  "$(Build.SourcesDirectory)"
 
   - ${{ if eq(parameters.deployProduction, true) }}:
       - stage: Deploy
@@ -179,7 +160,6 @@ stages:
                           /opt/emailvalidation/deploy/nginx \
                           /opt/emailvalidation/deploy/letsencrypt \
                           /opt/emailvalidation/deploy/config \
-                          /opt/emailvalidation/deploy/mail-forwarder \
                           /opt/emailvalidation/ops/email-validation
                         sudo install -m 0644 compose.yaml /opt/emailvalidation/compose.yaml
                         sudo install -m 0644 deploy/nginx/emailvalidation.conf \
@@ -188,14 +168,12 @@ stages:
                           /opt/emailvalidation/deploy/letsencrypt/bootstrap.sh
                         sudo install -m 0644 deploy/config/outbound-identities.env \
                           /opt/emailvalidation/deploy/config/outbound-identities.env
-                        sudo install -m 0644 deploy/mail-forwarder/README.md \
-                          /opt/emailvalidation/deploy/mail-forwarder/README.md
                         sudo install -m 0755 ops/email-validation/configure-outbound-identities.sh \
                           /opt/emailvalidation/ops/email-validation/configure-outbound-identities.sh
-                        sudo install -m 0755 ops/email-validation/configure-mail-forwarder-firewall.sh \
-                          /opt/emailvalidation/ops/email-validation/configure-mail-forwarder-firewall.sh
-                        sudo install -m 0755 ops/email-validation/verify-mail-forwarder.py \
+                        sudo rm -f \
+                          /opt/emailvalidation/ops/email-validation/configure-mail-forwarder-firewall.sh \
                           /opt/emailvalidation/ops/email-validation/verify-mail-forwarder.py
+                        sudo rm -rf /opt/emailvalidation/deploy/mail-forwarder
                         sudo /opt/emailvalidation/ops/email-validation/configure-outbound-identities.sh --check
                         sudo test -f /opt/emailvalidation/.env
                       displayName: Install deployment manifests
@@ -224,12 +202,22 @@ stages:
 
                           cd /opt/emailvalidation
                           export RELEASE_TAG="$(Build.SourceVersion)"
+
+                          legacy_smtp_rule='rule family="ipv4" destination address="10.10.252.31/32" port port="25" protocol="tcp" accept'
+                          private_zone="$(sudo firewall-cmd --get-zone-of-interface=ens18)"
+                          if sudo firewall-cmd --permanent --zone="$private_zone" \
+                            --query-rich-rule="$legacy_smtp_rule" >/dev/null; then
+                            sudo firewall-cmd --permanent --zone="$private_zone" \
+                              --remove-rich-rule="$legacy_smtp_rule" >/dev/null
+                            sudo firewall-cmd --reload >/dev/null
+                          fi
+                          sudo docker rm --force emailvalidation-mail-forwarder >/dev/null 2>&1 || true
+
                           sudo --preserve-env=RELEASE_TAG docker compose config --quiet
                           sudo --preserve-env=RELEASE_TAG docker compose pull \
-                            emailvalidation-api emailvalidation-worker mail-forwarder nginx certbot
-                          sudo /opt/emailvalidation/ops/email-validation/configure-mail-forwarder-firewall.sh --apply
-                          sudo --preserve-env=RELEASE_TAG docker compose up -d \
-                            emailvalidation-api emailvalidation-worker mail-forwarder
+                            emailvalidation-api emailvalidation-worker nginx certbot
+                          sudo --preserve-env=RELEASE_TAG docker compose up -d --remove-orphans \
+                            emailvalidation-api emailvalidation-worker
 
                           if [[ "${BOOTSTRAP_LETSENCRYPT,,}" == "true" ]]; then
                             sudo --preserve-env=RELEASE_TAG,LETSENCRYPT_EMAIL \
@@ -247,7 +235,7 @@ stages:
                             if [[ "$attempt" == 30 ]]; then
                               sudo --preserve-env=RELEASE_TAG docker compose ps
                               sudo --preserve-env=RELEASE_TAG docker compose logs --tail=200 \
-                                emailvalidation-api emailvalidation-worker mail-forwarder nginx certbot
+                                emailvalidation-api emailvalidation-worker nginx certbot
                               exit 1
                             fi
                             sleep 2
@@ -255,7 +243,6 @@ stages:
 
                           printf '%s\n' "$(Build.SourceVersion)" | \
                             sudo tee /opt/emailvalidation/RELEASE >/dev/null
-                          sudo /opt/emailvalidation/ops/email-validation/verify-mail-forwarder.py
                           sudo --preserve-env=RELEASE_TAG docker compose ps
                       env:
                         BOOTSTRAP_LETSENCRYPT: ${{ parameters.bootstrapLetsEncrypt }}
