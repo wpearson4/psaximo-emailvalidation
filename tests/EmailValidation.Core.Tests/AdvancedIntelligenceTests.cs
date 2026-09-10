@@ -131,6 +131,35 @@ public sealed class AdvancedIntelligenceTests
     }
 
     [Fact]
+    public void Classification_LocalCooldownPreservesObservedCatchAllDomainStatus()
+    {
+        var domain = Domain(CatchAllStatus.LikelyCatchAll);
+        var provider = Provider(SmtpResponseCategory.LocalCooldown,
+            "Mailbox probe deferred by local pacing.", 0.20);
+        var probe = new SmtpProbeResult(
+            SmtpMailboxStatus.NotAttempted, null, null, TimeSpan.Zero)
+        {
+            Disposition = SmtpProbeDisposition.LocalCooldown,
+            RetryAfter = DateTimeOffset.UtcNow.AddMinutes(10)
+        };
+
+        var result = new EmailClassificationEngine().Classify(new EmailClassificationEvidence(
+            true,
+            DnsStatus.Success,
+            domain,
+            false,
+            new MailboxEvidence(domain.Domain, "mx.example.test", probe, provider),
+            HistoricalSignalSummary.Empty));
+
+        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Equal(domain.CatchAll.Confidence, result.Confidence);
+        Assert.Contains(ReasonCode.CatchAllDetected, result.ReasonCodes);
+        Assert.Contains(ReasonCode.LocalCooldown, result.ReasonCodes);
+        Assert.Contains(ReasonCode.RetryRecommended, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, result.ReasonCodes);
+    }
+
+    [Fact]
     public void ResultEvaluation_SeparatesTechnicalValidityFromDoNotMailPolicy()
     {
         var domain = Domain(CatchAllStatus.LikelyCatchAll);

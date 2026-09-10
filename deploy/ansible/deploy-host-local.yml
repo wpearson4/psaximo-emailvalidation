@@ -10,6 +10,8 @@
     emailvalidation_local_registry: emailvalidation-local
     emailvalidation_api_image: "{{ emailvalidation_local_registry }}/emailvalidation-api:{{ emailvalidation_release_tag }}"
     emailvalidation_worker_image: "{{ emailvalidation_local_registry }}/emailvalidation-worker:{{ emailvalidation_release_tag }}"
+    emailvalidation_runtime_uid: "1654"
+    emailvalidation_runtime_gid: "1654"
     emailvalidation_legacy_smtp_rule: 'rule family="ipv4" destination address="10.10.252.31/32" port port="25" protocol="tcp" accept'
 
   pre_tasks:
@@ -46,6 +48,13 @@
       loop: "{{ emailvalidation_required_files.results }}"
       loop_control:
         label: "{{ item.item }}"
+
+    - name: Restrict the revalidation runtime secret to the container user
+      ansible.builtin.file:
+        path: "{{ emailvalidation_deploy_root }}/secrets/revalidation_service_bus_connection_string"
+        owner: "{{ emailvalidation_runtime_uid }}"
+        group: "{{ emailvalidation_runtime_gid }}"
+        mode: "0400"
 
     - name: Verify all outbound addresses, routing, and firewall policy before deployment
       ansible.builtin.command:

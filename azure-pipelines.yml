@@ -214,7 +214,7 @@ stages:
                               --output tsv
                           )
                           printf '%s' "$revalidation_service_bus_connection" | \
-                            sudo install -m 0600 /dev/stdin \
+                            sudo install -o 1654 -g 1654 -m 0400 /dev/stdin \
                               /opt/emailvalidation/secrets/revalidation_service_bus_connection_string
                           unset revalidation_service_bus_connection
 

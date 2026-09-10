@@ -114,12 +114,19 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
 
         reasons.AddRange(providerResult.ReasonCodes);
         var category = providerResult.EffectiveCategory;
-        if (category == SmtpResponseCategory.NotAttempted && catchAll.Status == CatchAllStatus.LikelyCatchAll)
+        if ((category is SmtpResponseCategory.NotAttempted or SmtpResponseCategory.LocalCooldown) &&
+            catchAll.Status == CatchAllStatus.LikelyCatchAll)
         {
+            if (category == SmtpResponseCategory.LocalCooldown)
+            {
+                reasons.Add(ReasonCode.LocalCooldown);
+                reasons.Add(ReasonCode.RetryRecommended);
+            }
             Add(contributions, "Persisted catch-all evidence", 0,
                 catchAll.Detail ?? "The domain accepts arbitrary recipients.");
             // This is confidence in the domain behavior classification, not in the
-            // existence of this individual mailbox.
+            // existence of this individual mailbox. Deferring the target mailbox
+            // probe does not erase independently observed randomized acceptance.
             return FinalizeResult(
                 EmailValidationStatus.CatchAll,
                 Math.Clamp(catchAll.Confidence, 0, 1),
