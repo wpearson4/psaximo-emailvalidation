@@ -186,6 +186,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IValidationJobStore>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationJobStore>()
             : provider.GetRequiredService<InMemoryValidationJobStore>());
+        services.AddSingleton<IValidationJobResultSink>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoValidationJobStore>()
+            : provider.GetRequiredService<InMemoryValidationJobStore>());
+        services.AddSingleton<IValidationJobResultProjector, ValidationJobResultProjector>();
         services.AddSingleton<AzureServiceBusValidationJobDispatcher>();
         services.AddSingleton<DisabledValidationJobDispatcher>();
         services.AddSingleton<IValidationJobDispatcher>(provider => provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Jobs.Enabled

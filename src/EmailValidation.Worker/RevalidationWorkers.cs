@@ -10,6 +10,7 @@ public sealed class ServiceBusRevalidationWorker(
     IOptions<EmailValidationOptions> options,
     IRevalidationMessageSerializer serializer,
     IEmailRevalidationProcessor processor,
+    IValidationJobResultProjector jobResultProjector,
     IRevalidationMetrics metrics,
     ILogger<ServiceBusRevalidationWorker> logger) : BackgroundService
 {
@@ -68,6 +69,8 @@ public sealed class ServiceBusRevalidationWorker(
                     case RevalidationProcessingDisposition.Rescheduled:
                     case RevalidationProcessingDisposition.Stale:
                     case RevalidationProcessingDisposition.AlreadyFinal:
+                        await jobResultProjector.ProjectAsync(
+                            message.ValidationId, args.CancellationToken).ConfigureAwait(false);
                         await args.CompleteMessageAsync(args.Message, args.CancellationToken).ConfigureAwait(false);
                         break;
                     case RevalidationProcessingDisposition.RetryInfrastructureFailure:

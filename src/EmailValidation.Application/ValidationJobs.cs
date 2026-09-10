@@ -74,6 +74,34 @@ public interface IValidationJobStore
     Task SaveResultAsync(string jobId, int position, EmailValidationResult? result, string? failureReason, CancellationToken cancellationToken = default);
 }
 
+public interface IValidationJobResultSink
+{
+    Task ProjectAsync(
+        string jobId,
+        string validationId,
+        EmailValidationResult result,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationJobResultProjector
+{
+    Task ProjectAsync(string validationId, CancellationToken cancellationToken = default);
+}
+
+public sealed class ValidationJobResultProjector(
+    IValidationLifecycleStore lifecycles,
+    IValidationJobResultSink sink) : IValidationJobResultProjector
+{
+    public async Task ProjectAsync(string validationId, CancellationToken cancellationToken = default)
+    {
+        var lifecycle = await lifecycles.GetAsync(validationId, cancellationToken).ConfigureAwait(false);
+        var jobId = lifecycle?.Request.JobId;
+        if (lifecycle is null || string.IsNullOrWhiteSpace(jobId)) return;
+        await sink.ProjectAsync(jobId, validationId, lifecycle.CurrentResult, cancellationToken)
+            .ConfigureAwait(false);
+    }
+}
+
 public interface IValidationJobDispatcher
 {
     Task EnqueueAsync(string jobId, CancellationToken cancellationToken = default);

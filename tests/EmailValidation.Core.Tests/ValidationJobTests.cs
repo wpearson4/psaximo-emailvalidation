@@ -130,6 +130,51 @@ public sealed class ValidationJobTests
         Assert.Equal("repeated worker failures", failed.FailureReason);
     }
 
+    [Fact]
+    public async Task RetryProjection_UpdatesEveryMatchingRowAndFinalCountersIdempotently()
+    {
+        const string validationId = "validation-shared";
+        var now = DateTimeOffset.UtcNow;
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["duplicate@example.com", "duplicate@example.com"]));
+        var provisional = Result("duplicate@example.com", validationId,
+            EmailValidationStatus.Unknown, ValidationResultState.Provisional, 1);
+        await store.SaveResultAsync(job.JobId, 0, provisional, null);
+        await store.SaveResultAsync(job.JobId, 1, provisional, null);
+        var final = Result("duplicate@example.com", validationId,
+            EmailValidationStatus.Valid, ValidationResultState.Final, 2);
+        var lifecycles = new InMemoryValidationLifecycleStore();
+        await lifecycles.TrySaveAsync(new ValidationLifecycle
+        {
+            ValidationId = validationId,
+            NormalizedEmail = "duplicate@example.com",
+            Request = new EmailValidationRequest(true, JobId: job.JobId),
+            ResultState = ValidationResultState.Final,
+            AttemptNumber = 2,
+            MaximumAttempts = 2,
+            CurrentResult = final,
+            Version = 1
+        }, 0);
+        var projector = new ValidationJobResultProjector(lifecycles, store);
+
+        await projector.ProjectAsync(validationId);
+        await projector.ProjectAsync(validationId);
+
+        var updated = await service.GetAsync(job.JobId);
+        var results = await service.GetResultsAsync(job.JobId, 0, 10);
+        Assert.Equal(2, updated!.ProcessedItems);
+        Assert.Equal(2, updated.FinalItems);
+        Assert.Equal(0, updated.ProvisionalItems);
+        Assert.All(results, item =>
+        {
+            Assert.Equal(EmailValidationStatus.Valid, item.Result!.Status);
+            Assert.Equal(ValidationResultState.Final, item.Result.ResultState);
+            Assert.Equal(2, item.Result.AttemptNumber);
+        });
+    }
+
     private static IOptions<EmailValidationOptions> Options(int maximumConcurrency = 2) =>
         Microsoft.Extensions.Options.Options.Create(new EmailValidationOptions
         {
@@ -141,6 +186,25 @@ public sealed class ValidationJobTests
                 MaximumResultPageSize = 100
             }
         });
+
+    private static EmailValidationResult Result(
+        string email,
+        string validationId,
+        EmailValidationStatus status,
+        ValidationResultState state,
+        int attempt) => new()
+        {
+            Email = email,
+            NormalizedEmail = email,
+            Status = status,
+            Confidence = status == EmailValidationStatus.Valid ? 0.98 : 0.72,
+            Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true },
+            ValidationId = validationId,
+            ResultState = state,
+            AttemptNumber = attempt,
+            MaximumAttempts = 2,
+            RetryScheduled = state == ValidationResultState.Provisional
+        };
 
     private sealed class RecordingDispatcher : IValidationJobDispatcher
     {

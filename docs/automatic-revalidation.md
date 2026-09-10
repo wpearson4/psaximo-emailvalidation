@@ -69,6 +69,10 @@ worker. A future API can resolve `IEmailValidator`, or compose `IEmailValidation
   deliveries as successful no-work outcomes.
 - Unsupported/malformed messages and missing lifecycle state go to the built-in DLQ. Transient infrastructure failures
   are abandoned for redelivery. Validation outcomes such as a continuing Microsoft policy block are not dead-lettered.
+- Batch validations retain the originating job ID in the canonical lifecycle. After every completed, rescheduled,
+  stale, or already-final delivery, the worker idempotently projects the canonical result into every matching job row
+  before completing the broker message. This makes job counters and downloadable results converge as retries settle;
+  a projection failure abandons the message so Service Bus can redeliver it.
 
 ## Configuration
 

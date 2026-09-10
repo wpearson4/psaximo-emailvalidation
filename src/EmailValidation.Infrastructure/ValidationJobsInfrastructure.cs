@@ -10,7 +10,7 @@ using MongoDB.Driver;
 
 namespace EmailValidation.Infrastructure;
 
-public sealed class MongoValidationJobStore : IValidationJobStore
+public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJobResultSink
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly IMongoCollection<JobDocument> _jobs;
@@ -44,6 +44,10 @@ public sealed class MongoValidationJobStore : IValidationJobStore
         await _items.Indexes.CreateOneAsync(new CreateIndexModel<ItemDocument>(
             Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.State).Ascending(value => value.Position),
             new CreateIndexOptions { Name = "ix_job_item_pending" }),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _items.Indexes.CreateOneAsync(new CreateIndexModel<ItemDocument>(
+            Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.ValidationId),
+            new CreateIndexOptions { Name = "ix_job_item_validation", Sparse = true }),
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -128,6 +132,9 @@ public sealed class MongoValidationJobStore : IValidationJobStore
         var state = result is null ? ValidationJobItemState.Failed : ValidationJobItemState.Completed;
         var update = Builders<ItemDocument>.Update.Set(value => value.State, state)
             .Set(value => value.ResultJson, result is null ? null : JsonSerializer.Serialize(result, JsonOptions))
+            .Set(value => value.ValidationId, result?.ValidationId)
+            .Set(value => value.ResultState, result?.ResultState)
+            .Set(value => value.ResultAttemptNumber, result?.AttemptNumber)
             .Set(value => value.Error, failureReason);
         var updated = await _items.UpdateOneAsync(
             value => value.JobId == jobId && value.Position == position && value.State == ValidationJobItemState.Pending,
@@ -141,6 +148,61 @@ public sealed class MongoValidationJobStore : IValidationJobStore
             .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow());
         await _jobs.UpdateOneAsync(value => value.Id == jobId, counters, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task ProjectAsync(
+        string jobId,
+        string validationId,
+        EmailValidationResult result,
+        CancellationToken cancellationToken = default)
+    {
+        var direct = Builders<ItemDocument>.Filter.Eq(value => value.JobId, jobId) &
+            Builders<ItemDocument>.Filter.Eq(value => value.ValidationId, validationId);
+        var candidates = await _items.Find(direct).ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (candidates.Count == 0)
+        {
+            // Compatibility for rows written before ValidationId became an indexed field.
+            candidates = (await _items.Find(value => value.JobId == jobId)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false))
+                .Where(value => string.Equals(value.ToModel().Result?.ValidationId, validationId,
+                    StringComparison.Ordinal))
+                .ToList();
+        }
+
+        var serialized = JsonSerializer.Serialize(result, JsonOptions);
+        var finalDelta = 0;
+        var provisionalDelta = 0;
+        var changed = 0L;
+        foreach (var candidate in candidates)
+        {
+            if (string.Equals(candidate.ResultJson, serialized, StringComparison.Ordinal)) continue;
+            var previous = candidate.ToModel().Result;
+            if (previous is null || !string.Equals(previous.ValidationId, validationId, StringComparison.Ordinal))
+                continue;
+            var updated = await _items.UpdateOneAsync(
+                value => value.Id == candidate.Id && value.ResultJson == candidate.ResultJson,
+                Builders<ItemDocument>.Update
+                    .Set(value => value.ResultJson, serialized)
+                    .Set(value => value.ValidationId, validationId)
+                    .Set(value => value.ResultState, result.ResultState)
+                    .Set(value => value.ResultAttemptNumber, result.AttemptNumber)
+                    .Set(value => value.Error, null),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (updated.ModifiedCount == 0) continue;
+            changed++;
+            finalDelta += (result.ResultState == ValidationResultState.Final ? 1 : 0) -
+                (previous.ResultState == ValidationResultState.Final ? 1 : 0);
+            provisionalDelta += (result.ResultState == ValidationResultState.Provisional ? 1 : 0) -
+                (previous.ResultState == ValidationResultState.Provisional ? 1 : 0);
+        }
+        if (changed == 0) return;
+        await _jobs.UpdateOneAsync(
+            value => value.Id == jobId,
+            Builders<JobDocument>.Update
+                .Inc(value => value.FinalItems, finalDelta)
+                .Inc(value => value.ProvisionalItems, provisionalDelta)
+                .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     [BsonIgnoreExtraElements]
@@ -184,19 +246,25 @@ public sealed class MongoValidationJobStore : IValidationJobStore
         public string Email { get; set; } = string.Empty;
         public ValidationJobItemState State { get; set; }
         public string? ResultJson { get; set; }
+        public string? ValidationId { get; set; }
+        public ValidationResultState? ResultState { get; set; }
+        public int? ResultAttemptNumber { get; set; }
         public string? Error { get; set; }
         public static ItemDocument FromModel(ValidationJobItem value) => new()
         {
             Id = $"{value.JobId}:{value.Position}", JobId = value.JobId, Position = value.Position,
             Email = value.Email, State = value.State, Error = value.Error,
-            ResultJson = value.Result is null ? null : JsonSerializer.Serialize(value.Result, JsonOptions)
+            ResultJson = value.Result is null ? null : JsonSerializer.Serialize(value.Result, JsonOptions),
+            ValidationId = value.Result?.ValidationId,
+            ResultState = value.Result?.ResultState,
+            ResultAttemptNumber = value.Result?.AttemptNumber
         };
         public ValidationJobItem ToModel() => new(JobId, Position, Email, State,
             ResultJson is null ? null : JsonSerializer.Deserialize<EmailValidationResult>(ResultJson, JsonOptions), Error);
     }
 }
 
-public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IValidationJobStore
+public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IValidationJobStore, IValidationJobResultSink
 {
     private readonly ConcurrentDictionary<string, ValidationJobSnapshot> _jobs = new();
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, ValidationJobItem>> _items = new();
@@ -262,6 +330,43 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
                 FailedItems = job.FailedItems + (result is null ? 1 : 0),
                 UpdatedAtUtc = timeProvider.GetUtcNow()
             };
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task ProjectAsync(
+        string jobId,
+        string validationId,
+        EmailValidationResult result,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (!_items.TryGetValue(jobId, out var items) || !_jobs.TryGetValue(jobId, out var job))
+                return Task.CompletedTask;
+            var finalDelta = 0;
+            var provisionalDelta = 0;
+            var changed = false;
+            foreach (var pair in items.ToArray())
+            {
+                var previous = pair.Value.Result;
+                if (previous is null ||
+                    !string.Equals(previous.ValidationId, validationId, StringComparison.Ordinal)) continue;
+                items[pair.Key] = pair.Value with { Result = result, Error = null };
+                finalDelta += (result.ResultState == ValidationResultState.Final ? 1 : 0) -
+                    (previous.ResultState == ValidationResultState.Final ? 1 : 0);
+                provisionalDelta += (result.ResultState == ValidationResultState.Provisional ? 1 : 0) -
+                    (previous.ResultState == ValidationResultState.Provisional ? 1 : 0);
+                changed = true;
+            }
+            if (changed)
+                _jobs[jobId] = job with
+                {
+                    FinalItems = job.FinalItems + finalDelta,
+                    ProvisionalItems = job.ProvisionalItems + provisionalDelta,
+                    UpdatedAtUtc = timeProvider.GetUtcNow()
+                };
         }
         return Task.CompletedTask;
     }
