@@ -19,6 +19,7 @@ public static class EmailValidationAzureConfiguration
     public const string MongoConnectionStringFileKey = "Azure:MongoConnectionStringFile";
     public const string MongoConnectionStringKey = "EmailValidation:Persistence:ConnectionString";
     public const string ServiceBusSecretUriKey = "Azure:ServiceBusConnectionSecretUri";
+    public const string ServiceBusConnectionStringFileKey = "Azure:ServiceBusConnectionStringFile";
     public const string ServiceBusConnectionStringKey = "EmailValidation:Revalidation:ServiceBus:ConnectionString";
     public const string JobsServiceBusSecretUriKey = "Azure:JobsServiceBusConnectionSecretUri";
     public const string JobsServiceBusConnectionStringFileKey = "Azure:JobsServiceBusConnectionStringFile";
@@ -45,7 +46,11 @@ public static class EmailValidationAzureConfiguration
             MongoConnectionStringFileKey,
             "MongoDB connection string");
         var mongoSecretUri = bootstrap[MongoSecretUriKey]?.Trim() ?? string.Empty;
-        var localServiceBusConnectionString = bootstrap[ServiceBusConnectionStringKey]?.Trim() ?? string.Empty;
+        var localServiceBusConnectionString = ResolveSecret(
+            bootstrap,
+            ServiceBusConnectionStringKey,
+            ServiceBusConnectionStringFileKey,
+            "revalidation Service Bus connection string");
         var serviceBusSecretUri = bootstrap[ServiceBusSecretUriKey]?.Trim() ?? string.Empty;
         var localJobsServiceBusConnectionString = ResolveSecret(
             bootstrap,

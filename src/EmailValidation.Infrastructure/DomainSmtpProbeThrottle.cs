@@ -105,7 +105,9 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         {
             lock (domain.Sync)
             {
-                var domainRetry = Max(domain.State.NextAllowedAttemptAt, domain.State.CooldownUntil);
+                // Ordinary pacing is waited inside AcquireAsync. Only an actual backoff
+                // cooldown should cause the caller to defer the validation durably.
+                var domainRetry = domain.State.CooldownUntil;
                 if (domainRetry > now && (retryAfter is null || domainRetry > retryAfter))
                 {
                     retryAfter = domainRetry;
@@ -117,7 +119,9 @@ public sealed class DomainSmtpProbeThrottle : ISmtpProbeThrottle, IDisposable
         {
             lock (provider.Sync)
             {
-                var providerRetry = Max(provider.NextAllowedAttemptAt, provider.CooldownUntil);
+                // Provider minimum intervals are pacing, not a failed validation.
+                // Concurrent work waits for them in AcquireAsync.
+                var providerRetry = provider.CooldownUntil;
                 if (providerRetry > now && (retryAfter is null || providerRetry > retryAfter))
                 {
                     retryAfter = providerRetry;

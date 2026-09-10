@@ -32,6 +32,8 @@ variables:
   acrLoginServer: acrpometadsiscussrch.azurecr.io
   imageRepository: emailvalidation-api
   workerImageRepository: emailvalidation-worker
+  keyVaultName: kv-p-ometa-dsi-scus
+  revalidationServiceBusSecretName: EmailValidation--Revalidation--ServiceBusConnectionString
   buildConfiguration: Release
 
 stages:
@@ -202,6 +204,19 @@ stages:
 
                           cd /opt/emailvalidation
                           export RELEASE_TAG="$(Build.SourceVersion)"
+
+                          sudo install -d -m 0700 /opt/emailvalidation/secrets
+                          read -r revalidation_service_bus_connection < <(
+                            az keyvault secret show \
+                              --vault-name "$(keyVaultName)" \
+                              --name "$(revalidationServiceBusSecretName)" \
+                              --query value \
+                              --output tsv
+                          )
+                          printf '%s' "$revalidation_service_bus_connection" | \
+                            sudo install -m 0600 /dev/stdin \
+                              /opt/emailvalidation/secrets/revalidation_service_bus_connection_string
+                          unset revalidation_service_bus_connection
 
                           legacy_smtp_rule='rule family="ipv4" destination address="10.10.252.31/32" port port="25" protocol="tcp" accept'
                           private_zone="$(sudo firewall-cmd --get-zone-of-interface=ens18)"

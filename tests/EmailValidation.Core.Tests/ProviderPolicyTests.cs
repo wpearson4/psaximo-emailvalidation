@@ -270,6 +270,26 @@ public sealed class ProviderPolicyTests
     }
 
     [Fact]
+    public async Task OrdinaryProviderPacing_RemainsAvailableAndIsWaitedByAcquire()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(start);
+        using var throttle = Throttle(
+            Policies(("Microsoft", Policy(1, 2000, 60, 1))), time);
+        var first = Context("one.test", MailProvider.Microsoft365);
+        await (await throttle.AcquireAsync(first)).DisposeAsync();
+        var second = Context("two.test", MailProvider.Microsoft365);
+
+        var availability = throttle.GetAvailability(second);
+        var waiting = throttle.AcquireAsync(second).AsTask();
+
+        Assert.True(availability.CanProbe);
+        Assert.False(waiting.IsCompleted);
+        time.Advance(TimeSpan.FromSeconds(2));
+        await (await waiting.WaitAsync(TimeSpan.FromSeconds(1))).DisposeAsync();
+    }
+
+    [Fact]
     public async Task MailboxProbe_DuringMxCooldown_ReturnsDeferredWithoutSelectingSender()
     {
         var time = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));

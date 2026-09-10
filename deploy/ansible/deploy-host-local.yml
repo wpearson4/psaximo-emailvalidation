@@ -34,6 +34,7 @@
         - "{{ emailvalidation_source_root }}/deploy/config/outbound-identities.env"
         - "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
         - "{{ emailvalidation_deploy_root }}/.env"
+        - "{{ emailvalidation_deploy_root }}/secrets/revalidation_service_bus_connection_string"
       register: emailvalidation_required_files
 
     - name: Require every source and host file

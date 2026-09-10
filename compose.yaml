@@ -32,6 +32,8 @@ services:
       Azure__AppConfigurationConnectionStringFile: /run/secrets/azure_app_configuration_connection_string
       Azure__MongoConnectionStringFile: /run/secrets/mongo_connection_string
       Azure__MongoConnectionSecretUri: ${AZURE_MONGO_SECRET_URI:?set AZURE_MONGO_SECRET_URI}
+      Azure__ServiceBusConnectionStringFile: /run/secrets/revalidation_service_bus_connection_string
+      Azure__ServiceBusConnectionSecretUri: ${AZURE_REVALIDATION_SERVICE_BUS_SECRET_URI:-https://kv-p-ometa-dsi-scus.vault.azure.net/secrets/EmailValidation--Revalidation--ServiceBusConnectionString}
       Azure__JobsServiceBusConnectionStringFile: /run/secrets/jobs_service_bus_connection_string
       Azure__JobsServiceBusConnectionSecretUri: ${AZURE_JOBS_SERVICE_BUS_SECRET_URI:?set AZURE_JOBS_SERVICE_BUS_SECRET_URI}
       AZURE_TENANT_ID: ${AZURE_TENANT_ID:?set AZURE_TENANT_ID}
@@ -54,6 +56,7 @@ services:
       - source: azure_client_certificate
         target: azure_client_certificate.pem
       - mongo_connection_string
+      - revalidation_service_bus_connection_string
       - jobs_service_bus_connection_string
     healthcheck:
       test: ["CMD", "dotnet", "EmailValidation.Api.dll", "--healthcheck"]
@@ -89,6 +92,8 @@ services:
       Azure__AppConfigurationConnectionStringFile: /run/secrets/azure_app_configuration_connection_string
       Azure__MongoConnectionStringFile: /run/secrets/mongo_connection_string
       Azure__MongoConnectionSecretUri: ${AZURE_MONGO_SECRET_URI:?set AZURE_MONGO_SECRET_URI}
+      Azure__ServiceBusConnectionStringFile: /run/secrets/revalidation_service_bus_connection_string
+      Azure__ServiceBusConnectionSecretUri: ${AZURE_REVALIDATION_SERVICE_BUS_SECRET_URI:-https://kv-p-ometa-dsi-scus.vault.azure.net/secrets/EmailValidation--Revalidation--ServiceBusConnectionString}
       Azure__JobsServiceBusConnectionStringFile: /run/secrets/jobs_service_bus_connection_string
       Azure__JobsServiceBusConnectionSecretUri: ${AZURE_JOBS_SERVICE_BUS_SECRET_URI:?set AZURE_JOBS_SERVICE_BUS_SECRET_URI}
       AZURE_TENANT_ID: ${AZURE_TENANT_ID:?set AZURE_TENANT_ID}
@@ -102,6 +107,7 @@ services:
       - source: azure_client_certificate
         target: azure_client_certificate.pem
       - mongo_connection_string
+      - revalidation_service_bus_connection_string
       - jobs_service_bus_connection_string
     stop_grace_period: 45s
 
@@ -187,6 +193,8 @@ secrets:
     file: ${AZURE_CLIENT_CERTIFICATE_FILE:?set AZURE_CLIENT_CERTIFICATE_FILE}
   mongo_connection_string:
     file: ${MONGO_CONNECTION_SECRET_FILE:?set MONGO_CONNECTION_SECRET_FILE}
+  revalidation_service_bus_connection_string:
+    file: ${REVALIDATION_SERVICE_BUS_CONNECTION_SECRET_FILE:-/opt/emailvalidation/secrets/revalidation_service_bus_connection_string}
   jobs_service_bus_connection_string:
     file: ${JOBS_SERVICE_BUS_CONNECTION_SECRET_FILE:?set JOBS_SERVICE_BUS_CONNECTION_SECRET_FILE}
 

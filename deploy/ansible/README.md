@@ -8,6 +8,7 @@ The deployment:
 - builds API and worker images from the already-tested Git checkout;
 - tags both images with the full immutable Git SHA;
 - preserves `/opt/emailvalidation/.env` and all secret source files;
+- requires the normal deployment-created, queue-scoped revalidation Service Bus secret for break-glass runs;
 - installs versioned Compose, Nginx, Certbot, identity configuration, and network-check artifacts;
 - removes the retired mail-forwarder container, installed artifacts, and inbound TCP/25 firewalld exception;
 - starts API and worker from the same revision;

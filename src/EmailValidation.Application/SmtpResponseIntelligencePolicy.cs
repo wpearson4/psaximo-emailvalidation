@@ -29,7 +29,7 @@ public sealed class SmtpResponseDecisionPolicy(IOptions<EmailValidationOptions> 
             SmtpNormalizedReason.MailboxNotFound or SmtpNormalizedReason.MailboxDisabled or
             SmtpNormalizedReason.MailboxInactive or SmtpNormalizedReason.RecipientRejected)
             return Decision(SmtpMailboxImpact.Invalid, SmtpRetryDisposition.None, SmtpCooldownScope.None,
-                SmtpHealthImpact.PermanentFailure, false, SmtpResponseCategory.RecipientRejected,
+                SmtpHealthImpact.Success, false, SmtpResponseCategory.RecipientRejected,
                 "recipient_specific_permanent_rejection");
 
         if (stage == SmtpCommand.RcptTo && reason == SmtpNormalizedReason.MailboxFull)

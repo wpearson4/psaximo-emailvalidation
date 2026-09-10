@@ -154,6 +154,24 @@ public sealed class SmtpResponseIntelligenceTests
         Assert.NotEqual(SmtpMailboxImpact.Invalid, policy.Decide(classification).MailboxImpact);
     }
 
+    [Fact]
+    public void RecipientSpecificRejection_ConfirmsOutboundIdentityHealth()
+    {
+        var options = DefaultOptions();
+        var policy = new SmtpResponseDecisionPolicy(options);
+        var classification = new SmtpResponseIntelligence(
+            SmtpCommand.RcptTo, 550, 5, "5.1.1", SmtpNormalizedReason.MailboxNotFound,
+            SmtpEvidenceStrength.High, MailProvider.Microsoft365, "rules-1",
+            "generic-mailbox-not-found", null);
+
+        var decision = policy.Decide(classification);
+
+        Assert.Equal(SmtpMailboxImpact.Invalid, decision.MailboxImpact);
+        Assert.Equal(SmtpCooldownScope.None, decision.CooldownScope);
+        Assert.Equal(SmtpHealthImpact.Success, decision.HealthImpact);
+        Assert.Equal(SmtpResponseCategory.RecipientRejected, decision.CanonicalCategory);
+    }
+
     [Theory]
     [InlineData(SmtpCommand.Greeting)]
     [InlineData(SmtpCommand.Ehlo)]

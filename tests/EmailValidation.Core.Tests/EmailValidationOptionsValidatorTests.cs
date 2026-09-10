@@ -218,6 +218,33 @@ public sealed class EmailValidationOptionsValidatorTests
         }
     }
 
+    [Fact]
+    public void AzureBootstrap_ReadsRevalidationServiceBusConnectionStringFromDockerSecretFile()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=revalidation;SharedAccessKey=test\n");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [EmailValidationAzureConfiguration.ServiceBusConnectionStringFileKey] = path
+                }).Build();
+
+            Assert.StartsWith(
+                "Endpoint=sb://example.servicebus.windows.net/",
+                EmailValidationAzureConfiguration.ResolveSecret(
+                    configuration,
+                    EmailValidationAzureConfiguration.ServiceBusConnectionStringKey,
+                    EmailValidationAzureConfiguration.ServiceBusConnectionStringFileKey,
+                    "revalidation Service Bus connection string"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static EmailValidationOptions ValidOptions() => new();
 
     private static OutboundIdentityOptions ValidOutboundIdentities() => new()

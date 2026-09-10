@@ -178,7 +178,9 @@ public sealed class ApiReadinessHealthCheck(
 
 public sealed class OutboundIdentityReadinessHealthCheck(
     IOptions<EmailValidationOptions> options,
-    IForwardConfirmedReverseDnsValidator readiness) : IHealthCheck
+    IForwardConfirmedReverseDnsValidator readiness,
+    IOutboundIdentityHealthStore healthStore,
+    TimeProvider timeProvider) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
@@ -196,6 +198,41 @@ public sealed class OutboundIdentityReadinessHealthCheck(
             .Select(group => group.Key).ToArray();
         if (unavailableGroups.Length > 0)
             return HealthCheckResult.Unhealthy("One or more outbound provider groups have no usable identity.");
+
+        var healthTasks = new Dictionary<(string IdentityId, MailProvider Provider), Task<OutboundIdentityHealth>>();
+        Task<OutboundIdentityHealth> HealthAsync(string identityId, MailProvider provider)
+        {
+            var key = (identityId.ToLowerInvariant(), provider);
+            if (!healthTasks.TryGetValue(key, out var task))
+            {
+                task = healthStore.GetAsync(identityId, provider, cancellationToken);
+                healthTasks[key] = task;
+            }
+            return task;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var unavailableProviders = new List<MailProvider>();
+        foreach (var mapping in outbound.ProviderGroups)
+        {
+            if (!Enum.TryParse<MailProvider>(mapping.Key, true, out var provider) ||
+                !outbound.IdentityGroups.TryGetValue(mapping.Value, out var memberIds))
+                continue;
+            var candidates = memberIds.Where(ready.Contains).ToArray();
+            var candidateHealth = await Task.WhenAll(candidates.Select(async identityId =>
+            {
+                var global = await HealthAsync(identityId, MailProvider.Unknown).ConfigureAwait(false);
+                var scoped = provider == MailProvider.Unknown
+                    ? global
+                    : await HealthAsync(identityId, provider).ConfigureAwait(false);
+                return global.IsEligible(now) && scoped.IsEligible(now);
+            })).ConfigureAwait(false);
+            if (!candidateHealth.Any(eligible => eligible))
+                unavailableProviders.Add(provider);
+        }
+        if (unavailableProviders.Count > 0)
+            return HealthCheckResult.Degraded(
+                "One or more outbound providers have no operational identity because of cooldown or quarantine.");
         if (snapshots.Any(item => item.State != ForwardConfirmedReverseDnsState.Valid))
             return HealthCheckResult.Degraded("One or more outbound identities are not fully DNS-ready.");
         return HealthCheckResult.Healthy();
