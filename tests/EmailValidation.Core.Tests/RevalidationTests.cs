@@ -414,6 +414,53 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public async Task Processor_LateLocalCooldownReschedulesWithoutConsumingFinalAttempt()
+    {
+        var lifecycle = Lifecycle(ValidationResultState.Provisional, 1) with
+        {
+            Attempts = [new(1, EmailValidationStatus.Unknown, DetailedStatus.LocalCooldown, 0.25,
+                MailProvider.Microsoft365, [ReasonCode.LocalCooldown], Now,
+                ValidationResultSource.LiveValidation, Now.AddMinutes(5))]
+        };
+        var store = new MemoryLifecycleStore(lifecycle);
+        var deferredUntil = Now.AddMinutes(20);
+        var service = new CountingValidationService(
+            Result(EmailValidationStatus.Unknown, ReasonCode.LocalCooldown) with
+            {
+                ProbeAttempted = false,
+                ProbeDisposition = SmtpProbeDisposition.LocalCooldown,
+                RetryAfter = deferredUntil,
+                UnknownContext = new(
+                    UnknownCause.LocalCooldown,
+                    "Mailbox probing was deferred by local pacing.",
+                    true,
+                    "Retry after the indicated time.",
+                    RetryAfter: deferredUntil)
+            });
+        var coordinator = new StubCoordinator();
+        using var metrics = new RevalidationMetrics();
+        var processor = new EmailRevalidationProcessor(
+            store, service, coordinator, new StubDispatcher(true), new AvailableThrottle(),
+            new RevalidationSchedulePolicy(new StubProviderPolicies(new("Microsoft365", 1, 0, 60, 1)),
+                new StubBackoff(Now.AddMinutes(5))),
+            metrics, new FixedTimeProvider(Now));
+
+        var disposition = await processor.ProcessAsync(Message(lifecycle.ValidationId, 2));
+
+        Assert.Equal(RevalidationProcessingDisposition.Rescheduled, disposition.Disposition);
+        Assert.Equal(1, service.Calls);
+        Assert.Equal(0, coordinator.RetryCalls);
+        Assert.Equal(ValidationResultState.Provisional, store.Value!.ResultState);
+        Assert.Equal(ValidationLifecycleState.Provisional, store.Value.LifecycleState);
+        Assert.Equal(1, store.Value.AttemptNumber);
+        Assert.Equal(1, store.Value.CurrentResult.AttemptNumber);
+        Assert.Equal(deferredUntil, store.Value.NextRetryAt);
+        Assert.Equal(deferredUntil, store.Value.CurrentResult.RetryAfter);
+        Assert.Equal(2, store.Value.PendingRevalidation?.Message.AttemptNumber);
+        Assert.Single(store.Value.Attempts);
+    }
+
+    [Fact]
     public async Task Processor_ReputationCircuitReschedulesWithoutConsumingAttempt()
     {
         var lifecycle = Lifecycle(ValidationResultState.Provisional, 1);
@@ -655,12 +702,17 @@ public sealed class RevalidationTests
 
     private sealed class StubCoordinator : IValidationLifecycleCoordinator
     {
+        public int RetryCalls { get; private set; }
+
         public Task<ValidationLifecycleResult> ProcessInitialResultAsync(EmailValidationResult result,
             EmailValidationRequest request, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ValidationLifecycleResult(result, null, false, false));
         public Task<ValidationLifecycleResult> ProcessRetryResultAsync(string validationId, long expectedVersion,
-            int expectedAttemptNumber, EmailValidationResult result, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ValidationLifecycleResult(result, null, true, false));
+            int expectedAttemptNumber, EmailValidationResult result, CancellationToken cancellationToken = default)
+        {
+            RetryCalls++;
+            return Task.FromResult(new ValidationLifecycleResult(result, null, true, false));
+        }
     }
 
     private sealed class AvailableThrottle : ISmtpProbeThrottle

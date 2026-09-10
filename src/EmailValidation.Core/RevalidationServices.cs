@@ -773,35 +773,15 @@ public sealed class EmailRevalidationProcessor(
         if ((!availability.CanProbe || reputation?.SuppressSmtp == true) &&
             retryAfter is { } deferredUntil && deferredUntil > timeProvider.GetUtcNow())
         {
-            var schedule = schedulePolicy.CreateSchedule(new(
-                lifecycle.CurrentResult,
-                reputation?.SuppressSmtp == true ? ReasonCode.ReputationPolicyDeferred : ReasonCode.LocalCooldown,
-                lifecycle.AttemptNumber, timeProvider.GetUtcNow(), deferredUntil));
-            var rescheduled = lifecycle with
-            {
-                NextRetryAt = schedule.ScheduledAt,
-                RetryScheduled = false,
-                PendingRevalidation = new(message with { ScheduledRetryAt = schedule.ScheduledAt },
-                    timeProvider.GetUtcNow(), schedule.ScheduledAt),
-                CurrentResult = lifecycle.CurrentResult with { RetryAfter = schedule.ScheduledAt, RetryScheduled = false },
-                LifecycleState = ValidationLifecycleState.Provisional,
-                CurrentStage = ValidationProgressStage.Provisional,
-                RetryReason = reputation?.SuppressSmtp == true
-                    ? ReasonCode.ReputationPolicyDeferred.ToString()
-                    : ReasonCode.LocalCooldown.ToString(),
-                StatusMessage = reputation?.SuppressSmtp == true
-                    ? "SMTP reputation protection remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt."
-                    : "Provider or domain cooldown remains active; automatic revalidation will be rescheduled.",
-                LastUpdatedAt = timeProvider.GetUtcNow(),
-                Sequence = lifecycle.Sequence + 1,
-                Version = lifecycle.Version + 1
-            };
-            var saved = await store.TrySaveAsync(rescheduled, lifecycle.Version, cancellationToken).ConfigureAwait(false);
-            if (!saved.Applied) return new(RevalidationProcessingDisposition.Stale);
-            var dispatch = await dispatcher.DispatchAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
-            if (dispatch?.Succeeded != true) return new(RevalidationProcessingDisposition.RetryInfrastructureFailure);
-            metrics.RecordRescheduled(lifecycle.CurrentResult.MailProvider);
-            return new(RevalidationProcessingDisposition.Rescheduled);
+            return await RescheduleWithoutAttemptAsync(
+                lifecycle,
+                message,
+                reputation?.SuppressSmtp == true
+                    ? ReasonCode.ReputationPolicyDeferred
+                    : ReasonCode.LocalCooldown,
+                deferredUntil,
+                lifecycle.AttemptNumber,
+                cancellationToken).ConfigureAwait(false);
         }
 
         if (lifecycle.LifecycleState != ValidationLifecycleState.Revalidating)
@@ -850,6 +830,24 @@ public sealed class EmailRevalidationProcessor(
         if (canonical is null || canonical.LifecycleState != ValidationLifecycleState.Revalidating ||
             canonical.AttemptNumber != message.AttemptNumber)
             return new(RevalidationProcessingDisposition.Stale);
+
+        var now = timeProvider.GetUtcNow();
+        if (!result.ProbeAttempted &&
+            result.ProbeDisposition == SmtpProbeDisposition.LocalCooldown &&
+            result.RetryAfter is { } lateDeferredUntil && lateDeferredUntil > now)
+        {
+            var reason = result.ReasonCodes.Contains(ReasonCode.ReputationPolicyDeferred)
+                ? ReasonCode.ReputationPolicyDeferred
+                : ReasonCode.LocalCooldown;
+            return await RescheduleWithoutAttemptAsync(
+                canonical,
+                message,
+                reason,
+                lateDeferredUntil,
+                message.AttemptNumber - 1,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         var coordinated = await coordinator.ProcessRetryResultAsync(
             canonical.ValidationId, canonical.Version, message.AttemptNumber, result, cancellationToken)
             .ConfigureAwait(false);
@@ -858,6 +856,59 @@ public sealed class EmailRevalidationProcessor(
                 ? RevalidationProcessingDisposition.Rescheduled
                 : RevalidationProcessingDisposition.Completed)
             : new(RevalidationProcessingDisposition.Stale);
+    }
+
+    private async Task<RevalidationProcessingResult> RescheduleWithoutAttemptAsync(
+        ValidationLifecycle lifecycle,
+        EmailRevalidationMessageV1 message,
+        ReasonCode reason,
+        DateTimeOffset deferredUntil,
+        int retainedAttemptNumber,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var schedule = schedulePolicy.CreateSchedule(new(
+            lifecycle.CurrentResult,
+            reason,
+            retainedAttemptNumber,
+            now,
+            deferredUntil));
+        var rescheduled = lifecycle with
+        {
+            ResultState = ValidationResultState.Provisional,
+            AttemptNumber = retainedAttemptNumber,
+            FinalizedAt = null,
+            NextRetryAt = schedule.ScheduledAt,
+            RetryScheduled = false,
+            PendingRevalidation = new(message with { ScheduledRetryAt = schedule.ScheduledAt },
+                now, schedule.ScheduledAt),
+            CurrentResult = lifecycle.CurrentResult with
+            {
+                ResultState = ValidationResultState.Provisional,
+                AttemptNumber = retainedAttemptNumber,
+                RetryAfter = schedule.ScheduledAt,
+                RetryScheduled = false,
+                UnknownContext = lifecycle.CurrentResult.UnknownContext is null
+                    ? null
+                    : lifecycle.CurrentResult.UnknownContext with { RetryAfter = schedule.ScheduledAt },
+                FinalizedAt = null
+            },
+            LifecycleState = ValidationLifecycleState.Provisional,
+            CurrentStage = ValidationProgressStage.Provisional,
+            RetryReason = reason.ToString(),
+            StatusMessage = reason == ReasonCode.ReputationPolicyDeferred
+                ? "SMTP reputation protection remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt."
+                : "Provider or domain cooldown remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt.",
+            LastUpdatedAt = now,
+            Sequence = lifecycle.Sequence + 1,
+            Version = lifecycle.Version + 1
+        };
+        var saved = await store.TrySaveAsync(rescheduled, lifecycle.Version, cancellationToken).ConfigureAwait(false);
+        if (!saved.Applied) return new(RevalidationProcessingDisposition.Stale);
+        var dispatch = await dispatcher.DispatchAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
+        if (dispatch?.Succeeded != true) return new(RevalidationProcessingDisposition.RetryInfrastructureFailure);
+        metrics.RecordRescheduled(lifecycle.CurrentResult.MailProvider);
+        return new(RevalidationProcessingDisposition.Rescheduled);
     }
 
     private static string Domain(string email)

@@ -61,8 +61,9 @@ worker. A future API can resolve `IEmailValidator`, or compose `IEmailValidation
   transcript. `MessageId` is `{ValidationId}:{AttemptNumber}` and `MessageVersion = 1`.
 - Scheduled time is the maximum of `RetryAfter`, current local/provider cooldown, provider policy-block cooldown, and
   existing failure backoff. The broker adapter uses native scheduled enqueue; no process sleeps until due.
-- A currently cooling provider/domain causes the same logical attempt to be rescheduled without SMTP work. It never
-  cycles senders, IPs, or proxies.
+- A currently cooling provider/domain causes the same logical attempt to be rescheduled without SMTP work. This also
+  covers a cooldown acquired after the worker's availability pre-check, so a no-probe race cannot consume the final
+  attempt. It never cycles senders, IPs, or proxies.
 - The embedded outbox is committed with provisional state. Scheduling success clears it and sets
   `RetryScheduled = true`; failure leaves it pending and accurately reports `RetryScheduled = false`.
 - Broker duplicate detection is optional. Application idempotency treats already-final, duplicate, and stale
