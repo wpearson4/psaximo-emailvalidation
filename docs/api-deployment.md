@@ -13,6 +13,9 @@ REST resources and scopes:
 - `GET /v1/email-validation-jobs/{jobId}` — `emailvalidation.jobs.read`
 - `GET /v1/email-validation-jobs/{jobId}/results?skip=0&take=100` — `emailvalidation.jobs.read`
 
+Batch job creation ignores blank email values. Result positions retain the corresponding source-row indexes, allowing
+download clients to leave skipped rows empty without shifting later validation results.
+
 gRPC methods and scopes:
 
 - `emailvalidation.v1.EmailValidationService/ValidateEmail` — `emailvalidation.validate`

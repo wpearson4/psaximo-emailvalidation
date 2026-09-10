@@ -103,14 +103,23 @@ public static class IdempotencyRequestHasher
         IReadOnlyList<string> emails,
         bool enableSmtp,
         string? sourceFileId = null,
-        string? emailColumn = null)
+        string? emailColumn = null,
+        IReadOnlyList<int>? sourcePositions = null)
     {
+        if (sourcePositions is not null && sourcePositions.Count != emails.Count)
+            throw new ArgumentException("Source positions must correspond to the supplied email addresses.", nameof(sourcePositions));
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
         Append(hash, $"source:{sourceFileId?.Trim()}\n");
         Append(hash, $"column:{emailColumn?.Trim()}\n");
-        foreach (var email in emails)
-            Append(hash, $"{email.Trim().ToLowerInvariant()}\n");
+        var includePositions = sourcePositions is not null &&
+            sourcePositions.Where((position, index) => position != index).Any();
+        if (includePositions) Append(hash, "source-positions:1\n");
+        for (var index = 0; index < emails.Count; index++)
+        {
+            if (includePositions) Append(hash, $"{sourcePositions![index]}:");
+            Append(hash, $"{emails[index].Trim().ToLowerInvariant()}\n");
+        }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 

@@ -240,11 +240,19 @@ public static class ApiEndpoints
         if (input?.Emails is null || input.Emails.Count == 0)
             return ValidationError("emails", "At least one email is required.");
         var limits = hostOptions.Value.Limits;
-        if (input.Emails.Any(email => string.IsNullOrWhiteSpace(email) || email.Length > limits.MaximumEmailLength))
-            return ValidationError("emails", $"Each email is required and must not exceed {limits.MaximumEmailLength} characters.");
-        if (input.Emails.Count > engineOptions.Value.Jobs.MaximumItemsPerJob)
+        var validationInputs = input.Emails
+            .Select((email, position) => new { Email = email?.Trim(), Position = position })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Email))
+            .ToArray();
+        if (validationInputs.Length == 0)
+            return ValidationError("emails", "At least one non-empty email is required.");
+        if (validationInputs.Any(item => item.Email!.Length > limits.MaximumEmailLength))
+            return ValidationError("emails", $"Each email must not exceed {limits.MaximumEmailLength} characters.");
+        if (validationInputs.Length > engineOptions.Value.Jobs.MaximumItemsPerJob)
             return ValidationError("emails",
                 $"A job may contain at most {engineOptions.Value.Jobs.MaximumItemsPerJob} items.");
+        var emails = validationInputs.Select(item => item.Email!).ToArray();
+        var sourcePositions = validationInputs.Select(item => item.Position).ToArray();
         if (!ValidOptionalMetadata(input.SourceFileId, 256) ||
             !ValidOptionalMetadata(input.SourceFileName, 512) ||
             !ValidOptionalMetadata(input.EmailColumn, 256))
@@ -265,7 +273,7 @@ public static class ApiEndpoints
             return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
 
         var hash = IdempotencyRequestHasher.HashJobRequest(
-            input.Emails, input.EnableSmtp, sourceFileId, input.EmailColumn);
+            emails, input.EnableSmtp, sourceFileId, input.EmailColumn, sourcePositions);
         if (!string.IsNullOrEmpty(key))
         {
             var existing = await resources.GetIdempotentOperationAsync(
@@ -282,12 +290,13 @@ public static class ApiEndpoints
                 if (existingJob.State == ValidationJobState.Failed && !string.IsNullOrWhiteSpace(sourceFileId))
                 {
                     existingJob = await jobs.CreateAsync(new CreateValidationJobRequest(
-                        input.Emails,
+                        emails,
                         input.EnableSmtp,
                         existingJob.JobId,
                         sourceFileId,
                         input.SourceFileName?.Trim(),
-                        input.EmailColumn?.Trim()), CancellationToken.None).ConfigureAwait(false);
+                        input.EmailColumn?.Trim(),
+                        sourcePositions), CancellationToken.None).ConfigureAwait(false);
                 }
                 return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
                     ApiContractMapper.Map(existingJob));
@@ -311,12 +320,13 @@ public static class ApiEndpoints
         {
             var job = await jobs.CreateAsync(
                 new CreateValidationJobRequest(
-                    input.Emails,
+                    emails,
                     input.EnableSmtp,
                     jobId,
                     sourceFileId,
                     input.SourceFileName?.Trim(),
-                    input.EmailColumn?.Trim()),
+                    input.EmailColumn?.Trim(),
+                    sourcePositions),
                 CancellationToken.None)
                 .ConfigureAwait(false);
             await resources.GrantAsync(new ResourceOwnership(

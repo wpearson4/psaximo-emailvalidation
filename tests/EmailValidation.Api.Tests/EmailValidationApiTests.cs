@@ -194,6 +194,26 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public async Task Jobs_IgnoreBlankEmailRowsAndReturnOriginalSourcePositions()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead]);
+
+        var response = await client.PostAsJsonAsync("/v1/email-validation-jobs", new
+        {
+            emails = new string?[] { "one@example.com", null, "  ", "two@example.com" }
+        });
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var job = await response.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        Assert.Equal(2, job!.TotalItems);
+        var results = await client.GetFromJsonAsync<ValidationJobResultsPageV1Response>(
+            $"/v1/email-validation-jobs/{job.JobId}/results?skip=0&take=10");
+        Assert.Equal([0, 3], results!.Items.Select(item => item.Position));
+        Assert.Equal(["one@example.com", "two@example.com"], results.Items.Select(item => item.Email));
+    }
+
+    [Fact]
     public async Task CompletedSourceFile_CannotBeValidatedAgain()
     {
         var sourceFileId = $"completed-source-{Guid.NewGuid():N}";
@@ -543,8 +563,9 @@ public sealed class ApiJobService : IValidationJobService
             SourceFileId: request.SourceFileId,
             SourceFileName: request.SourceFileName,
             EmailColumn: request.EmailColumn);
-        _jobs[id] = (job, request.Emails.Select((email, position) =>
-            new ValidationJobItem(id, position, email, ValidationJobItemState.Pending)).ToArray());
+        _jobs[id] = (job, request.Emails.Select((email, index) =>
+            new ValidationJobItem(id, request.SourcePositions?[index] ?? index, email,
+                ValidationJobItemState.Pending)).ToArray());
         return Task.FromResult(job);
     }
 

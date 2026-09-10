@@ -36,7 +36,8 @@ public sealed record CreateValidationJobRequest(
     string? JobId = null,
     string? SourceFileId = null,
     string? SourceFileName = null,
-    string? EmailColumn = null);
+    string? EmailColumn = null,
+    IReadOnlyList<int>? SourcePositions = null);
 
 public sealed record ValidationJobSnapshot(
     string JobId,
@@ -168,10 +169,23 @@ public sealed class ValidationJobService(
         ArgumentNullException.ThrowIfNull(request);
         if (request.Emails is null || request.Emails.Count == 0)
             throw new ArgumentException("At least one email address is required.", nameof(request));
-        if (request.Emails.Count > _options.MaximumItemsPerJob)
+        if (request.SourcePositions is not null && request.SourcePositions.Count != request.Emails.Count)
+            throw new ArgumentException("Source positions must correspond to the supplied email addresses.", nameof(request));
+        var inputs = request.Emails
+            .Select((email, index) => new
+            {
+                Email = email?.Trim(),
+                Position = request.SourcePositions?[index] ?? index
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Email))
+            .ToArray();
+        if (inputs.Length == 0)
+            throw new ArgumentException("At least one non-empty email address is required.", nameof(request));
+        if (inputs.Length > _options.MaximumItemsPerJob)
             throw new ArgumentException($"A job may contain at most {_options.MaximumItemsPerJob} items.", nameof(request));
-        if (request.Emails.Any(string.IsNullOrWhiteSpace))
-            throw new ArgumentException("Job email addresses cannot be empty.", nameof(request));
+        if (inputs.Any(item => item.Position < 0) ||
+            inputs.Select(item => item.Position).Distinct().Count() != inputs.Length)
+            throw new ArgumentException("Source positions must be non-negative and unique.", nameof(request));
 
         var now = timeProvider.GetUtcNow();
         var sourceFileId = request.SourceFileId?.Trim();
@@ -190,13 +204,13 @@ public sealed class ValidationJobService(
                 (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
             throw new ArgumentException("JobId is invalid.", nameof(request));
         var job = new ValidationJobSnapshot(jobId, now, ValidationJobState.Requested,
-            request.Emails.Count, 0, 0, 0, 0, now,
+            inputs.Length, 0, 0, 0, 0, now,
             EnableSmtp: request.EnableSmtp,
             SourceFileId: sourceFileId,
             SourceFileName: request.SourceFileName,
             EmailColumn: request.EmailColumn);
-        var items = request.Emails.Select((email, position) =>
-            new ValidationJobItem(jobId, position, email, ValidationJobItemState.Pending)).ToArray();
+        var items = inputs.Select(input =>
+            new ValidationJobItem(jobId, input.Position, input.Email!, ValidationJobItemState.Pending)).ToArray();
         try
         {
             await store.CreateAsync(job, items, cancellationToken).ConfigureAwait(false);

@@ -27,6 +27,22 @@ public sealed class ValidationJobTests
     }
 
     [Fact]
+    public async Task Create_IgnoresBlankEmailsAndPreservesTheirSourceRowPositions()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["one@example.com", " ", "two@example.com"],
+            SourcePositions: [4, 5, 6]));
+
+        var items = await service.GetResultsAsync(job.JobId, 0, 10);
+        Assert.Equal(2, job.TotalItems);
+        Assert.Equal([4, 6], items.Select(item => item.Position));
+        Assert.Equal(["one@example.com", "two@example.com"], items.Select(item => item.Email));
+    }
+
+    [Fact]
     public async Task Processor_UsesBoundedConcurrencyAndCompletesWithProgress()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
