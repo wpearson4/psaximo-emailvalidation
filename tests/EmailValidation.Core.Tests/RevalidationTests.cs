@@ -461,6 +461,41 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public async Task Processor_CooldownAfterWorkerRestartRollsBackUnfinishedAttempt()
+    {
+        var lifecycle = Lifecycle(ValidationResultState.Provisional, 2) with
+        {
+            LifecycleState = ValidationLifecycleState.Revalidating,
+            CurrentStage = ValidationProgressStage.Revalidating,
+            Attempts = [new(1, EmailValidationStatus.Unknown, DetailedStatus.LocalCooldown, 0.25,
+                MailProvider.Microsoft365, [ReasonCode.LocalCooldown], Now,
+                ValidationResultSource.LiveValidation, Now.AddMinutes(5))],
+            CurrentResult = Lifecycle(ValidationResultState.Provisional, 1).CurrentResult with
+            {
+                AttemptNumber = 2
+            }
+        };
+        var store = new MemoryLifecycleStore(lifecycle);
+        var service = new CountingValidationService(Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted));
+        using var metrics = new RevalidationMetrics();
+        var processor = new EmailRevalidationProcessor(
+            store, service, new StubCoordinator(), new StubDispatcher(true),
+            new CoolingThrottle(Now.AddMinutes(20)),
+            new RevalidationSchedulePolicy(new StubProviderPolicies(new("Microsoft365", 1, 0, 60, 1)),
+                new StubBackoff(Now.AddMinutes(5))),
+            metrics, new FixedTimeProvider(Now));
+
+        var disposition = await processor.ProcessAsync(Message(lifecycle.ValidationId, 2));
+
+        Assert.Equal(RevalidationProcessingDisposition.Rescheduled, disposition.Disposition);
+        Assert.Equal(0, service.Calls);
+        Assert.Equal(1, store.Value!.AttemptNumber);
+        Assert.Equal(1, store.Value.CurrentResult.AttemptNumber);
+        Assert.Equal(2, store.Value.PendingRevalidation?.Message.AttemptNumber);
+        Assert.Single(store.Value.Attempts);
+    }
+
+    [Fact]
     public async Task Processor_ReputationCircuitReschedulesWithoutConsumingAttempt()
     {
         var lifecycle = Lifecycle(ValidationResultState.Provisional, 1);

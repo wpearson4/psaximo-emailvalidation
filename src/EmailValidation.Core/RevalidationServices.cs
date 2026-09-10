@@ -780,7 +780,9 @@ public sealed class EmailRevalidationProcessor(
                     ? ReasonCode.ReputationPolicyDeferred
                     : ReasonCode.LocalCooldown,
                 deferredUntil,
-                lifecycle.AttemptNumber,
+                lifecycle.LifecycleState == ValidationLifecycleState.Revalidating
+                    ? message.AttemptNumber - 1
+                    : lifecycle.AttemptNumber,
                 cancellationToken).ConfigureAwait(false);
         }
 
