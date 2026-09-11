@@ -355,7 +355,8 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 : detection.StrategyVersion,
             RefreshAttemptedAt = detection.RefreshAttemptedAt ?? now
         };
-        if (detection.Status == CatchAllStatus.Unknown && CanPreserveAfterInconclusiveRefresh(current))
+        if (detection.EffectiveRecipientBehavior == DomainRecipientBehavior.Unknown &&
+            CanPreserveAfterInconclusiveRefresh(current))
         {
             detection = current.CatchAll with
             {
@@ -470,7 +471,7 @@ internal static class Fingerprints
         $"{authentication.Dkim.State}");
 
     public static string CreateCatchAll(CatchAllDetectionResult catchAll) => Hash(
-        $"{catchAll.Status}|{catchAll.ReasonCode}|{catchAll.Confidence:F6}|{catchAll.StrategyVersion}");
+        $"{catchAll.Status}|{catchAll.EffectiveRecipientBehavior}|{catchAll.ReasonCode}|{catchAll.Confidence:F6}|{catchAll.StrategyVersion}");
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

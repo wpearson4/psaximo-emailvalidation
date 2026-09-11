@@ -113,6 +113,43 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public void ContractMapper_ExposesAcceptAllSeparatelyFromCatchAll()
+    {
+        var result = new EmailValidationResult
+        {
+            Email = "person@yahoo.com",
+            Status = EmailValidationStatus.Unknown,
+            Confidence = .85,
+            Checks = new EmailValidationChecks
+            {
+                SyntaxValid = true,
+                DomainExists = true,
+                MxPresent = true,
+                CatchAll = CatchAllStatus.Unknown
+            },
+            DomainIntelligence = new DomainIntelligence
+            {
+                Domain = "yahoo.com",
+                DomainExists = true,
+                Dns = new DnsLookupResult(DnsStatus.Success, true,
+                    [new MxRecord(1, "mx-aol.mail.gm0.yahoodns.net")], false, TimeSpan.Zero),
+                Provider = new ProviderDetectionResult(MailProvider.Yahoo, .99),
+                CatchAll = new CatchAllDetectionResult(CatchAllStatus.Unknown, 2, 2, 0, 0)
+                {
+                    RecipientBehavior = DomainRecipientBehavior.AcceptAll
+                }
+            },
+            ValidationId = "validation-accept-all",
+            ResultState = ValidationResultState.Final
+        };
+
+        var response = ApiContractMapper.Map(result);
+
+        Assert.Equal("Unknown", response.Checks.CatchAll);
+        Assert.Equal("AcceptAll", response.Checks.RecipientBehavior);
+    }
+
+    [Fact]
     public async Task InvalidShape_ReturnsTraceableProblemDetails()
     {
         using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);

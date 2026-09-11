@@ -59,7 +59,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void GatewayAcceptanceWithoutCatchAllProof_IsCatchAllWithAmbiguousReason()
+    public void GatewayAcceptanceWithoutCatchAllProof_IsUnknownNotCatchAll()
     {
         var result = _classifier.Classify(Evidence(
             SmtpResponseCategory.GatewayAccepted,
@@ -67,8 +67,9 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             provider: MailProvider.Microsoft365));
 
-        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Contains(ReasonCode.CatchAllGatewayAmbiguous, result.ReasonCodes);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
     }
 
     [Fact]
@@ -112,7 +113,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void RepeatedHistoricalCatchAllEvidence_UsesCatchAllStatus()
+    public void HistoricalWeakCatchAllEvidence_DoesNotCreateCatchAllStatus()
     {
         var history = new HistoricalSignalSummary(3, 2, 0, 1, 0, 0);
         var result = _classifier.Classify(Evidence(
@@ -121,12 +122,11 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Contains(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
+        Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
     }
 
     [Fact]
-    public void RepeatedHistoricalRandomAcceptance_UsesCatchAllStatus()
+    public void RepeatedHistoricalRandomAcceptance_IsAcceptAllEvidenceNotCatchAll()
     {
         var history = new HistoricalSignalSummary(2, 0, 0, 0, 0, 0, RandomRecipientAcceptedCount: 2);
         var result = _classifier.Classify(Evidence(
@@ -135,12 +135,13 @@ public sealed class EvidenceClassificationTests
             CatchAllStatus.Unknown,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Contains(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
+        Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.AcceptAllObserved, result.ReasonCodes);
     }
 
     [Fact]
-    public void GoogleGatewayAcceptance_UsesCatchAllStatusWithoutClaimingHistoricalProof()
+    public void GoogleGatewayAcceptance_RemainsUnknownWithoutCatchAllProof()
     {
         var history = new HistoricalSignalSummary(2, 0, 0, 2, 0, 0, RandomRecipientAcceptedCount: 2);
         var result = _classifier.Classify(Evidence(
@@ -150,9 +151,42 @@ public sealed class EvidenceClassificationTests
             provider: MailProvider.GoogleWorkspace,
             history: history));
 
-        Assert.Equal(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Contains(ReasonCode.CatchAllGatewayAmbiguous, result.ReasonCodes);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
         Assert.DoesNotContain(ReasonCode.HistoricalCatchAllBehavior, result.ReasonCodes);
+    }
+
+    [Theory]
+    [InlineData("yahoo.com")]
+    [InlineData("aol.com")]
+    public void YahooAndAolTargetPlusRandomAcceptance_IsAcceptAllNotCatchAll(string domain)
+    {
+        var result = _classifier.Classify(Evidence(
+            SmtpResponseCategory.Accepted,
+            AcceptanceStrength.Medium,
+            CatchAllStatus.Unknown,
+            provider: MailProvider.Yahoo,
+            recipientBehavior: DomainRecipientBehavior.AcceptAll,
+            domainName: domain));
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
+        Assert.Contains(ReasonCode.AcceptAllObserved, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+    }
+
+    [Fact]
+    public void ExplicitAcceptAllBehavior_OverridesLegacyCatchAllStatus()
+    {
+        var result = _classifier.Classify(Evidence(
+            SmtpResponseCategory.LocalCooldown,
+            AcceptanceStrength.None,
+            CatchAllStatus.LikelyCatchAll,
+            catchAllConfidence: 0.90,
+            recipientBehavior: DomainRecipientBehavior.AcceptAll));
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.AcceptAllObserved, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.CatchAllDetected, result.ReasonCodes);
     }
 
     [Fact]
@@ -176,15 +210,26 @@ public sealed class EvidenceClassificationTests
         CatchAllStatus catchAll,
         double catchAllConfidence = 0.30,
         MailProvider provider = MailProvider.GenericSmtp,
-        HistoricalSignalSummary? history = null)
+        HistoricalSignalSummary? history = null,
+        DomainRecipientBehavior recipientBehavior = DomainRecipientBehavior.Unknown,
+        string domainName = "example.com")
     {
         var domain = new DomainIntelligence
         {
-            Domain = "example.com",
+            Domain = domainName,
             DomainExists = true,
             Dns = new DnsLookupResult(DnsStatus.Success, true, [new MxRecord(10, "mx.example.com")], false, TimeSpan.Zero),
             Provider = new ProviderDetectionResult(provider, 0.95),
-            CatchAll = new CatchAllDetectionResult(catchAll, 1, 0, 1, 0, Confidence: catchAllConfidence),
+            CatchAll = new CatchAllDetectionResult(
+                catchAll,
+                recipientBehavior == DomainRecipientBehavior.AcceptAll ? 2 : 1,
+                recipientBehavior == DomainRecipientBehavior.AcceptAll ? 2 : 0,
+                recipientBehavior == DomainRecipientBehavior.RecipientSpecific ? 1 : 0,
+                0,
+                Confidence: catchAllConfidence)
+            {
+                RecipientBehavior = recipientBehavior
+            },
             ObservedAt = DateTimeOffset.UtcNow
         };
         var probeStatus = category switch

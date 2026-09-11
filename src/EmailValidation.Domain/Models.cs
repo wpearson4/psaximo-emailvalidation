@@ -51,7 +51,8 @@ public enum ReasonCode
     SenderIdentityRejected, SenderDomainRejected, PolicyBlock, AuthenticationRequired,
     RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
     LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported,
-    NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid
+    NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid,
+    AcceptAllObserved, RecipientSpecificBehavior
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -63,6 +64,15 @@ public enum CatchAllStatus
     LikelyCatchAll = 2,
     Unknown = 3,
     LikelyNotCatchAll = 4
+}
+// Observed SMTP recipient discrimination is distinct from inferred mail routing.
+// Append new values to preserve numeric compatibility with persisted intelligence.
+public enum DomainRecipientBehavior
+{
+    Unknown = 0,
+    RecipientSpecific = 1,
+    CatchAll = 2,
+    AcceptAll = 3
 }
 public enum MailProvider
 {
@@ -256,6 +266,17 @@ public sealed record CatchAllDetectionResult(
     double Confidence = 0)
 {
     public bool RandomRecipientAccepted => Accepted > 0;
+    public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
+    [JsonIgnore]
+    public DomainRecipientBehavior EffectiveRecipientBehavior => RecipientBehavior != DomainRecipientBehavior.Unknown
+        ? RecipientBehavior
+        : Status switch
+        {
+            CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll =>
+                DomainRecipientBehavior.RecipientSpecific,
+            CatchAllStatus.LikelyCatchAll => DomainRecipientBehavior.CatchAll,
+            _ => DomainRecipientBehavior.Unknown
+        };
     public IReadOnlyList<SmtpProbeResult> ProbeResults { get; init; } = [];
     public CatchAllReasonCode ReasonCode { get; init; }
     public DateTimeOffset? ObservedAt { get; init; }
@@ -273,7 +294,10 @@ public enum CatchAllReasonCode
     HistoricalRandomRecipientAcceptance,
     ProviderCatchAllBehavior,
     RandomRecipientsRejected,
-    MixedOrInconclusive
+    MixedOrInconclusive,
+    AcceptAllObserved,
+    RecipientSpecificObserved,
+    IndependentRoutingEvidence
 }
 
 public sealed record DomainValidationData(

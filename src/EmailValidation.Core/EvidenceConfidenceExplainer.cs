@@ -28,7 +28,8 @@ public static class EvidenceConfidenceExplainer
                 : "Low confidence because MAIL FROM was rejected before recipient validation occurred.";
         if (mxValidation?.Consensus == MxConsensus.Conflicting)
             return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
-        if (domain.CatchAll.Status == CatchAllStatus.LikelyCatchAll && !probe.ProbeAttempted)
+        var recipientBehavior = domain.CatchAll.EffectiveRecipientBehavior;
+        if (recipientBehavior == DomainRecipientBehavior.CatchAll && !probe.ProbeAttempted)
         {
             var reason = string.IsNullOrWhiteSpace(domain.CatchAll.Detail)
                 ? "the domain consistently accepts randomized recipients"
@@ -61,10 +62,12 @@ public static class EvidenceConfidenceExplainer
         };
         if (inconclusiveReason is not null) return inconclusiveReason;
         if (probe.Status == SmtpMailboxStatus.Accepted &&
-            domain.CatchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll)
+            recipientBehavior == DomainRecipientBehavior.RecipientSpecific)
             return "High confidence because the target recipient was accepted while randomized recipients were consistently rejected.";
-        if (domain.CatchAll.Status == CatchAllStatus.LikelyCatchAll)
-            return "Mailbox existence is uncertain because the domain accepts randomized recipients.";
+        if (recipientBehavior == DomainRecipientBehavior.CatchAll)
+            return "Mailbox existence is uncertain because independent evidence indicates catch-all routing.";
+        if (recipientBehavior == DomainRecipientBehavior.AcceptAll)
+            return "Mailbox existence is uncertain because the public SMTP endpoint accepts arbitrary recipients; this establishes accept-all behavior, not catch-all routing.";
         if (probe.Status == SmtpMailboxStatus.Accepted)
             return "The target was accepted, but unresolved catch-all or gateway behavior limits mailbox certainty.";
         return "Evidence is incomplete or ambiguous, so the result is intentionally conservative.";

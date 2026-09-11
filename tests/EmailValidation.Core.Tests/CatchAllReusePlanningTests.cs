@@ -123,10 +123,11 @@ public sealed class CatchAllReusePlanningTests
             2,
             0,
             0,
-            "The domain consistently accepted randomized recipients.",
+            "Independent routing evidence confirms otherwise nonexistent recipients are routed.",
             0.96)
         {
-            ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted,
+            ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
+            RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = Now.AddMinutes(-10),
             StrategyVersion = Policy.ProviderStrategyVersion
         },

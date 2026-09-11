@@ -42,15 +42,10 @@ public static class ValidationEvidenceAssessment
         HistoricalSignalSummary history)
     {
         if (status != EmailValidationStatus.CatchAll) return CatchAllClassification.None;
-        if (domain.CatchAll.Status == CatchAllStatus.LikelyCatchAll)
+        if (domain.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.CatchAll)
             return domain.CatchAll.Confidence >= 0.95
                 ? CatchAllClassification.Confirmed
                 : CatchAllClassification.Likely;
-        if (history.LikelyCatchAllCount >= 2 ||
-            (domain.Provider.Provider != MailProvider.GoogleWorkspace && history.RandomRecipientAcceptedCount >= 2))
-            return CatchAllClassification.Historical;
-        if (provider.EffectiveCategory == SmtpResponseCategory.GatewayAccepted)
-            return CatchAllClassification.GatewayAmbiguous;
         return CatchAllClassification.Likely;
     }
 }

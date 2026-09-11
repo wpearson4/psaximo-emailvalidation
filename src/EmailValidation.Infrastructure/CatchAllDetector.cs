@@ -46,43 +46,19 @@ public sealed class CatchAllDetector(
                 "Every randomized recipient was explicitly rejected.",
                 attempted > 1 ? 0.95 : 0.82)
             {
-                ReasonCode = CatchAllReasonCode.RandomRecipientsRejected
+                ReasonCode = CatchAllReasonCode.RecipientSpecificObserved,
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific
             }, results);
 
         if (accepted == attempted)
         {
-            if (provider == MailProvider.GoogleWorkspace)
-                return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
-                    "Google Workspace accepted randomized recipients; RCPT acceptance alone is not treated as catch-all proof.",
-                    0.35)
-                {
-                    ReasonCode = CatchAllReasonCode.ProviderCatchAllBehavior
-                }, results);
-
-            if (provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer)
-                return WithResults(new(CatchAllStatus.LikelyCatchAll, attempted, accepted, rejected, ambiguous,
-                    "Exchange Online Protection accepted every randomized recipient; this indicates gateway or catch-all acceptance, not mailbox existence.",
-                    attempted > 1 ? 0.90 : 0.72)
-                {
-                    ReasonCode = CatchAllReasonCode.GatewayAcceptsArbitraryRecipients
-                }, results);
-
-            var minimum = Math.Clamp(_options.MinimumAcceptedProbes, 2, 3);
-            if (accepted >= minimum)
-                return WithResults(new(CatchAllStatus.LikelyCatchAll, attempted, accepted, rejected, ambiguous,
-                    $"{accepted} independent randomized recipients were accepted.",
-                    Math.Min(0.95, 0.80 + (accepted * 0.05)))
-                {
-                    ReasonCode = accepted > 2
-                        ? CatchAllReasonCode.ConsistentCatchAllBehavior
-                        : CatchAllReasonCode.RandomRecipientsAccepted
-                }, results);
-
+            var confidence = attempted > 1 ? Math.Min(0.95, 0.80 + (accepted * 0.05)) : 0.72;
             return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
-                $"A randomized recipient was accepted, but {minimum} accepted probes are required for a likely catch-all classification.",
-                0.45)
+                $"The SMTP endpoint accepted {accepted} randomized recipient probe(s). This establishes accept-all behavior at the public SMTP layer, not catch-all routing.",
+                confidence)
             {
-                ReasonCode = CatchAllReasonCode.MixedOrInconclusive
+                ReasonCode = CatchAllReasonCode.AcceptAllObserved,
+                RecipientBehavior = DomainRecipientBehavior.AcceptAll
             }, results);
         }
 
@@ -119,7 +95,8 @@ public sealed class CatchAllDetector(
             ObservedAt = now,
             StrategyVersion = _strategyVersion,
             RefreshAttemptedAt = now,
-            RefreshInconclusive = result.Status == CatchAllStatus.Unknown
+            RefreshInconclusive = result.Status == CatchAllStatus.Unknown &&
+                result.EffectiveRecipientBehavior == DomainRecipientBehavior.Unknown
         };
     }
 }

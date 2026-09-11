@@ -100,6 +100,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.ValidationResultState))]
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.EvidenceQuality))]
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.CatchAllClassification))]
+[assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.DomainRecipientBehavior))]
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.SmtpProbeDisposition))]
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.UnknownCause))]
 [assembly: TypeForwardedTo(typeof(global::EmailValidation.Core.ProbeSenderHealthStatus))]

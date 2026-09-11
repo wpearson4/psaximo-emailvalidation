@@ -32,7 +32,8 @@ public sealed record ValidationChecksV1(
     bool MxPresent,
     bool Disposable,
     bool RoleAddress,
-    string CatchAll);
+    string CatchAll,
+    string RecipientBehavior);
 
 public sealed record UnknownValidationContextV1(
     string Cause,
@@ -148,7 +149,9 @@ public static class ApiContractMapper
             result.Checks.MxPresent,
             result.Checks.DisposableDomain,
             result.Checks.RoleAccount,
-            result.Checks.CatchAll.ToString()));
+            result.Checks.CatchAll.ToString(),
+            result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior.ToString() ??
+                DomainRecipientBehavior.Unknown.ToString()));
 
     public static ValidationStatusV1Response Map(ValidationStatusSnapshot snapshot) => new(
         snapshot.ValidationId,

@@ -22,14 +22,14 @@ public sealed class ValidationEvidenceAssessmentTests
     }
 
     [Fact]
-    public void AmbiguousGatewayCatchAll_HasDedicatedSubtype()
+    public void GatewayAcceptanceWithoutRoutingProof_HasNoCatchAllSubtype()
     {
         var domain = Domain(CatchAllStatus.Unknown);
         var provider = Provider(SmtpResponseCategory.GatewayAccepted);
 
-        Assert.Equal(CatchAllClassification.GatewayAmbiguous,
+        Assert.Equal(CatchAllClassification.None,
             ValidationEvidenceAssessment.CatchAllType(
-                EmailValidationStatus.CatchAll, domain, provider, HistoricalSignalSummary.Empty));
+                EmailValidationStatus.Unknown, domain, provider, HistoricalSignalSummary.Empty));
     }
 
     private static DomainIntelligence Domain(CatchAllStatus catchAll) => new()

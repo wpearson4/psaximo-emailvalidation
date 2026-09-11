@@ -5,6 +5,7 @@ This analysis was performed before implementation. The existing domain-intellige
 | Requirement inspected | Initial classification | Finding and implemented disposition |
 |---|---|---|
 | `CatchAllStatus` | Already implemented | The existing `NotCatchAll`, `LikelyNotCatchAll`, `LikelyCatchAll`, `Unknown`, and `NotAttempted` taxonomy is reused unchanged. |
+| `DomainRecipientBehavior` | Implemented | Persists `Unknown`, `RecipientSpecific`, `CatchAll`, or `AcceptAll` independently. Randomized RCPT acceptance records `AcceptAll`; it never establishes catch-all routing. |
 | `CatchAllConfidence` | Already implemented | `CatchAllDetectionResult.Confidence` and the typed Mongo field already existed. A missing reusable-confidence policy now uses `CatchAll:MinimumReusableConfidence`. |
 | `CatchAllReason` | Implemented differently/incomplete | Free-form `Detail` existed. Added a compatible structured `CatchAllReasonCode` while retaining `Detail` as the human-readable explanation. |
 | `CatchAllObservedAt` | Missing | Added an evidence-specific observation time so reuse never replaces the original SMTP-evidence timestamp with result-generation time. |
@@ -18,7 +19,7 @@ This analysis was performed before implementation. The existing domain-intellige
 | Freshness | Implemented but incomplete | Domain expiry already existed. Catch-all freshness is now evaluated from its own observation time and existing catch-all TTL without introducing another TTL source. |
 | MX/provider invalidation | Already implemented/incomplete at planning boundary | Topology fingerprints and provider detection existed. A domain refresh carries catch-all evidence forward only when the current topology and strategy version still match; otherwise normal discovery runs. |
 | Policy/strategy versioning | Already implemented | The existing provider-strategy version is persisted with catch-all evidence and must match before reuse. Classification-policy changes continue to re-run classification rather than trusting a stored mailbox result. |
-| Mailbox SMTP suppression | Missing | Fresh, high-confidence reused `LikelyCatchAll` evidence now suppresses RCPT probing when arbitrary-recipient acceptance makes it non-discriminating. Classification returns `CatchAll`, never `Valid`, and mailbox reliability stays unproven. |
+| Mailbox SMTP suppression | Missing | Fresh, high-confidence evidence explicitly classified as `CatchAll` can suppress redundant RCPT probing. `AcceptAll` remains a separate observed SMTP behavior and does not produce a catch-all result. |
 | Result provenance | Implemented but incomplete | Existing result-source metadata gained `PersistentDomainIntelligence`; catch-all observation time remains separate from the newly generated result time. |
 | Refresh failure behavior | Missing | An inconclusive refresh preserves historical positive evidence, marks it inconclusive, and applies the existing transient window as a retry backoff. Stale evidence cannot suppress mailbox SMTP during that backoff. |
 | Contradictory evidence | Already supported by replacement semantics | A conclusive new random-recipient classification replaces the current snapshot while bounded observations retain history. |

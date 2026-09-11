@@ -180,6 +180,7 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.DisposableSource, document.DisposableSource)
             .Set(x => x.DisposableDatasetVersion, document.DisposableDatasetVersion)
             .Set(x => x.CatchAllStatus, document.CatchAllStatus)
+            .Set(x => x.RecipientBehavior, document.RecipientBehavior)
             .Set(x => x.CatchAllConfidence, document.CatchAllConfidence)
             .Set(x => x.CatchAllReasonCode, document.CatchAllReasonCode)
             .Set(x => x.CatchAllReason, document.CatchAllReason)
@@ -396,6 +397,8 @@ public sealed class MongoValidationIntelligenceStore :
         public string? DisposableDatasetVersion { get; set; }
         [BsonRepresentation(BsonType.String)]
         public CatchAllStatus CatchAllStatus { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public DomainRecipientBehavior RecipientBehavior { get; set; }
         public double CatchAllConfidence { get; set; }
         [BsonRepresentation(BsonType.String)]
         public CatchAllReasonCode CatchAllReasonCode { get; set; }
@@ -426,7 +429,11 @@ public sealed class MongoValidationIntelligenceStore :
             var normalized = NormalizeDomain(model.Domain);
             var sanitized = model with
             {
-                CatchAll = model.CatchAll with { ProbeResults = [] }
+                CatchAll = model.CatchAll with
+                {
+                    ProbeResults = [],
+                    RecipientBehavior = model.CatchAll.EffectiveRecipientBehavior
+                }
             };
             var now = DateTime.UtcNow;
             return new DomainIntelligenceDocument
@@ -450,6 +457,7 @@ public sealed class MongoValidationIntelligenceStore :
                 DisposableSource = model.DisposableIntelligence.Source,
                 DisposableDatasetVersion = model.DisposableIntelligence.DatasetVersion,
                 CatchAllStatus = model.CatchAll.Status,
+                RecipientBehavior = model.CatchAll.EffectiveRecipientBehavior,
                 CatchAllConfidence = model.CatchAll.Confidence,
                 CatchAllReasonCode = model.CatchAll.ReasonCode,
                 CatchAllReason = model.CatchAll.Detail,
@@ -488,6 +496,7 @@ public sealed class MongoValidationIntelligenceStore :
                 if (model is null) return null;
                 return model with
                 {
+                    CatchAll = NormalizeRecipientBehavior(model.CatchAll),
                     MxTopologyFingerprint = model.MxTopologyFingerprint ?? MxTopologyFingerprint,
                     ProviderFingerprint = model.ProviderFingerprint ?? ProviderFingerprint,
                     AuthenticationFingerprint = model.AuthenticationFingerprint ?? AuthenticationFingerprint,
@@ -537,7 +546,7 @@ public sealed class MongoValidationIntelligenceStore :
                     observed),
                 Disposable = DisposableStatus is DisposableDomainStatus.KnownDisposable or DisposableDomainStatus.LikelyDisposable,
                 DisposableIntelligence = disposable,
-                CatchAll = new CatchAllDetectionResult(
+                CatchAll = NormalizeRecipientBehavior(new CatchAllDetectionResult(
                     CatchAllStatus,
                     CatchAllEvidenceCount,
                     RandomProbeAcceptedCount,
@@ -547,11 +556,12 @@ public sealed class MongoValidationIntelligenceStore :
                     CatchAllConfidence)
                 {
                     ReasonCode = CatchAllReasonCode,
+                    RecipientBehavior = RecipientBehavior,
                     ObservedAt = CatchAllObservedAt is { } catchAllAt
                         ? new DateTimeOffset(DateTime.SpecifyKind(catchAllAt, DateTimeKind.Utc))
                         : null,
                     StrategyVersion = CatchAllStrategyVersion
-                },
+                }),
                 ObservedAt = observed,
                 EvidenceExpiresAt = EvidenceFreshUntil is { } freshUntil
                     ? new DateTimeOffset(DateTime.SpecifyKind(freshUntil, DateTimeKind.Utc))
@@ -570,6 +580,24 @@ public sealed class MongoValidationIntelligenceStore :
                 ChangeCount = ChangeCount,
                 IntelligencePolicyVersion = IntelligencePolicyVersion
             };
+        }
+
+        private static CatchAllDetectionResult NormalizeRecipientBehavior(CatchAllDetectionResult evidence)
+        {
+            if (evidence.RecipientBehavior != DomainRecipientBehavior.Unknown)
+                return evidence;
+
+            if (evidence.Accepted > 0 && evidence.Rejected == 0 && evidence.Ambiguous == 0)
+                return evidence with
+                {
+                    Status = CatchAllStatus.Unknown,
+                    RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                    ReasonCode = CatchAllReasonCode.AcceptAllObserved,
+                    Detail = "Persisted randomized-recipient acceptance establishes accept-all SMTP behavior, not catch-all routing.",
+                    RefreshInconclusive = false
+                };
+
+            return evidence with { RecipientBehavior = evidence.EffectiveRecipientBehavior };
         }
     }
 

@@ -63,8 +63,8 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
             AddCategoryReason(category, reasons);
         }
 
-        if (context.History.LikelyCatchAllCount > 0)
-            reasons.Add(ReasonCode.HistoricalCatchAllBehavior);
+        if (context.History.RandomRecipientAcceptedCount >= 2)
+            reasons.Add(ReasonCode.AcceptAllObserved);
         if (context.History.VerificationBlockedCount > 1)
             reasons.Add(ReasonCode.HistoricalVerificationBlocked);
 
@@ -171,7 +171,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {
         var category = ResolveCategory(context.MailboxProbe);
-        var catchAll = context.Domain.CatchAll.Status;
+        var recipientBehavior = context.Domain.CatchAll.EffectiveRecipientBehavior;
         var reasons = new List<ReasonCode> { ReasonCode.ProviderDetected };
         AddStageReasons(context.MailboxProbe, reasons);
         var effectiveCategory = category;
@@ -181,7 +181,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
         string explanation;
 
         if (category == SmtpResponseCategory.Accepted &&
-            catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll)
+            recipientBehavior == DomainRecipientBehavior.RecipientSpecific)
         {
             effectiveCategory = SmtpResponseCategory.Accepted;
             strength = AcceptanceStrength.High;
@@ -194,13 +194,18 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
         {
             effectiveCategory = SmtpResponseCategory.GatewayAccepted;
             strength = AcceptanceStrength.Low;
-            reliability = catchAll == CatchAllStatus.LikelyCatchAll ? 0.20 : 0.30;
+            reliability = recipientBehavior == DomainRecipientBehavior.CatchAll ? 0.20 : 0.30;
             reasons.Add(ReasonCode.MailboxAccepted);
             reasons.Add(ReasonCode.GatewayAccepted);
             reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
-            explanation = catchAll == CatchAllStatus.LikelyCatchAll
-                ? "Exchange Online Protection accepted both the target and randomized recipients; mailbox existence cannot be established."
-                : "Exchange Online Protection accepted the target at the gateway without reliable recipient differentiation.";
+            explanation = recipientBehavior switch
+            {
+                DomainRecipientBehavior.CatchAll =>
+                    "Exchange Online Protection accepted the target for a domain with independent catch-all routing evidence; mailbox existence cannot be established.",
+                DomainRecipientBehavior.AcceptAll =>
+                    "Exchange Online Protection accepted the target and arbitrary randomized recipients; the public endpoint is accept-all, so mailbox existence cannot be established.",
+                _ => "Exchange Online Protection accepted the target at the gateway without reliable recipient differentiation."
+            };
         }
         else
         {
@@ -219,7 +224,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
             AddMicrosoftCategoryReason(category, reasons);
             if (category == SmtpResponseCategory.RecipientRejected)
             {
-                reliability = catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll ? 0.96 : 0.88;
+                reliability = recipientBehavior == DomainRecipientBehavior.RecipientSpecific ? 0.96 : 0.88;
                 reasons.Add(ReasonCode.MicrosoftRecipientRejected);
             }
             else if (category == SmtpResponseCategory.MailboxFull)
@@ -287,7 +292,7 @@ public sealed class GoogleWorkspaceStrategy() : MailProviderStrategyBase(MailPro
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context) => Interpret(
         context,
         SmtpResponseCategory.GatewayAccepted,
-        context.Domain.CatchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll
+        context.Domain.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.RecipientSpecific
             ? AcceptanceStrength.Medium : AcceptanceStrength.Low,
         "Google Workspace accepted RCPT TO; final mailbox routing remains provider-controlled.");
 }
@@ -319,7 +324,8 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
 
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {
-        var catchAllIsNegative = context.Domain.CatchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll;
+        var recipientBehavior = context.Domain.CatchAll.EffectiveRecipientBehavior;
+        var recipientSpecific = recipientBehavior == DomainRecipientBehavior.RecipientSpecific;
         if (context.Domain.Provider.Provider is MailProvider.AppleICloud or MailProvider.Proton)
             return Interpret(
                 context,
@@ -335,9 +341,11 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
         return Interpret(
             context,
             SmtpResponseCategory.Accepted,
-            catchAllIsNegative ? AcceptanceStrength.High : AcceptanceStrength.Medium,
-            catchAllIsNegative
+            recipientSpecific ? AcceptanceStrength.High : AcceptanceStrength.Medium,
+            recipientSpecific
                 ? "The recipient was accepted while randomized recipients were rejected."
-                : "The recipient was accepted, but catch-all behavior limits certainty.");
+                : recipientBehavior == DomainRecipientBehavior.AcceptAll
+                    ? "The recipient and arbitrary randomized recipients were accepted; the public SMTP endpoint is accept-all, so mailbox existence remains uncertain."
+                    : "The recipient was accepted, but unresolved domain recipient behavior limits certainty.");
     }
 }

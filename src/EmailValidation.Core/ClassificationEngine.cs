@@ -50,19 +50,24 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         }
 
         var catchAll = domain.CatchAll;
-        switch (catchAll.Status)
+        var recipientBehavior = catchAll.EffectiveRecipientBehavior;
+        switch (recipientBehavior)
         {
-            case CatchAllStatus.NotCatchAll:
-            case CatchAllStatus.LikelyNotCatchAll:
+            case DomainRecipientBehavior.RecipientSpecific:
                 Add(contributions, "Catch-all unlikely", 0.10 * Math.Max(0.5, catchAll.Confidence),
                     "Randomized recipients were rejected.");
+                reasons.Add(ReasonCode.RecipientSpecificBehavior);
                 break;
-            case CatchAllStatus.LikelyCatchAll:
+            case DomainRecipientBehavior.CatchAll:
                 reasons.Add(ReasonCode.CatchAllDetected);
                 reasons.Add(ReasonCode.CatchAllLikely);
                 break;
-            case CatchAllStatus.Unknown:
-            case CatchAllStatus.NotAttempted:
+            case DomainRecipientBehavior.AcceptAll:
+                reasons.Add(ReasonCode.AcceptAllObserved);
+                Add(contributions, "Accept-all SMTP behavior", 0,
+                    "The public SMTP endpoint accepted arbitrary recipients; mailbox routing remains unknown.");
+                break;
+            default:
                 reasons.Add(ReasonCode.CatchAllUnknown);
                 reasons.Add(ReasonCode.CatchAllUncertain);
                 Add(contributions, "Catch-all uncertainty", -0.05, "Catch-all behavior could not be established.");
@@ -99,9 +104,8 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (address?.AbuseRisk.Status == AbuseRiskStatus.KnownRisk) reasons.Add(ReasonCode.AbuseRisk);
         if (address?.Suppression.Status == SuppressionStatus.Suppressed) reasons.Add(ReasonCode.SuppressionMatch);
 
-        if (evidence.History.LikelyCatchAllCount > 0 ||
-            (domain.Provider.Provider != MailProvider.GoogleWorkspace && evidence.History.RandomRecipientAcceptedCount >= 2))
-            reasons.Add(ReasonCode.HistoricalCatchAllBehavior);
+        if (evidence.History.RandomRecipientAcceptedCount >= 2)
+            reasons.Add(ReasonCode.AcceptAllObserved);
         if (evidence.History.VerificationBlockedCount > 1)
             reasons.Add(ReasonCode.HistoricalVerificationBlocked);
 
@@ -115,7 +119,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         reasons.AddRange(providerResult.ReasonCodes);
         var category = providerResult.EffectiveCategory;
         if ((category is SmtpResponseCategory.NotAttempted or SmtpResponseCategory.LocalCooldown) &&
-            catchAll.Status == CatchAllStatus.LikelyCatchAll)
+            recipientBehavior == DomainRecipientBehavior.CatchAll)
         {
             if (category == SmtpResponseCategory.LocalCooldown)
             {
@@ -210,26 +214,38 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         Add(contributions, "Recipient acceptance", acceptanceWeight, providerResult.Explanation);
         reasons.Add(ReasonCode.MailboxAccepted);
 
-        var historicalCatchAll = evidence.History.LikelyCatchAllCount >= 2 ||
-            (domain.Provider.Provider != MailProvider.GoogleWorkspace && evidence.History.RandomRecipientAcceptedCount >= 2);
         var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
-        // Gateway acceptance is catch-all-related only while randomized-recipient evidence remains unresolved.
-        // Explicit randomized rejection still supports LikelyValid rather than over-labeling the domain.
-        var gatewayAmbiguous = category == SmtpResponseCategory.GatewayAccepted &&
-            catchAll.Status is CatchAllStatus.Unknown or CatchAllStatus.NotAttempted;
-        if (catchAll.Status == CatchAllStatus.LikelyCatchAll || historicalCatchAll || gatewayAmbiguous)
+        if (recipientBehavior == DomainRecipientBehavior.CatchAll)
         {
-            if (gatewayAmbiguous)
-            {
-                reasons.Add(ReasonCode.CatchAllUncertain);
-                reasons.Add(ReasonCode.CatchAllGatewayAmbiguous);
-            }
-            var catchAllConfidence = catchAll.Status == CatchAllStatus.LikelyCatchAll
-                ? catchAll.Confidence
-                : historicalCatchAll ? 0.80 : 0.65;
             return FinalizeResult(
                 EmailValidationStatus.CatchAll,
-                Math.Max(score, catchAllConfidence),
+                Math.Max(score, catchAll.Confidence),
+                reasons,
+                contributions);
+        }
+
+        var acceptAllObserved = recipientBehavior == DomainRecipientBehavior.AcceptAll ||
+            (recipientBehavior == DomainRecipientBehavior.Unknown &&
+             evidence.History.RandomRecipientAcceptedCount >= 2);
+        if (acceptAllObserved)
+        {
+            // Repeating the same mailbox probe cannot resolve an endpoint that is
+            // already known to accept arbitrary recipients.
+            reasons.Remove(ReasonCode.MailboxAcceptanceAmbiguous);
+            return FinalizeResult(
+                EmailValidationStatus.Unknown,
+                Math.Max(score, catchAll.Confidence),
+                reasons,
+                contributions);
+        }
+
+        if (category == SmtpResponseCategory.GatewayAccepted &&
+            recipientBehavior != DomainRecipientBehavior.RecipientSpecific)
+        {
+            reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
+            return FinalizeResult(
+                EmailValidationStatus.Unknown,
+                Math.Max(score, catchAll.Confidence),
                 reasons,
                 contributions);
         }

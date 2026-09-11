@@ -187,7 +187,7 @@ public sealed class EmailValidatorTests
         Assert.Equal(0, catchAll.Calls);
         Assert.Equal(0, smtp.Calls);
         Assert.Equal(ValidationResultSource.PersistentDomainIntelligence, result.Metadata!.ResultSource);
-        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, result.CatchAllEvidence!.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.IndependentRoutingEvidence, result.CatchAllEvidence!.ReasonCode);
     }
 
     [Fact]
@@ -560,9 +560,10 @@ public sealed class EmailValidatorTests
             Calls++;
             return Task.FromResult(new CatchAllDetectionResult(
                 CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
-                "The domain consistently accepted randomized recipients.", 0.96)
+                "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
             {
-                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+                ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
+                RecipientBehavior = DomainRecipientBehavior.CatchAll
             });
         }
     }
@@ -578,9 +579,10 @@ public sealed class EmailValidatorTests
             Calls++;
             return Task.FromResult(new CatchAllDetectionResult(
                 CatchAllStatus.LikelyCatchAll, 1, 1, 0, 0,
-                "Weak catch-all evidence.", 0.70)
+                "Weak independent routing evidence indicates catch-all delivery.", 0.70)
             {
-                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+                ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
+                RecipientBehavior = DomainRecipientBehavior.CatchAll
             });
         }
     }
@@ -619,9 +621,10 @@ public sealed class EmailValidatorTests
             await Release.Task.WaitAsync(cancellationToken);
             return new CatchAllDetectionResult(
                 CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
-                "The domain consistently accepted randomized recipients.", 0.96)
+                "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
             {
-                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+                ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
+                RecipientBehavior = DomainRecipientBehavior.CatchAll
             };
         }
     }
@@ -664,9 +667,10 @@ public sealed class EmailValidatorTests
             MailProvider.GenericSmtp, 0.8, TopologyFingerprint: "10:mx.example.com"),
         CatchAll = new CatchAllDetectionResult(
             CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
-            "The domain consistently accepted randomized recipients.", 0.96)
+            "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
         {
-            ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted,
+            ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
+            RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
             StrategyVersion = "1.1.0"
         },

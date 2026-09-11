@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
@@ -52,11 +53,12 @@ public sealed class MongoDocumentMappingTests
         var domain = Domain() with
         {
             CatchAll = new CatchAllDetectionResult(
-                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
-                "Random recipients accepted.", 0.96)
+                CatchAllStatus.Unknown, 2, 2, 0, 0,
+                "Random recipients accepted at the SMTP layer.", 0.96)
             {
                 ProbeResults = [probe],
-                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted,
+                ReasonCode = CatchAllReasonCode.AcceptAllObserved,
+                RecipientBehavior = DomainRecipientBehavior.AcceptAll,
                 ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
                 StrategyVersion = "1.1.0"
             }
@@ -68,10 +70,11 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal("example.test", document.Id);
         Assert.Equal(MailProvider.GenericSmtp, document.Provider);
         Assert.Equal("topology-1", document.MxTopologyFingerprint);
-        Assert.Equal(CatchAllStatus.LikelyCatchAll, document.CatchAllStatus);
+        Assert.Equal(CatchAllStatus.Unknown, document.CatchAllStatus);
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, document.RecipientBehavior);
         Assert.Equal(0.96, document.CatchAllConfidence);
-        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, document.CatchAllReasonCode);
-        Assert.Equal("Random recipients accepted.", document.CatchAllReason);
+        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, document.CatchAllReasonCode);
+        Assert.Equal("Random recipients accepted at the SMTP layer.", document.CatchAllReason);
         Assert.Equal(2, document.CatchAllEvidenceCount);
         Assert.Equal(2, document.RandomProbeAcceptedCount);
         Assert.Equal(0, document.RandomProbeRejectedCount);
@@ -79,7 +82,33 @@ public sealed class MongoDocumentMappingTests
         Assert.NotNull(document.CatchAllObservedAt);
         Assert.NotNull(restored);
         Assert.Empty(restored!.CatchAll.ProbeResults);
-        Assert.Equal(CatchAllReasonCode.RandomRecipientsAccepted, restored.CatchAll.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, restored.CatchAll.ReasonCode);
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
+    }
+
+    [Fact]
+    public void LegacyRandomAcceptancePayload_IsReinterpretedAsAcceptAll()
+    {
+        var legacy = Domain() with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+                "Random recipients accepted.", .90)
+            {
+                ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+            }
+        };
+        var document = MongoValidationIntelligenceStore.DomainIntelligenceDocument.FromModel(legacy);
+        var payload = JsonNode.Parse(document.PayloadJson!)!;
+        payload["catchAll"]!.AsObject().Remove("recipientBehavior");
+        document.PayloadJson = payload.ToJsonString();
+
+        var restored = document.ToModel();
+
+        Assert.NotNull(restored);
+        Assert.Equal(CatchAllStatus.Unknown, restored!.CatchAll.Status);
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, restored.CatchAll.ReasonCode);
     }
 
     [Fact]
