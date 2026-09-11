@@ -52,13 +52,22 @@ public sealed class CatchAllDetector(
 
         if (accepted == attempted)
         {
-            var confidence = attempted > 1 ? Math.Min(0.95, 0.80 + (accepted * 0.05)) : 0.72;
+            var minimum = Math.Clamp(_options.MinimumAcceptedProbes, 2, 3);
+            if (accepted < minimum)
+                return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
+                    $"The SMTP endpoint accepted {accepted} randomized recipient probe, but {minimum} are required before accept-all behavior becomes a candidate.",
+                    0.35)
+                {
+                    ReasonCode = CatchAllReasonCode.MixedOrInconclusive
+                }, results);
+
+            var confidence = Math.Min(0.75, 0.55 + (accepted * 0.08));
             return WithResults(new(CatchAllStatus.Unknown, attempted, accepted, rejected, ambiguous,
-                $"The SMTP endpoint accepted {accepted} randomized recipient probe(s). This establishes accept-all behavior at the public SMTP layer, not catch-all routing.",
+                $"Accept-all candidate: the SMTP endpoint accepted {accepted} randomized recipients in one observation. Independent confirmation is still required.",
                 confidence)
             {
-                ReasonCode = CatchAllReasonCode.AcceptAllObserved,
-                RecipientBehavior = DomainRecipientBehavior.AcceptAll
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                IndependentObservationCount = 1
             }, results);
         }
 

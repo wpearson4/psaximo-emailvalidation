@@ -37,6 +37,38 @@ public sealed class ProductionIntelligenceTests
     }
 
     [Fact]
+    public async Task PersistentStore_DowngradesLegacyOneSessionAcceptAllToCandidate()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "email-validation-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var options = StoreOptions(path);
+            var legacy = Domain(DateTimeOffset.UtcNow.AddHours(1)) with
+            {
+                CatchAll = new CatchAllDetectionResult(
+                    CatchAllStatus.Unknown, 2, 2, 0, 0, "Legacy accept-all", .90)
+                {
+                    ReasonCode = CatchAllReasonCode.AcceptAllObserved,
+                    RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                    ObservedAt = DateTimeOffset.UtcNow
+                }
+            };
+            await new JsonValidationIntelligenceStore(options).SaveDomainAsync(legacy);
+
+            var restored = await new JsonValidationIntelligenceStore(options).GetDomainAsync("example.test");
+
+            Assert.NotNull(restored);
+            Assert.Equal(DomainRecipientBehavior.Unknown, restored!.CatchAll.RecipientBehavior);
+            Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, restored.CatchAll.ReasonCode);
+            Assert.Equal(1, restored.CatchAll.IndependentObservationCount);
+        }
+        finally
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PersistentDomainCache_LoadsFreshAndReturnsStaleEvidenceForPlannerRefresh()
     {
         var store = new TestIntelligenceStore

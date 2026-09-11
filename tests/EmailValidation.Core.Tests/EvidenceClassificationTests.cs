@@ -126,7 +126,7 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
-    public void RepeatedHistoricalRandomAcceptance_IsAcceptAllEvidenceNotCatchAll()
+    public void UncorrelatedHistoricalRandomAcceptance_DoesNotEstablishAcceptAll()
     {
         var history = new HistoricalSignalSummary(2, 0, 0, 0, 0, 0, RandomRecipientAcceptedCount: 2);
         var result = _classifier.Classify(Evidence(
@@ -136,8 +136,8 @@ public sealed class EvidenceClassificationTests
             history: history));
 
         Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
-        Assert.Contains(ReasonCode.AcceptAllObserved, result.ReasonCodes);
+        Assert.Equal(EmailValidationStatus.LikelyValid, result.Status);
+        Assert.DoesNotContain(ReasonCode.AcceptAllObserved, result.ReasonCodes);
     }
 
     [Fact]
@@ -172,6 +172,36 @@ public sealed class EvidenceClassificationTests
         Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
         Assert.Contains(ReasonCode.AcceptAllObserved, result.ReasonCodes);
         Assert.DoesNotContain(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+    }
+
+    [Fact]
+    public void OneSessionAcceptAllCandidate_RemainsUnknownPendingConfirmation()
+    {
+        var evidence = Evidence(
+            SmtpResponseCategory.Accepted,
+            AcceptanceStrength.High,
+            CatchAllStatus.Unknown);
+        evidence = evidence with
+        {
+            Domain = evidence.Domain! with
+            {
+                CatchAll = new CatchAllDetectionResult(
+                    CatchAllStatus.Unknown, 2, 2, 0, 0, "Candidate", .75)
+                {
+                    ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                    RecipientBehavior = DomainRecipientBehavior.Unknown,
+                    IndependentObservationCount = 1,
+                    RefreshInconclusive = true
+                }
+            }
+        };
+
+        var result = _classifier.Classify(evidence);
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.AcceptAllCandidate, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.AcceptAllObserved, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.CatchAllDetected, result.ReasonCodes);
     }
 
     [Fact]

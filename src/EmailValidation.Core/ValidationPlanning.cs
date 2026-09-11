@@ -42,6 +42,9 @@ public sealed class ValidationPlanBuilder(IOptions<EmailValidationOptions> optio
         var refreshBackoffActive = catchAll.RefreshInconclusive &&
             catchAll.RefreshAttemptedAt is { } attemptedAt &&
             attemptedAt.AddMinutes(Math.Max(0, _options.ResultReuse.TransientMinutes)) > now;
+        var acceptAllConfirmationDue = catchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate &&
+            observedAt.AddMinutes(Math.Max(1,
+                _options.CatchAll.AcceptAllMinimumObservationSeparationMinutes)) <= now;
         var reusableCatchAll = _options.CatchAll.Enabled &&
             catchAll.Status == CatchAllStatus.LikelyCatchAll &&
             catchAll.Confidence >= _options.CatchAll.MinimumReusableConfidence &&
@@ -49,6 +52,7 @@ public sealed class ValidationPlanBuilder(IOptions<EmailValidationOptions> optio
         var performCatchAllProbe = smtpEnabled && _options.CatchAll.Enabled && !refreshBackoffActive &&
             (catchAll.Status == CatchAllStatus.NotAttempted ||
              !catchAllFresh ||
+             acceptAllConfirmationDue ||
              (catchAll.Status == CatchAllStatus.LikelyCatchAll &&
               catchAll.Confidence < _options.CatchAll.MinimumReusableConfidence));
         var usePersistedCatchAll = domainIntelligenceReused && reusableCatchAll && !performCatchAllProbe;

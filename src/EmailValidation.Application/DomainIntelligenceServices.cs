@@ -119,6 +119,31 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         CancellationToken cancellationToken = default) =>
         (await AcquireAsync(domain, false, cancellationToken).ConfigureAwait(false)).Intelligence;
 
+    public async Task UpdateRecipientBehaviorAsync(
+        DomainIntelligence intelligence,
+        CancellationToken cancellationToken = default)
+    {
+        var domain = Normalize(intelligence.Domain);
+        var current = await _cache.GetAsync(domain, cancellationToken).ConfigureAwait(false);
+        if (current is null ||
+            !string.Equals(Fingerprints.Mx(current), Fingerprints.Mx(intelligence), StringComparison.Ordinal) ||
+            !ProviderCompatible(current, intelligence.Provider,
+                Fingerprints.CreateProvider(intelligence.Provider)) ||
+            current.CatchAll.ObservedAt > intelligence.CatchAll.ObservedAt)
+            return;
+
+        var updated = current with
+        {
+            CatchAll = intelligence.CatchAll,
+            CatchAllFingerprint = Fingerprints.CreateCatchAll(intelligence.CatchAll),
+            LastObservedUtc = _timeProvider.GetUtcNow()
+        };
+        await _cache.StoreAsync(
+            updated,
+            DomainLifetime(updated.MailRouting?.TimeToLive),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<DomainIntelligenceAcquisition> AcquireAsync(
         string domain,
         bool allowCatchAllProbe,

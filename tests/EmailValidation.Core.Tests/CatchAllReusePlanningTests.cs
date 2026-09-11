@@ -92,6 +92,30 @@ public sealed class CatchAllReusePlanningTests
         Assert.False(plan.UsePersistedCatchAll);
     }
 
+    [Fact]
+    public void AcceptAllCandidateBeforeSeparationWindow_DoesNotRepeatControlsYet()
+    {
+        var candidate = Domain() with { CatchAll = Candidate(Now.AddMinutes(-10)) };
+
+        var plan = Planner().Build(candidate, smtpEnabled: true, domainIntelligenceReused: true, Policy, Now);
+
+        Assert.False(plan.PerformCatchAllProbe);
+        Assert.True(plan.PerformMailboxProbe);
+        Assert.False(plan.UsePersistedCatchAll);
+    }
+
+    [Fact]
+    public void AcceptAllCandidateAfterSeparationWindow_RepeatsControlsAndMailboxProbe()
+    {
+        var candidate = Domain() with { CatchAll = Candidate(Now.AddMinutes(-16)) };
+
+        var plan = Planner().Build(candidate, smtpEnabled: true, domainIntelligenceReused: true, Policy, Now);
+
+        Assert.True(plan.PerformCatchAllProbe);
+        Assert.True(plan.PerformMailboxProbe);
+        Assert.False(plan.UsePersistedCatchAll);
+    }
+
     private static ValidationPlanBuilder Planner() => new(Options.Create(new EmailValidationOptions
     {
         CatchAll = new CatchAllOptions
@@ -133,6 +157,17 @@ public sealed class CatchAllReusePlanningTests
         },
         ObservedAt = Now.AddMinutes(-10),
         EvidenceExpiresAt = Now.AddMinutes(50),
+        StrategyVersion = Policy.ProviderStrategyVersion
+    };
+
+    private static CatchAllDetectionResult Candidate(DateTimeOffset observedAt) => new(
+        CatchAllStatus.Unknown, 2, 2, 0, 0, "Candidate", .75)
+    {
+        ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+        RecipientBehavior = DomainRecipientBehavior.Unknown,
+        IndependentObservationCount = 1,
+        ObservedAt = observedAt,
+        RefreshInconclusive = true,
         StrategyVersion = Policy.ProviderStrategyVersion
     };
 }

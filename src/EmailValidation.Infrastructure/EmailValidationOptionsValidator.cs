@@ -148,6 +148,12 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             failures.Add("EmailValidation:CatchAll:MinimumReusableConfidence must be between zero and one.");
         if (catchAll.CacheMinutes < 0)
             failures.Add("EmailValidation:CatchAll:CacheMinutes cannot be negative.");
+        if (catchAll.AcceptAllMinimumIndependentObservations < 2)
+            failures.Add("EmailValidation:CatchAll:AcceptAllMinimumIndependentObservations must be at least two.");
+        if (catchAll.AcceptAllMinimumObservationSeparationMinutes < 1)
+            failures.Add("EmailValidation:CatchAll:AcceptAllMinimumObservationSeparationMinutes must be positive.");
+        if (catchAll.AcceptAllSessionCorrelationMinutes < 1)
+            failures.Add("EmailValidation:CatchAll:AcceptAllSessionCorrelationMinutes must be positive.");
         if (domainIntelligence.MemoryCacheMinutes < 0 || domainIntelligence.PersistentFreshnessHours < 0 ||
             domainIntelligence.MinimumFreshnessMinutes < 0 || domainIntelligence.MaximumFreshnessHours < 0)
             failures.Add("EmailValidation:DomainIntelligence freshness windows cannot be negative.");

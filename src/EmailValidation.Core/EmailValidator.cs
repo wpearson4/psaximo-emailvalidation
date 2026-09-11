@@ -128,6 +128,20 @@ public sealed class EmailValidator(
             else persistenceMetrics.RecordSmtpValidationAvoided();
         }
 
+        var evaluatedCatchAll = DomainRecipientBehaviorPolicy.Evaluate(
+            domainData.CatchAll,
+            mailbox,
+            activeObservations,
+            domainData.Provider.Provider,
+            _options.CatchAll,
+            catchAllProbes > 0);
+        if (evaluatedCatchAll != domainData.CatchAll)
+        {
+            activeDomainData = activeDomainData with { CatchAll = evaluatedCatchAll };
+            await domainIntelligenceService.UpdateRecipientBehaviorAsync(activeDomainData, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var strategy = providerStrategyResolver.Resolve(domainData.Provider);
         var providerValidation = await strategy.EvaluateAsync(
             new ProviderValidationContext(activeDomainData, mailbox, history),
@@ -219,7 +233,7 @@ public sealed class EmailValidator(
                 .Distinct().ToArray(),
             UsedImplicitMxFallback = domainData.Dns.UsedAddressFallback,
             DomainIntelligence = effectiveDomainData,
-            CatchAllEvidence = domainData.CatchAll,
+            CatchAllEvidence = activeDomainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
             SmtpSessionEvidence = mailbox.SessionEvidence,
             MxValidation = mxValidation,
@@ -230,15 +244,15 @@ public sealed class EmailValidator(
                 providerValidation.VerificationReliability,
                 providerValidation.VerificationReliabilityLevel),
             CatchAll = new CatchAllValidationDetails(
-                domainData.CatchAll.Status,
-                domainData.CatchAll.Confidence),
+                activeDomainData.CatchAll.Status,
+                activeDomainData.CatchAll.Confidence),
             HistoricalEvidence = history,
             ConfidenceEvidence = classification.ConfidenceEvidence ?? [],
             DetailedStatus = evaluation.DetailedStatus,
             DetailedStatuses = evaluation.DetailedStatuses,
             AddressIntelligence = addressIntelligence,
             Risk = evaluation.Risk,
-            DeliverabilityRisk = CreateDeliverabilityRisk(roleDetection, domainData, addressIntelligence),
+            DeliverabilityRisk = CreateDeliverabilityRisk(roleDetection, activeDomainData, addressIntelligence),
             Recommendation = evaluation.Recommendation,
             Evidence = evaluation.Evidence,
             DurationMs = stopwatch.ElapsedMilliseconds,
@@ -255,13 +269,13 @@ public sealed class EmailValidator(
                 ProbeSender = mailbox.SessionEvidence?.ProbeSender ?? probeSenderHealth.Sender,
                 SenderDomainHealth = probeSenderHealth.Status,
                 CatchAllProbes = catchAllProbes,
-                CatchAllAccepted = domainData.CatchAll.Accepted,
-                CatchAllRejected = domainData.CatchAll.Rejected,
-                CatchAllAmbiguous = domainData.CatchAll.Ambiguous,
-                CatchAllDetail = domainData.CatchAll.Detail,
+                CatchAllAccepted = activeDomainData.CatchAll.Accepted,
+                CatchAllRejected = activeDomainData.CatchAll.Rejected,
+                CatchAllAmbiguous = activeDomainData.CatchAll.Ambiguous,
+                CatchAllDetail = activeDomainData.CatchAll.Detail,
                 UsedPersistedCatchAll = validationPlan.UsePersistedCatchAll,
                 MailboxProbeSkippedDueToCatchAll = validationPlan.UsePersistedCatchAll,
-                CatchAllObservedAt = domainData.CatchAll.ObservedAt ?? domainData.ObservedAt,
+                CatchAllObservedAt = activeDomainData.CatchAll.ObservedAt ?? activeDomainData.ObservedAt,
                 IntelligenceLookupDurationMs = domainIntelligenceDurationMs + addressIntelligenceDurationMs,
                 MailInfrastructureDurationMs = domainData.MailInfrastructure.DurationMs,
                 ProbeAttempted = mailbox.ProbeAttempted,
@@ -300,7 +314,7 @@ public sealed class EmailValidator(
         persistenceMetrics.RecordSmtpUtf8(
             result.RequiresSmtpUtf8,
             result.SmtpUtf8Supported is not false);
-        await RecordObservationsAsync(domainData, mailbox, providerValidation, selectedMx, catchAllProbes, cancellationToken);
+        await RecordObservationsAsync(activeDomainData, mailbox, providerValidation, selectedMx, catchAllProbes, cancellationToken);
         logger.LogInformation(
             "Validation ended with {Status}, confidence {Confidence}, in {DurationMs} ms",
             result.Status, result.Confidence, result.DurationMs);

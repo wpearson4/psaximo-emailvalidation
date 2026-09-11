@@ -68,9 +68,18 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                     "The public SMTP endpoint accepted arbitrary recipients; mailbox routing remains unknown.");
                 break;
             default:
-                reasons.Add(ReasonCode.CatchAllUnknown);
-                reasons.Add(ReasonCode.CatchAllUncertain);
-                Add(contributions, "Catch-all uncertainty", -0.05, "Catch-all behavior could not be established.");
+                if (catchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
+                {
+                    reasons.Add(ReasonCode.AcceptAllCandidate);
+                    Add(contributions, "Accept-all candidate", 0,
+                        "One non-discriminating SMTP observation requires independent confirmation.");
+                }
+                else
+                {
+                    reasons.Add(ReasonCode.CatchAllUnknown);
+                    reasons.Add(ReasonCode.CatchAllUncertain);
+                    Add(contributions, "Catch-all uncertainty", -0.05, "Catch-all behavior could not be established.");
+                }
                 break;
         }
 
@@ -104,8 +113,6 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (address?.AbuseRisk.Status == AbuseRiskStatus.KnownRisk) reasons.Add(ReasonCode.AbuseRisk);
         if (address?.Suppression.Status == SuppressionStatus.Suppressed) reasons.Add(ReasonCode.SuppressionMatch);
 
-        if (evidence.History.RandomRecipientAcceptedCount >= 2)
-            reasons.Add(ReasonCode.AcceptAllObserved);
         if (evidence.History.VerificationBlockedCount > 1)
             reasons.Add(ReasonCode.HistoricalVerificationBlocked);
 
@@ -215,6 +222,16 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         reasons.Add(ReasonCode.MailboxAccepted);
 
         var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
+        if (catchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
+        {
+            reasons.Remove(ReasonCode.MailboxAcceptanceAmbiguous);
+            return FinalizeResult(
+                EmailValidationStatus.Unknown,
+                Math.Max(score, catchAll.Confidence),
+                reasons,
+                contributions);
+        }
+
         if (recipientBehavior == DomainRecipientBehavior.CatchAll)
         {
             return FinalizeResult(
@@ -224,9 +241,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 contributions);
         }
 
-        var acceptAllObserved = recipientBehavior == DomainRecipientBehavior.AcceptAll ||
-            (recipientBehavior == DomainRecipientBehavior.Unknown &&
-             evidence.History.RandomRecipientAcceptedCount >= 2);
+        var acceptAllObserved = recipientBehavior == DomainRecipientBehavior.AcceptAll;
         if (acceptAllObserved)
         {
             // Repeating the same mailbox probe cannot resolve an endpoint that is

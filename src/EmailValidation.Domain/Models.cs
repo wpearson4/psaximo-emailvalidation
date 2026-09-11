@@ -52,7 +52,7 @@ public enum ReasonCode
     RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
     LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported,
     NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid,
-    AcceptAllObserved, RecipientSpecificBehavior
+    AcceptAllObserved, RecipientSpecificBehavior, AcceptAllCandidate
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -267,6 +267,7 @@ public sealed record CatchAllDetectionResult(
 {
     public bool RandomRecipientAccepted => Accepted > 0;
     public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
+    public int IndependentObservationCount { get; init; }
     [JsonIgnore]
     public DomainRecipientBehavior EffectiveRecipientBehavior => RecipientBehavior != DomainRecipientBehavior.Unknown
         ? RecipientBehavior
@@ -297,7 +298,9 @@ public enum CatchAllReasonCode
     MixedOrInconclusive,
     AcceptAllObserved,
     RecipientSpecificObserved,
-    IndependentRoutingEvidence
+    IndependentRoutingEvidence,
+    AcceptAllCandidate,
+    AcceptAllConfirmed
 }
 
 public sealed record DomainValidationData(

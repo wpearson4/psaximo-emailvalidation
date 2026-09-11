@@ -57,8 +57,9 @@ public sealed class MongoDocumentMappingTests
                 "Random recipients accepted at the SMTP layer.", 0.96)
             {
                 ProbeResults = [probe],
-                ReasonCode = CatchAllReasonCode.AcceptAllObserved,
+                ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
                 RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                IndependentObservationCount = 2,
                 ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
                 StrategyVersion = "1.1.0"
             }
@@ -73,7 +74,8 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(CatchAllStatus.Unknown, document.CatchAllStatus);
         Assert.Equal(DomainRecipientBehavior.AcceptAll, document.RecipientBehavior);
         Assert.Equal(0.96, document.CatchAllConfidence);
-        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, document.CatchAllReasonCode);
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, document.CatchAllReasonCode);
+        Assert.Equal(2, document.IndependentObservationCount);
         Assert.Equal("Random recipients accepted at the SMTP layer.", document.CatchAllReason);
         Assert.Equal(2, document.CatchAllEvidenceCount);
         Assert.Equal(2, document.RandomProbeAcceptedCount);
@@ -82,12 +84,13 @@ public sealed class MongoDocumentMappingTests
         Assert.NotNull(document.CatchAllObservedAt);
         Assert.NotNull(restored);
         Assert.Empty(restored!.CatchAll.ProbeResults);
-        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, restored.CatchAll.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, restored.CatchAll.ReasonCode);
         Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
+        Assert.Equal(2, restored.CatchAll.IndependentObservationCount);
     }
 
     [Fact]
-    public void LegacyRandomAcceptancePayload_IsReinterpretedAsAcceptAll()
+    public void LegacyRandomAcceptancePayload_IsReinterpretedAsCandidate()
     {
         var legacy = Domain() with
         {
@@ -107,8 +110,10 @@ public sealed class MongoDocumentMappingTests
 
         Assert.NotNull(restored);
         Assert.Equal(CatchAllStatus.Unknown, restored!.CatchAll.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
-        Assert.Equal(CatchAllReasonCode.AcceptAllObserved, restored.CatchAll.ReasonCode);
+        Assert.Equal(DomainRecipientBehavior.Unknown, restored.CatchAll.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, restored.CatchAll.ReasonCode);
+        Assert.Equal(1, restored.CatchAll.IndependentObservationCount);
+        Assert.True(restored.CatchAll.RefreshInconclusive);
     }
 
     [Fact]

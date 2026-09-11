@@ -28,22 +28,25 @@ public sealed class CacheAndCatchAllTests
         var result = await detector.DetectAsync("example.com", "mx.example.com", MailProvider.Unknown);
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.MixedOrInconclusive, result.ReasonCode);
         Assert.Equal(1, result.Probes);
         Assert.Equal(1, result.Accepted);
     }
 
     [Fact]
-    public async Task RandomRecipientsAccepted_IsAcceptAllNotCatchAll()
+    public async Task RandomRecipientsAccepted_IsCandidateNotCatchAll()
     {
         var detector = Detector(SmtpMailboxStatus.Accepted, probeCount: 2);
 
         var result = await detector.DetectAsync("example.com", "mx.example.com", MailProvider.Unknown);
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
         Assert.NotEqual(DomainRecipientBehavior.CatchAll, result.RecipientBehavior);
-        Assert.False(result.RefreshInconclusive);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+        Assert.Equal(1, result.IndependentObservationCount);
+        Assert.True(result.RefreshInconclusive);
         Assert.Equal(2, result.Accepted);
     }
 
@@ -67,7 +70,8 @@ public sealed class CacheAndCatchAllTests
             "example.com", "mx.example.com", MailProvider.GenericSmtp);
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
         Assert.Equal(2, result.Probes);
         Assert.Equal(2, result.ProbeResults.Count);
     }
@@ -80,22 +84,24 @@ public sealed class CacheAndCatchAllTests
         var result = await detector.DetectAsync("example.com", "mx.example.com", MailProvider.GoogleWorkspace);
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
-        Assert.Contains("accept-all", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+        Assert.Contains("confirmation", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task MicrosoftRandomAcceptance_IsAcceptAllGatewayBehavior()
     {
-        var detector = Detector(SmtpMailboxStatus.Accepted);
+        var detector = Detector(SmtpMailboxStatus.Accepted, probeCount: 2);
 
         var result = await detector.DetectAsync(
             "example.com", "tenant.mail.protection.outlook.com", MailProvider.Microsoft365);
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
         Assert.InRange(result.Confidence, 0.70, 0.80);
-        Assert.Contains("not catch-all routing", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("confirmation", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -124,15 +130,16 @@ public sealed class CacheAndCatchAllTests
     [Theory]
     [InlineData("yahoo.com")]
     [InlineData("aol.com")]
-    public async Task YahooAndAolRandomAcceptance_IsAcceptAll(string domain)
+    public async Task YahooAndAolRandomAcceptance_IsCandidate(string domain)
     {
         var detector = Detector(SmtpMailboxStatus.Accepted, probeCount: 2);
 
         var result = await detector.DetectAsync(domain, "mx-aol.mail.gm0.yahoodns.net", MailProvider.Yahoo);
 
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.RecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
         Assert.NotEqual(DomainRecipientBehavior.CatchAll, result.RecipientBehavior);
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
     }
 
     [Fact]

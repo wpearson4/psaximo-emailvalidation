@@ -68,6 +68,8 @@ public static class EvidenceConfidenceExplainer
             return "Mailbox existence is uncertain because independent evidence indicates catch-all routing.";
         if (recipientBehavior == DomainRecipientBehavior.AcceptAll)
             return "Mailbox existence is uncertain because the public SMTP endpoint accepts arbitrary recipients; this establishes accept-all behavior, not catch-all routing.";
+        if (domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
+            return "Mailbox existence is uncertain because one SMTP session accepted arbitrary recipients; a second independent observation is required before classifying the endpoint as accept-all.";
         if (probe.Status == SmtpMailboxStatus.Accepted)
             return "The target was accepted, but unresolved catch-all or gateway behavior limits mailbox certainty.";
         return "Evidence is incomplete or ambiguous, so the result is intentionally conservative.";

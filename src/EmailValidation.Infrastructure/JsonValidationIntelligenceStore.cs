@@ -24,6 +24,7 @@ public sealed class JsonValidationIntelligenceStore :
     };
 
     private readonly PersistenceOptions _options;
+    private readonly CatchAllOptions _catchAllOptions;
     private readonly string _root;
     private readonly ConcurrentDictionary<string, DomainIntelligence> _domains = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxes = new(StringComparer.OrdinalIgnoreCase);
@@ -37,6 +38,7 @@ public sealed class JsonValidationIntelligenceStore :
     public JsonValidationIntelligenceStore(IOptions<EmailValidationOptions> options)
     {
         _options = options.Value.Persistence;
+        _catchAllOptions = options.Value.CatchAll;
         _root = Path.GetFullPath(Path.IsPathRooted(_options.StoragePath)
             ? _options.StoragePath
             : Path.Combine(AppContext.BaseDirectory, _options.StoragePath));
@@ -48,7 +50,15 @@ public sealed class JsonValidationIntelligenceStore :
         cancellationToken.ThrowIfCancellationRequested();
         if (_domains.TryGetValue(domain, out var cached)) return cached;
         var loaded = await ReadAsync<DomainIntelligence>(PathFor("domains", domain), cancellationToken).ConfigureAwait(false);
-        if (loaded is not null) _domains[domain] = loaded;
+        if (loaded is null) return null;
+        loaded = loaded with
+        {
+            CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
+                loaded.CatchAll,
+                _catchAllOptions.AcceptAllMinimumIndependentObservations,
+                _catchAllOptions.MinimumAcceptedProbes)
+        };
+        _domains[domain] = loaded;
         return loaded;
     }
 

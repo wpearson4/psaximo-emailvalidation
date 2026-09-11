@@ -63,8 +63,6 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
             AddCategoryReason(category, reasons);
         }
 
-        if (context.History.RandomRecipientAcceptedCount >= 2)
-            reasons.Add(ReasonCode.AcceptAllObserved);
         if (context.History.VerificationBlockedCount > 1)
             reasons.Add(ReasonCode.HistoricalVerificationBlocked);
 
@@ -204,6 +202,8 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
                     "Exchange Online Protection accepted the target for a domain with independent catch-all routing evidence; mailbox existence cannot be established.",
                 DomainRecipientBehavior.AcceptAll =>
                     "Exchange Online Protection accepted the target and arbitrary randomized recipients; the public endpoint is accept-all, so mailbox existence cannot be established.",
+                _ when context.Domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate =>
+                    "Exchange Online Protection accepted the target and randomized controls once; independent confirmation is required before classifying the endpoint as accept-all.",
                 _ => "Exchange Online Protection accepted the target at the gateway without reliable recipient differentiation."
             };
         }
@@ -346,6 +346,8 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
                 ? "The recipient was accepted while randomized recipients were rejected."
                 : recipientBehavior == DomainRecipientBehavior.AcceptAll
                     ? "The recipient and arbitrary randomized recipients were accepted; the public SMTP endpoint is accept-all, so mailbox existence remains uncertain."
+                    : context.Domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate
+                        ? "The recipient and randomized controls were accepted once; independent confirmation is required before classifying the endpoint as accept-all."
                     : "The recipient was accepted, but unresolved domain recipient behavior limits certainty.");
     }
 }

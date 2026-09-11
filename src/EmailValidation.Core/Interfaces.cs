@@ -133,6 +133,10 @@ public interface IDomainIntelligenceService
         string domain,
         bool allowCatchAllProbe,
         CancellationToken cancellationToken = default);
+
+    Task UpdateRecipientBehaviorAsync(
+        DomainIntelligence intelligence,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
 
 public sealed record DomainIntelligenceReuseDecision(
