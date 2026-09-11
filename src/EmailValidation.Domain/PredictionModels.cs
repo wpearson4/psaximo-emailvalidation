@@ -76,7 +76,18 @@ public sealed record DomainRoutingFeatureGroup(
     AuthenticationRecordState DmarcState,
     CatchAllStatus CatchAllState,
     double CatchAllEvidenceStrength,
-    string? MxTopologyFingerprint);
+    string? MxTopologyFingerprint)
+{
+    /// <summary>
+    /// Effective, evidence-qualified recipient behavior at prediction time. This is
+    /// deliberately separate from CatchAllState so recipient-specific routing and
+    /// non-discriminating routing cannot share the same unsigned strength feature.
+    /// </summary>
+    public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
+    public bool AcceptAllCandidate { get; init; }
+    public bool MxEvidenceConflicting { get; init; }
+    public bool ProviderEvidenceConflicting { get; init; }
+}
 
 public sealed record SmtpFeatureGroup(
     SmtpProbeDisposition Disposition,

@@ -164,7 +164,10 @@ public sealed class MongoValidationIntelligenceStore :
         DomainIntelligence intelligence,
         CancellationToken cancellationToken = default)
     {
-        var document = DomainIntelligenceDocument.FromModel(intelligence);
+        var document = DomainIntelligenceDocument.FromModel(
+            intelligence,
+            _catchAllOptions.AcceptAllMinimumIndependentObservations,
+            _catchAllOptions.MinimumAcceptedProbes);
         var update = Builders<DomainIntelligenceDocument>.Update
             .Set(x => x.Domain, document.Domain)
             .Set(x => x.NormalizedDomain, document.NormalizedDomain)
@@ -194,6 +197,7 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.RandomProbeAcceptedCount, document.RandomProbeAcceptedCount)
             .Set(x => x.RandomProbeRejectedCount, document.RandomProbeRejectedCount)
             .Set(x => x.CatchAllStrategyVersion, document.CatchAllStrategyVersion)
+            .Set(x => x.CatchAllEvidenceContractVersion, document.CatchAllEvidenceContractVersion)
             .Set(x => x.VerificationReliability, document.VerificationReliability)
             .Set(x => x.ResultStability, document.ResultStability)
             .Set(x => x.LastObservedAt, document.LastObservedAt)
@@ -298,9 +302,12 @@ public sealed class MongoValidationIntelligenceStore :
         {
             var normalized = NormalizeDomain(domain);
             var document = await _domains.Find(x => x.Id == normalized)
-                .Project(x => x.Observations)
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            var observations = document?.Select(x => x.ToModel()).ToArray() ?? [];
+            var observations = (document?.Observations ?? [])
+                .Concat(document?.RecipientBehaviorObservations ?? [])
+                .Select(observation => observation.ToModel())
+                .OrderBy(observation => observation.ObservedAt)
+                .ToArray();
             _metrics.RecordRead("domain-observations", observations.Length > 0, stopwatch.Elapsed);
             return observations;
         }
@@ -324,11 +331,18 @@ public sealed class MongoValidationIntelligenceStore :
     {
         var normalized = NormalizeDomain(observation.Domain);
         var now = DateTime.UtcNow;
-        var update = Builders<DomainIntelligenceDocument>.Update.Combine(
-            Builders<DomainIntelligenceDocument>.Update.PushEach(
+        var document = ValidationObservationDocument.FromModel(observation);
+        var observationPush = DomainRecipientBehaviorPolicy.RequiresProtectedObservationRetention(observation)
+            ? Builders<DomainIntelligenceDocument>.Update.PushEach(
+                x => x.RecipientBehaviorObservations,
+                [document],
+                slice: -Math.Max(1, _options.MaximumObservationsPerDomain))
+            : Builders<DomainIntelligenceDocument>.Update.PushEach(
                 x => x.Observations,
-                [ValidationObservationDocument.FromModel(observation)],
-                slice: -Math.Max(1, _options.MaximumObservationsPerDomain)),
+                [document],
+                slice: -Math.Max(1, _options.MaximumObservationsPerDomain));
+        var update = Builders<DomainIntelligenceDocument>.Update.Combine(
+            observationPush,
             Builders<DomainIntelligenceDocument>.Update.Inc(x => x.ObservationCount, 1),
             Builders<DomainIntelligenceDocument>.Update.Set(x => x.UpdatedAt, now),
             Builders<DomainIntelligenceDocument>.Update.SetOnInsert(x => x.Domain, normalized),
@@ -414,6 +428,7 @@ public sealed class MongoValidationIntelligenceStore :
         public int RandomProbeAcceptedCount { get; set; }
         public int RandomProbeRejectedCount { get; set; }
         public string CatchAllStrategyVersion { get; set; } = string.Empty;
+        public string? CatchAllEvidenceContractVersion { get; set; }
         public double VerificationReliability { get; set; }
         public double ResultStability { get; set; }
         public int ObservationCount { get; set; }
@@ -429,9 +444,20 @@ public sealed class MongoValidationIntelligenceStore :
         public DateTime UpdatedAt { get; set; }
         public string? PayloadJson { get; set; }
         public List<ValidationObservationDocument> Observations { get; set; } = [];
+        public List<ValidationObservationDocument> RecipientBehaviorObservations { get; set; } = [];
 
-        public static DomainIntelligenceDocument FromModel(DomainIntelligence model)
+        public static DomainIntelligenceDocument FromModel(
+            DomainIntelligence model,
+            int acceptAllMinimumIndependentObservations = 2,
+            int minimumAcceptedProbes = 2)
         {
+            model = model with
+            {
+                CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
+                    model.CatchAll,
+                    acceptAllMinimumIndependentObservations,
+                    minimumAcceptedProbes)
+            };
             var normalized = NormalizeDomain(model.Domain);
             var sanitized = model with
             {
@@ -475,6 +501,7 @@ public sealed class MongoValidationIntelligenceStore :
                 CatchAllStrategyVersion = string.IsNullOrWhiteSpace(model.CatchAll.StrategyVersion)
                     ? model.StrategyVersion
                     : model.CatchAll.StrategyVersion,
+                CatchAllEvidenceContractVersion = model.CatchAll.EvidenceContractVersion,
                 VerificationReliability = model.Behavior?.VerificationReliability ?? 0,
                 ResultStability = model.Behavior?.VerificationReliability ?? 0,
                 ObservationCount = model.Behavior?.ObservationCount ?? 0,
@@ -573,7 +600,8 @@ public sealed class MongoValidationIntelligenceStore :
                     ObservedAt = CatchAllObservedAt is { } catchAllAt
                         ? new DateTimeOffset(DateTime.SpecifyKind(catchAllAt, DateTimeKind.Utc))
                         : null,
-                    StrategyVersion = CatchAllStrategyVersion
+                    StrategyVersion = CatchAllStrategyVersion,
+                    EvidenceContractVersion = CatchAllEvidenceContractVersion
                 }, acceptAllMinimumIndependentObservations, minimumAcceptedProbes),
                 ObservedAt = observed,
                 EvidenceExpiresAt = EvidenceFreshUntil is { } freshUntil
@@ -707,6 +735,7 @@ public sealed class MongoValidationIntelligenceStore :
         public MxRecord ToModel() => new(Preference, Host);
     }
 
+    [BsonIgnoreExtraElements]
     internal sealed class ValidationObservationDocument
     {
         public string Domain { get; set; } = string.Empty;
@@ -728,6 +757,14 @@ public sealed class MongoValidationIntelligenceStore :
         [BsonRepresentation(BsonType.String)]
         public GatewayProvider GatewayProvider { get; set; }
         public string? TopologyFingerprint { get; set; }
+        public string? ObservationSessionId { get; set; }
+        public bool RecipientEvidenceQualified { get; set; }
+        [BsonRepresentation(BsonType.String)]
+        public SmtpResponseCategory? CorrelatedTargetResponseCategory { get; set; }
+        public DateTime? CorrelatedTargetObservedAt { get; set; }
+        public string? CorrelatedTargetMxHost { get; set; }
+        public bool CorrelatedTargetRecipientEvidenceQualified { get; set; }
+        public bool RecipientEvidenceContested { get; set; }
         [BsonRepresentation(BsonType.String)]
         public SmtpProbeBudgetDecision? ReputationBudgetDecision { get; set; }
         [BsonRepresentation(BsonType.String)]
@@ -758,6 +795,14 @@ public sealed class MongoValidationIntelligenceStore :
             RandomRecipientRejectedCount = model.RandomRecipientRejectedCount,
             GatewayProvider = model.GatewayProvider,
             TopologyFingerprint = model.TopologyFingerprint,
+            ObservationSessionId = model.ObservationSessionId,
+            RecipientEvidenceQualified = model.RecipientEvidenceQualified,
+            CorrelatedTargetResponseCategory = model.CorrelatedTargetResponseCategory,
+            CorrelatedTargetObservedAt = model.CorrelatedTargetObservedAt?.UtcDateTime,
+            CorrelatedTargetMxHost = model.CorrelatedTargetMxHost,
+            CorrelatedTargetRecipientEvidenceQualified =
+                model.CorrelatedTargetRecipientEvidenceQualified,
+            RecipientEvidenceContested = model.RecipientEvidenceContested,
             ReputationBudgetDecision = model.Reputation?.Decision,
             ReputationWouldDecision = model.Reputation?.WouldDecision,
             ReputationMode = model.Reputation?.Mode,
@@ -798,6 +843,16 @@ public sealed class MongoValidationIntelligenceStore :
                     SuppressionReason = ReputationSuppressionReason,
                     EvaluatedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(ObservedAt, DateTimeKind.Utc)),
                     PolicyVersion = ReputationPolicyVersion ?? string.Empty
-                });
+                },
+            ObservationSessionId,
+            RecipientEvidenceQualified,
+            CorrelatedTargetResponseCategory,
+            CorrelatedTargetObservedAt is null
+                ? null
+                : new DateTimeOffset(
+                    DateTime.SpecifyKind(CorrelatedTargetObservedAt.Value, DateTimeKind.Utc)),
+            CorrelatedTargetMxHost,
+            CorrelatedTargetRecipientEvidenceQualified,
+            RecipientEvidenceContested);
     }
 }

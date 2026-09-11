@@ -15,10 +15,16 @@ public static class EvidenceConfidenceExplainer
         ProviderValidationResult? providerValidation = null)
     {
         var session = probe.SessionEvidence;
+        if (mxValidation?.Consensus == MxConsensus.Conflicting)
+            return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
         if (session?.HasStrongRecipientRejection == true)
             return "High confidence because MAIL FROM succeeded and RCPT TO returned a recipient-specific permanent rejection.";
+        if (SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(probe))
+            return "High confidence that the recipient endpoint reported a full mailbox after MAIL FROM succeeded and RCPT TO was evaluated.";
         if (status == EmailValidationStatus.Invalid)
             return "High confidence because definitive syntax, DNS, mail-routing, or recipient evidence established invalidity.";
+        if (providerValidation?.ReasonCodes.Contains(ReasonCode.ProviderEvidenceConflicting) == true)
+            return "Low confidence because the published MX identity and SMTP-observed provider identity conflict.";
         if (!senderHealth.IsOperational && senderHealth.Status != ProbeSenderHealthStatus.NotChecked)
             return "Low confidence because the configured probe sender was not healthy enough for recipient validation.";
 
@@ -26,8 +32,6 @@ public static class EvidenceConfidenceExplainer
             return IsSourceOrProviderRestriction(probe)
                 ? "Low confidence because a provider or source-IP policy blocked verification before recipient validation occurred."
                 : "Low confidence because MAIL FROM was rejected before recipient validation occurred.";
-        if (mxValidation?.Consensus == MxConsensus.Conflicting)
-            return "Low confidence because the consulted MX hosts returned conflicting recipient evidence.";
         var recipientBehavior = domain.CatchAll.EffectiveRecipientBehavior;
         if (recipientBehavior == DomainRecipientBehavior.CatchAll && !probe.ProbeAttempted)
         {
@@ -63,7 +67,9 @@ public static class EvidenceConfidenceExplainer
         if (inconclusiveReason is not null) return inconclusiveReason;
         if (probe.Status == SmtpMailboxStatus.Accepted &&
             recipientBehavior == DomainRecipientBehavior.RecipientSpecific)
-            return "High confidence because the target recipient was accepted while randomized recipients were consistently rejected.";
+            return domain.CatchAll.Status == CatchAllStatus.NotCatchAll
+                ? "High confidence because the target recipient was accepted while multiple randomized recipients were consistently rejected."
+                : "Moderate confidence because the target recipient was accepted while one randomized recipient was rejected; another control would strengthen the differential evidence.";
         if (recipientBehavior == DomainRecipientBehavior.CatchAll)
             return "Mailbox existence is uncertain because independent evidence indicates catch-all routing.";
         if (recipientBehavior == DomainRecipientBehavior.AcceptAll)

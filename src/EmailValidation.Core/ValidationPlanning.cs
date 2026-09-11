@@ -46,14 +46,14 @@ public sealed class ValidationPlanBuilder(IOptions<EmailValidationOptions> optio
             observedAt.AddMinutes(Math.Max(1,
                 _options.CatchAll.AcceptAllMinimumObservationSeparationMinutes)) <= now;
         var reusableCatchAll = _options.CatchAll.Enabled &&
-            catchAll.Status == CatchAllStatus.LikelyCatchAll &&
+            catchAll.HasIndependentRoutingEvidence &&
             catchAll.Confidence >= _options.CatchAll.MinimumReusableConfidence &&
             catchAllFresh;
         var performCatchAllProbe = smtpEnabled && _options.CatchAll.Enabled && !refreshBackoffActive &&
             (catchAll.Status == CatchAllStatus.NotAttempted ||
              !catchAllFresh ||
              acceptAllConfirmationDue ||
-             (catchAll.Status == CatchAllStatus.LikelyCatchAll &&
+             (catchAll.HasIndependentRoutingEvidence &&
               catchAll.Confidence < _options.CatchAll.MinimumReusableConfidence));
         var usePersistedCatchAll = domainIntelligenceReused && reusableCatchAll && !performCatchAllProbe;
 

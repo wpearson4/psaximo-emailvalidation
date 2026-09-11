@@ -1,4 +1,5 @@
 using EmailValidation.Core;
+using EmailValidation.Infrastructure;
 
 namespace EmailValidation.Core.Tests;
 
@@ -84,11 +85,12 @@ public sealed class DomainRecipientBehaviorPolicyTests
         var priorControlAt = Now.AddMinutes(-16);
         var result = Evaluate(
             Candidate(Now),
-            new SmtpProbeResult(SmtpMailboxStatus.Rejected, 550, "5.1.1", TimeSpan.Zero),
+            RejectedTarget(),
             [Control(priorControlAt), Target(priorControlAt.AddSeconds(10), SmtpResponseCategory.Accepted)]);
 
         Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
-        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.TargetRecipientContradictedAcceptAll, result.ReasonCode);
+        Assert.Equal(0, result.IndependentObservationCount);
     }
 
     [Fact]
@@ -120,13 +122,41 @@ public sealed class DomainRecipientBehaviorPolicyTests
 
         var result = Evaluate(
             confirmed,
-            new SmtpProbeResult(SmtpMailboxStatus.Rejected, 550, "5.1.1", TimeSpan.Zero),
+            RejectedTarget(),
             []);
 
         Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
-        Assert.Equal(CatchAllReasonCode.MixedOrInconclusive, result.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.TargetRecipientContradictedAcceptAll, result.ReasonCode);
         Assert.Equal(0, result.IndependentObservationCount);
         Assert.True(result.RefreshInconclusive);
+
+        var restored = DomainRecipientBehaviorPolicy.NormalizePersisted(result, 2, 2);
+        Assert.Equal(CatchAllReasonCode.TargetRecipientContradictedAcceptAll, restored.ReasonCode);
+        Assert.Equal(DomainRecipientBehavior.Unknown, restored.EffectiveRecipientBehavior);
+    }
+
+    [Fact]
+    public void StrongTargetRejection_DowngradesAcceptAllEvenWhenMxPeersConflict()
+    {
+        var confirmed = Candidate(Now) with
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+            IndependentObservationCount = 2,
+            RefreshInconclusive = false
+        };
+
+        var result = DomainRecipientBehaviorPolicy.Evaluate(
+            confirmed,
+            RejectedTarget(),
+            [],
+            MailProvider.GenericSmtp,
+            Options(),
+            currentControlProbePerformed: false,
+            MxConsensus.Conflicting);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.TargetRecipientContradictedAcceptAll, result.ReasonCode);
     }
 
     [Fact]
@@ -143,7 +173,353 @@ public sealed class DomainRecipientBehaviorPolicyTests
 
         Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
         Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+        Assert.Equal(0, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void PreHardeningConfirmedAcceptAll_IsDemotedForFreshConfirmation()
+    {
+        var legacy = Candidate(Now) with
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+            IndependentObservationCount = 2,
+            EvidenceContractVersion = null,
+            RefreshInconclusive = false
+        };
+
+        var result = DomainRecipientBehaviorPolicy.NormalizePersisted(legacy, 2, 2);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
         Assert.Equal(1, result.IndependentObservationCount);
+        Assert.True(result.RefreshInconclusive);
+    }
+
+    [Fact]
+    public void PreHardeningRecipientSpecificEvidence_RequiresFreshStageQualifiedControls()
+    {
+        var legacy = new CatchAllDetectionResult(
+            CatchAllStatus.NotCatchAll, 2, 0, 2, 0,
+            "Legacy randomized rejections.", .95)
+        {
+            RecipientBehavior = DomainRecipientBehavior.RecipientSpecific,
+            ReasonCode = CatchAllReasonCode.RecipientSpecificObserved,
+            StrategyVersion = "1.1.0"
+        };
+
+        var result = DomainRecipientBehaviorPolicy.NormalizePersisted(legacy, 2, 2);
+
+        Assert.Equal(CatchAllStatus.NotAttempted, result.Status);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Empty(result.ProbeResults);
+        Assert.True(result.RefreshInconclusive);
+    }
+
+    [Fact]
+    public void LegacySmtpDerivedCatchAll_IsNotTrustedAsRoutingEvidence()
+    {
+        var legacy = new CatchAllDetectionResult(
+            CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+            "Random recipients accepted.", .90)
+        {
+            RecipientBehavior = DomainRecipientBehavior.CatchAll,
+            ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
+        };
+
+        var result = DomainRecipientBehaviorPolicy.NormalizePersisted(legacy, 2, 2);
+
+        Assert.Equal(CatchAllStatus.Unknown, result.Status);
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+    }
+
+    [Fact]
+    public void IndependentRoutingEvidence_RemainsCatchAll()
+    {
+        var independent = new CatchAllDetectionResult(
+            CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+            "Independent routing evidence.", .96)
+        {
+            RecipientBehavior = DomainRecipientBehavior.CatchAll,
+            ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence
+        };
+
+        var result = DomainRecipientBehaviorPolicy.NormalizePersisted(independent, 2, 2);
+
+        Assert.Equal(DomainRecipientBehavior.CatchAll, result.EffectiveRecipientBehavior);
+        Assert.True(result.HasIndependentRoutingEvidence);
+    }
+
+    [Fact]
+    public void UncorrelatedAcceptedTarget_CannotConfirmPriorControl()
+    {
+        var priorControlAt = Now.AddMinutes(-16);
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [
+                Control(priorControlAt, "control-session"),
+                Target(priorControlAt.AddSeconds(10), SmtpResponseCategory.Accepted, "different-session")
+            ]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void PriorAcceptedCategoryWithoutRecipientProvenance_CannotConfirm()
+    {
+        var priorControlAt = Now.AddMinutes(-16);
+        var unqualifiedTarget = Target(
+            priorControlAt.AddSeconds(10),
+            SmtpResponseCategory.Accepted) with
+        {
+            RecipientEvidenceQualified = false
+        };
+
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [Control(priorControlAt), unqualifiedTarget]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void DifferentMxAcceptedTarget_CannotConfirmPriorControl()
+    {
+        var priorControlAt = Now.AddMinutes(-16);
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [
+                Control(priorControlAt),
+                Target(priorControlAt.AddSeconds(10), SmtpResponseCategory.Accepted) with
+                {
+                    MxHost = "mx2.example.test"
+                }
+            ]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void CurrentTargetOutsideCorrelationWindow_DoesNotQualify()
+    {
+        var result = Evaluate(Candidate(Now), AcceptedTarget(Now.AddMinutes(6)), []);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(0, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void BareAcceptedStatusWithoutRecipientStageEvidence_DoesNotQualify()
+    {
+        var bare = new SmtpProbeResult(SmtpMailboxStatus.Accepted, 250, "2.1.5", TimeSpan.Zero);
+
+        var result = Evaluate(Candidate(Now), bare, []);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(0, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void ContradictionCutsOffOlderAcceptedSessions()
+    {
+        var acceptedAt = Now.AddMinutes(-32);
+        var contradictionAt = Now.AddMinutes(-20);
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [
+                Control(acceptedAt, "old-session"),
+                Target(acceptedAt.AddSeconds(10), SmtpResponseCategory.Accepted, "old-session"),
+                Target(contradictionAt, SmtpResponseCategory.RecipientRejected, "contradiction")
+            ]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void AcceptedSessionOutsideCatchAllFreshnessHorizon_DoesNotConfirm()
+    {
+        var priorControlAt = Now.AddMinutes(-1441);
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [
+                Control(priorControlAt),
+                Target(priorControlAt.AddSeconds(10), SmtpResponseCategory.Accepted)
+            ]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void StrongSameTopologyContradictionWithUnknownProvider_ResetsAcceptedHistory()
+    {
+        var acceptedAt = Now.AddMinutes(-32);
+        var contradictionAt = Now.AddMinutes(-20);
+        var contradiction = Target(
+            contradictionAt,
+            SmtpResponseCategory.RecipientRejected,
+            "contradiction") with
+        {
+            Provider = MailProvider.Unknown
+        };
+        var result = Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [
+                Control(acceptedAt, "old-session"),
+                Target(acceptedAt.AddSeconds(10), SmtpResponseCategory.Accepted, "old-session"),
+                contradiction
+            ]);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public async Task HighVolumeMailboxTraffic_DoesNotEvictQualifyingControlSession()
+    {
+        var store = new InMemoryValidationObservationStore();
+        var firstAt = Now.AddMinutes(-16);
+        var firstControl = Control(firstAt, "protected-session") with
+        {
+            CorrelatedTargetResponseCategory = SmtpResponseCategory.Accepted,
+            CorrelatedTargetObservedAt = firstAt.AddSeconds(10),
+            CorrelatedTargetMxHost = "mx.example.test",
+            CorrelatedTargetRecipientEvidenceQualified = true
+        };
+        await store.RecordAsync(firstControl);
+        for (var index = 0; index < 250; index++)
+        {
+            await store.RecordAsync(Target(
+                firstAt.AddSeconds(20 + index),
+                SmtpResponseCategory.Accepted,
+                $"noise-{index}"));
+        }
+
+        var observations = await store.GetDomainObservationsAsync("example.test");
+        var result = Evaluate(Candidate(Now), AcceptedTarget(), observations);
+
+        Assert.Contains(observations, observation =>
+            observation.ObservationSessionId == "protected-session");
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, result.EffectiveRecipientBehavior);
+        Assert.Equal(2, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public async Task HighVolumeMailboxTraffic_DoesNotEvictRecipientContradiction()
+    {
+        var store = new InMemoryValidationObservationStore();
+        var firstAt = Now.AddMinutes(-32);
+        var contradictionAt = Now.AddMinutes(-20);
+        var firstControl = Control(firstAt, "accepted-before-contradiction") with
+        {
+            CorrelatedTargetResponseCategory = SmtpResponseCategory.Accepted,
+            CorrelatedTargetObservedAt = firstAt.AddSeconds(10),
+            CorrelatedTargetMxHost = "mx.example.test",
+            CorrelatedTargetRecipientEvidenceQualified = true
+        };
+        var contradiction = Target(
+            contradictionAt,
+            SmtpResponseCategory.RecipientRejected,
+            "protected-contradiction");
+        await store.RecordAsync(firstControl);
+        await store.RecordAsync(contradiction);
+        for (var index = 0; index < 250; index++)
+        {
+            await store.RecordAsync(Target(
+                contradictionAt.AddSeconds(index + 1),
+                SmtpResponseCategory.Accepted,
+                $"noise-after-contradiction-{index}"));
+        }
+
+        var observations = await store.GetDomainObservationsAsync("example.test");
+        var result = Evaluate(Candidate(Now), AcceptedTarget(), observations);
+
+        Assert.Contains(observations, observation =>
+            observation.ObservationSessionId == "protected-contradiction");
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
+        Assert.Equal(1, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void AcceptedTargetWithAnotherAmbiguousMxAttempt_DoesNotQualify()
+    {
+        var result = DomainRecipientBehaviorPolicy.Evaluate(
+            Candidate(Now),
+            AcceptedTarget(),
+            [],
+            MailProvider.GenericSmtp,
+            Options(),
+            currentControlProbePerformed: true,
+            MxConsensus.ConsistentAmbiguous,
+            currentTargetAcceptanceUncontested: false);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(0, result.IndependentObservationCount);
+    }
+
+    [Fact]
+    public void BareOrPreRecipientRejection_DoesNotDowngradeConfirmedAcceptAll()
+    {
+        var confirmed = Candidate(Now) with
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+            IndependentObservationCount = 2,
+            RefreshInconclusive = false
+        };
+        var bare = new SmtpProbeResult(
+            SmtpMailboxStatus.Rejected, 550, "rejected", TimeSpan.Zero);
+        var mailFromEvidence = new SmtpEvidence(
+            SmtpCommand.MailFrom, 550, "5.7.1", SmtpResponseCategory.VerificationBlocked,
+            SmtpResponseTextClassification.PolicyRejection, 1, MailProvider.GenericSmtp,
+            "mx.example.test", 1, Now);
+        var mailFromRejected = new SmtpProbeResult(
+            SmtpMailboxStatus.Blocked, 550, "5.7.1", TimeSpan.Zero,
+            Evidence: mailFromEvidence,
+            SessionEvidence: new SmtpSessionEvidence(
+                SmtpCommand.MailFrom,
+                [new(SmtpCommand.MailFrom, 550, "5.7.1", SmtpResponseCategory.VerificationBlocked,
+                    SmtpResponseTextClassification.PolicyRejection, TimeSpan.Zero)],
+                "mx.example.test",
+                TimeSpan.Zero,
+                "probe@validator.example"));
+
+        var bareResult = Evaluate(confirmed, bare, []);
+        var preRecipientResult = Evaluate(confirmed, mailFromRejected, []);
+
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, bareResult.EffectiveRecipientBehavior);
+        Assert.Equal(DomainRecipientBehavior.AcceptAll, preRecipientResult.EffectiveRecipientBehavior);
+    }
+
+    [Fact]
+    public void StrongRandomizedRecipientRejection_DowngradesConfirmedAcceptAll()
+    {
+        var confirmed = Candidate(Now) with
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+            IndependentObservationCount = 2,
+            RefreshInconclusive = false,
+            ProbeResults = [RejectedTarget()]
+        };
+
+        var result = Evaluate(confirmed, AcceptedTarget(), []);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.TargetRecipientContradictedAcceptAll, result.ReasonCode);
+        Assert.Contains("randomized-recipient rejection", result.Detail, StringComparison.Ordinal);
     }
 
     private static CatchAllDetectionResult Evaluate(
@@ -169,15 +545,67 @@ public sealed class DomainRecipientBehaviorPolicyTests
     {
         RecipientBehavior = DomainRecipientBehavior.Unknown,
         ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
-        IndependentObservationCount = 1,
+        IndependentObservationCount = 0,
+        EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
         ObservedAt = observedAt,
-        RefreshInconclusive = true
+        RefreshInconclusive = true,
+        ProbeResults =
+        [
+            AcceptedProbe("mx.example.test", observedAt.AddSeconds(-1)),
+            AcceptedProbe("mx.example.test", observedAt)
+        ]
     };
 
-    private static SmtpProbeResult AcceptedTarget() =>
-        new(SmtpMailboxStatus.Accepted, 250, "2.1.5", TimeSpan.Zero);
+    private static SmtpProbeResult AcceptedTarget(DateTimeOffset? observedAt = null) =>
+        AcceptedProbe("mx.example.test", observedAt ?? Now.AddSeconds(10));
 
-    private static ValidationObservation Control(DateTimeOffset observedAt) => new(
+    private static SmtpProbeResult RejectedTarget()
+    {
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, 550, "5.1.1", SmtpResponseCategory.RecipientRejected,
+            SmtpResponseTextClassification.RecipientDoesNotExist, 1, MailProvider.GenericSmtp,
+            "mx.example.test", 1, Now.AddSeconds(10));
+        return new SmtpProbeResult(
+            SmtpMailboxStatus.Rejected, 550, "5.1.1", TimeSpan.Zero,
+            Evidence: evidence,
+            SessionEvidence: RecipientSession(
+                "mx.example.test", SmtpResponseCategory.RecipientRejected, 550, "5.1.1"));
+    }
+
+    private static SmtpProbeResult AcceptedProbe(string host, DateTimeOffset observedAt)
+    {
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, 250, "2.1.5", SmtpResponseCategory.Accepted,
+            SmtpResponseTextClassification.Success, 1, MailProvider.GenericSmtp,
+            host, 1, observedAt);
+        return new SmtpProbeResult(
+            SmtpMailboxStatus.Accepted, 250, "2.1.5", TimeSpan.Zero,
+            Evidence: evidence,
+            SessionEvidence: RecipientSession(host, SmtpResponseCategory.Accepted, 250, "2.1.5"));
+    }
+
+    private static SmtpSessionEvidence RecipientSession(
+        string host,
+        SmtpResponseCategory category,
+        int code,
+        string enhanced) => new(
+        category == SmtpResponseCategory.Accepted ? null : SmtpCommand.RcptTo,
+        [
+            new(SmtpCommand.MailFrom, 250, "2.1.0", SmtpResponseCategory.Accepted,
+                SmtpResponseTextClassification.Success, TimeSpan.Zero),
+            new(SmtpCommand.RcptTo, code, enhanced, category,
+                category == SmtpResponseCategory.Accepted
+                    ? SmtpResponseTextClassification.Success
+                    : SmtpResponseTextClassification.RecipientDoesNotExist,
+                TimeSpan.Zero)
+        ],
+        host,
+        TimeSpan.Zero,
+        "probe@validator.example");
+
+    private static ValidationObservation Control(
+        DateTimeOffset observedAt,
+        string sessionId = "prior-session") => new(
         "example.test",
         ValidationObservationType.CatchAllProbe,
         MailProvider.GenericSmtp,
@@ -189,9 +617,13 @@ public sealed class DomainRecipientBehaviorPolicyTests
         10,
         RandomRecipientAcceptedCount: 2,
         RandomRecipientProbeCount: 2,
-        RandomRecipientRejectedCount: 0);
+        RandomRecipientRejectedCount: 0,
+        ObservationSessionId: sessionId);
 
-    private static ValidationObservation Target(DateTimeOffset observedAt, SmtpResponseCategory category) => new(
+    private static ValidationObservation Target(
+        DateTimeOffset observedAt,
+        SmtpResponseCategory category,
+        string sessionId = "prior-session") => new(
         "example.test",
         ValidationObservationType.MailboxProbe,
         MailProvider.GenericSmtp,
@@ -200,7 +632,9 @@ public sealed class DomainRecipientBehaviorPolicyTests
         .75,
         category,
         observedAt,
-        10);
+        10,
+        ObservationSessionId: sessionId,
+        RecipientEvidenceQualified: true);
 
     private static CatchAllOptions Options() => new()
     {

@@ -258,7 +258,20 @@ public sealed class EvidenceClassificationTests
                 0,
                 Confidence: catchAllConfidence)
             {
-                RecipientBehavior = recipientBehavior
+                RecipientBehavior = recipientBehavior != DomainRecipientBehavior.Unknown
+                    ? recipientBehavior
+                    : catchAll == CatchAllStatus.LikelyCatchAll
+                        ? DomainRecipientBehavior.CatchAll
+                        : DomainRecipientBehavior.Unknown,
+                ReasonCode = recipientBehavior == DomainRecipientBehavior.AcceptAll
+                    ? CatchAllReasonCode.AcceptAllConfirmed
+                    : catchAll == CatchAllStatus.LikelyCatchAll
+                        ? CatchAllReasonCode.IndependentRoutingEvidence
+                        : CatchAllReasonCode.None,
+                IndependentObservationCount = recipientBehavior == DomainRecipientBehavior.AcceptAll ? 2 : 0,
+                EvidenceContractVersion = recipientBehavior == DomainRecipientBehavior.AcceptAll
+                    ? CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion
+                    : null
             },
             ObservedAt = DateTimeOffset.UtcNow
         };

@@ -310,13 +310,14 @@ public sealed class EmailValidatorTests
     [Fact]
     public async Task ConflictingMxEvidence_IsUnknownAndLowersReliability()
     {
+        var observations = new InMemoryValidationObservationStore();
         var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
         {
             ["mx1.example.com"] = RecipientAccepted("mx1.example.com"),
             ["mx2.example.com"] = RecipientRejected("mx2.example.com")
         });
         var validator = CreateValidator(
-            new MultiMxDns(), LiveSettings(), smtp: smtp,
+            new MultiMxDns(), LiveSettings(), observations, smtp: smtp,
             catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
 
         var result = await validator.ValidateAsync(
@@ -325,7 +326,337 @@ public sealed class EmailValidatorTests
         Assert.Equal(EmailValidationStatus.Unknown, result.Status);
         Assert.Equal(MxConsensus.Conflicting, result.MxValidation?.Consensus);
         Assert.Contains(ReasonCode.MxResultsConflicting, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxRejected, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MicrosoftRecipientRejected, result.ReasonCodes);
+        Assert.Equal(DetailedStatus.ConflictingMxEvidence, result.SubStatus);
+        Assert.Equal(UnknownCause.ConflictingMxEvidence, result.UnknownContext?.Cause);
+        Assert.Equal(EvidenceQuality.Partial, result.EvidenceQuality);
+        Assert.Contains("conflicting", result.ConfidenceReason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(VerificationReliabilityLevel.Low, result.ProviderValidation?.VerificationReliabilityLevel);
+        var mailboxObservation = Assert.Single(
+            await observations.GetDomainObservationsAsync("example.com"),
+            observation => observation.Type == ValidationObservationType.MailboxProbe);
+        Assert.Equal(SmtpResponseCategory.RecipientRejected, mailboxObservation.ResponseCategory);
+        Assert.True(mailboxObservation.RecipientEvidenceQualified);
+        Assert.True(mailboxObservation.RecipientEvidenceContested);
+        var history = new HistoricalSignalAggregator().Aggregate(
+            await observations.GetDomainObservationsAsync("example.com"));
+        Assert.Equal(0, history.TargetRejectedCount);
+        Assert.Equal(0, history.RecipientRejectionRate);
+    }
+
+    [Fact]
+    public async Task TwoCorrelatedRecordedSessions_ConfirmAcceptAllWithoutCallingItCatchAll()
+    {
+        var settings = LiveSettings();
+        settings.CatchAll.ProbeCount = 2;
+        settings.CatchAll.MaxProbeCount = 2;
+        settings.CatchAll.MinimumAcceptedProbes = 2;
+        settings.CatchAll.AcceptAllMinimumIndependentObservations = 2;
+        settings.CatchAll.AcceptAllMinimumObservationSeparationMinutes = 15;
+        settings.CatchAll.AcceptAllSessionCorrelationMinutes = 5;
+        var observations = new InMemoryValidationObservationStore();
+        var firstAt = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var first = CreateValidator(
+            new FakeDns(), settings, observations,
+            new TimedCandidateCatchAll(firstAt),
+            new TimedAcceptedSmtp(firstAt.AddSeconds(10)));
+
+        var firstResult = await first.ValidateAsync(
+            "first@example.com", new EmailValidationRequest(EnableSmtp: true));
+        var recorded = await observations.GetDomainObservationsAsync("example.com");
+        var firstControl = Assert.Single(recorded, item => item.Type == ValidationObservationType.CatchAllProbe);
+        var firstTarget = Assert.Single(recorded, item => item.Type == ValidationObservationType.MailboxProbe);
+
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, firstResult.CatchAllEvidence?.ReasonCode);
+        Assert.Equal(1, firstResult.CatchAllEvidence?.IndependentObservationCount);
+        Assert.Equal(EvidenceQuality.Partial, firstResult.EvidenceQuality);
+        Assert.Equal(DetailedStatus.AcceptAllCandidate, firstResult.SubStatus);
+        Assert.Equal(UnknownCause.AcceptAllPendingConfirmation, firstResult.UnknownContext?.Cause);
+        Assert.True(firstResult.UnknownContext?.Retryable);
+        Assert.NotNull(firstResult.RetryAfter);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, firstResult.ReasonCodes);
+        Assert.DoesNotContain(DetailedStatus.MailboxAccepted, firstResult.DetailedStatuses);
+        Assert.Equal(2, firstControl.RandomRecipientAcceptedCount);
+        Assert.Equal(2, firstControl.RandomRecipientProbeCount);
+        Assert.False(string.IsNullOrWhiteSpace(firstControl.ObservationSessionId));
+        Assert.Equal(firstControl.ObservationSessionId, firstTarget.ObservationSessionId);
+        Assert.Equal(SmtpResponseCategory.Accepted, firstControl.CorrelatedTargetResponseCategory);
+        Assert.True(firstControl.CorrelatedTargetRecipientEvidenceQualified);
+        Assert.Equal("mx.example.com", firstControl.CorrelatedTargetMxHost);
+
+        var secondAt = firstAt.AddMinutes(16);
+        var second = CreateValidator(
+            new FakeDns(), settings, observations,
+            new TimedCandidateCatchAll(secondAt),
+            new TimedAcceptedSmtp(secondAt.AddSeconds(10)));
+        var secondResult = await second.ValidateAsync(
+            "second@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(EmailValidationStatus.Unknown, secondResult.Status);
+        Assert.Equal(DomainRecipientBehavior.AcceptAll,
+            secondResult.CatchAllEvidence?.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, secondResult.CatchAllEvidence?.ReasonCode);
+        Assert.Equal(2, secondResult.CatchAllEvidence?.IndependentObservationCount);
+        Assert.NotEqual(DomainRecipientBehavior.CatchAll,
+            secondResult.CatchAllEvidence?.EffectiveRecipientBehavior);
+        Assert.Equal(EvidenceQuality.Partial, secondResult.EvidenceQuality);
+        Assert.Equal(DetailedStatus.AcceptAllConfirmed, secondResult.SubStatus);
+        Assert.Equal(UnknownCause.NonDiscriminatingSmtpEndpoint, secondResult.UnknownContext?.Cause);
+        Assert.False(secondResult.UnknownContext?.Retryable);
+        Assert.Equal(secondResult.CatchAllEvidence?.Status, secondResult.Checks.CatchAll);
+        Assert.DoesNotContain(DetailedStatus.MailboxAccepted, secondResult.DetailedStatuses);
+    }
+
+    [Fact]
+    public async Task MixedControlMxHosts_ArePersistedWithoutInventedMxProvenance()
+    {
+        var settings = LiveSettings();
+        settings.CatchAll.ProbeCount = 2;
+        settings.CatchAll.MaxProbeCount = 2;
+        settings.CatchAll.MinimumAcceptedProbes = 2;
+        var observations = new InMemoryValidationObservationStore();
+        var observedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var validator = CreateValidator(
+            new FakeDns(), settings, observations,
+            new MixedMxCandidateCatchAll(observedAt),
+            new TimedAcceptedSmtp(observedAt.AddSeconds(10)));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+        var recorded = await observations.GetDomainObservationsAsync("example.com");
+        var control = Assert.Single(recorded, item => item.Type == ValidationObservationType.CatchAllProbe);
+
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.CatchAllEvidence?.ReasonCode);
+        Assert.Equal(0, result.CatchAllEvidence?.IndependentObservationCount);
+        Assert.Null(control.MxHost);
+        Assert.Equal(2, control.RandomRecipientAcceptedCount);
+    }
+
+    [Fact]
+    public async Task AcceptedTargetWithAmbiguousMxPeer_IsNotPersistedAsQualifyingSession()
+    {
+        var settings = LiveSettings();
+        settings.CatchAll.ProbeCount = 2;
+        settings.CatchAll.MaxProbeCount = 2;
+        settings.CatchAll.MinimumAcceptedProbes = 2;
+        settings.Smtp.MaxMxAttempts = 2;
+        var observations = new InMemoryValidationObservationStore();
+        var observedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = RecipientAccepted("mx1.example.com", observedAt.AddSeconds(10)),
+            ["mx2.example.com"] = TemporaryFailure("mx2.example.com")
+        });
+        var validator = CreateValidator(
+            new MultiMxDns(), settings, observations,
+            new TimedCandidateCatchAll(observedAt), smtp);
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+        var recorded = await observations.GetDomainObservationsAsync("example.com");
+        var control = Assert.Single(recorded,
+            observation => observation.Type == ValidationObservationType.CatchAllProbe);
+        var target = Assert.Single(recorded,
+            observation => observation.Type == ValidationObservationType.MailboxProbe);
+
+        Assert.Equal(0, result.CatchAllEvidence?.IndependentObservationCount);
+        Assert.False(control.CorrelatedTargetRecipientEvidenceQualified);
+        Assert.False(target.RecipientEvidenceQualified);
+    }
+
+    [Fact]
+    public async Task SmtpBannerProvider_ReconcilesGenericMxBeforeMailboxInterpretation()
+    {
+        var validator = CreateValidator(
+            new FakeDns(),
+            LiveSettings(),
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown),
+            smtp: new BannerAcceptedSmtp(
+                "220 tenant.mail.protection.outlook.com Microsoft ESMTP"));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(MailProvider.Microsoft365, result.MailProvider);
+        Assert.Equal(MailProvider.Microsoft365, result.Provider?.Provider);
+        Assert.Equal(MailProvider.GenericSmtp, result.DomainIntelligence?.Provider.Provider);
+        Assert.Equal(SmtpResponseCategory.GatewayAccepted,
+            result.ProviderValidation?.EffectiveCategory);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, result.ReasonCodes);
+    }
+
+    [Fact]
+    public async Task ConflictingDnsAndSmtpProviderEvidence_Abstains()
+    {
+        var validator = CreateValidator(
+            new MicrosoftDns(),
+            LiveSettings(),
+            catchAll: new StaticCatchAll(CatchAllStatus.NotCatchAll),
+            smtp: new BannerAcceptedSmtp("220 mx.google.com ESMTP"));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(MailProvider.Unknown, result.MailProvider);
+        Assert.Equal(MailProvider.Unknown, result.Provider?.Provider);
+        Assert.Contains("ProviderEvidenceConflict", result.Provider?.Evidence ?? []);
+        Assert.Equal(MailProvider.Microsoft365, result.DomainIntelligence?.Provider.Provider);
+        Assert.DoesNotContain(
+            "ProviderEvidenceConflict",
+            result.DomainIntelligence?.Provider.Evidence ?? []);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.ProviderEvidenceConflicting, result.ReasonCodes);
+        Assert.Equal(DetailedStatus.ConflictingProviderEvidence, result.SubStatus);
+        Assert.Equal(UnknownCause.ConflictingProviderEvidence, result.UnknownContext?.Cause);
+        Assert.Equal(EvidenceQuality.Partial, result.EvidenceQuality);
+    }
+
+    [Fact]
+    public async Task MicrosoftConsumerDnsAndMicrosoftBanner_AreCompatible()
+    {
+        var validator = CreateValidator(
+            new MicrosoftConsumerDns(),
+            LiveSettings(),
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown),
+            smtp: new BannerAcceptedSmtp(
+                "220 outlook-com.olc.protection.outlook.com Microsoft ESMTP"));
+
+        var result = await validator.ValidateAsync(
+            "person@outlook.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(MailProvider.MicrosoftConsumer, result.MailProvider);
+        Assert.DoesNotContain(ReasonCode.ProviderEvidenceConflicting, result.ReasonCodes);
+        Assert.Equal(SmtpResponseCategory.GatewayAccepted,
+            result.ProviderValidation?.EffectiveCategory);
+    }
+
+    [Fact]
+    public async Task ProviderIdentityConflict_DoesNotEraseStrongRecipientRejection()
+    {
+        var validator = CreateValidator(
+            new MicrosoftDns(),
+            LiveSettings(),
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown),
+            smtp: new BannerRejectedSmtp("220 mx.google.com ESMTP"));
+
+        var result = await validator.ValidateAsync(
+            "missing@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(EmailValidationStatus.Invalid, result.Status);
+        Assert.Contains(ReasonCode.MailboxRejected, result.ReasonCodes);
+        Assert.Contains(ReasonCode.ProviderEvidenceConflicting, result.ReasonCodes);
+        Assert.Equal(EvidenceQuality.Conclusive, result.EvidenceQuality);
+        Assert.NotEqual(DetailedStatus.ConflictingProviderEvidence, result.SubStatus);
+    }
+
+    [Fact]
+    public async Task ProviderIdentityConflict_DoesNotEraseStageQualifiedMailboxFull()
+    {
+        var validator = CreateValidator(
+            new MicrosoftDns(),
+            LiveSettings(),
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown),
+            smtp: new BannerMailboxFullSmtp("220 mx.google.com ESMTP"));
+
+        var result = await validator.ValidateAsync(
+            "full@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(SmtpResponseCategory.MailboxFull,
+            result.ProviderValidation?.EffectiveCategory);
+        Assert.Contains(ReasonCode.ProviderEvidenceConflicting, result.ReasonCodes);
+        Assert.Equal(EvidenceQuality.Conclusive, result.EvidenceQuality);
+    }
+
+    [Fact]
+    public async Task EqualPreferenceMxPeers_AreExhaustedBeforeDeclaringRecipientOutcome()
+    {
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = RecipientRejected("mx1.example.com"),
+            ["mx2.example.com"] = RecipientAccepted("mx2.example.com")
+        });
+        var validator = CreateValidator(
+            new EqualPreferenceMxDns(), LiveSettings(), smtp: smtp,
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Equal(MxConsensus.Conflicting, result.MxValidation?.Consensus);
+        Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
+    }
+
+    [Fact]
+    public async Task EqualPreferenceAcceptedAndMailboxFull_PreservesCurrentDeliveryRisk()
+    {
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = RecipientAccepted("mx1.example.com"),
+            ["mx2.example.com"] = MailboxFull("mx2.example.com")
+        });
+        var validator = CreateValidator(
+            new EqualPreferenceMxDns(), LiveSettings(), smtp: smtp,
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
+
+        var result = await validator.ValidateAsync(
+            "full@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(EmailValidationStatus.Risky, result.Status);
+        Assert.Equal(SmtpResponseCategory.MailboxFull,
+            result.ProviderValidation?.EffectiveCategory);
+        Assert.Equal(MxConsensus.ConclusivePositive, result.MxValidation?.Consensus);
+        Assert.Equal("mx2.example.com", result.SelectedMx);
+        Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
+    }
+
+    [Fact]
+    public async Task EqualPreferenceRejectedAndMailboxFull_AreConflicting()
+    {
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = RecipientRejected("mx1.example.com"),
+            ["mx2.example.com"] = MailboxFull("mx2.example.com")
+        });
+        var validator = CreateValidator(
+            new EqualPreferenceMxDns(), LiveSettings(), smtp: smtp,
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Equal(MxConsensus.Conflicting, result.MxValidation?.Consensus);
+        Assert.Contains(ReasonCode.MxResultsConflicting, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxRejected, result.ReasonCodes);
+        Assert.Equal(EvidenceQuality.Partial, result.EvidenceQuality);
+        Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
+    }
+
+    [Fact]
+    public async Task UnqualifiedRawMailboxFull_DoesNotStopBeforeLowerPriorityConclusiveResult()
+    {
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = RawMailboxFull("mx1.example.com"),
+            ["mx2.example.com"] = RecipientRejected("mx2.example.com"),
+            ["mx3.example.com"] = RecipientAccepted("mx3.example.com")
+        });
+        var validator = CreateValidator(
+            new MultiMxDns(), LiveSettings(), smtp: smtp,
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
+
+        var result = await validator.ValidateAsync(
+            "missing@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.Equal(EmailValidationStatus.Invalid, result.Status);
+        Assert.Equal(MxConsensus.ConclusiveNegative, result.MxValidation?.Consensus);
+        Assert.Equal("mx2.example.com", result.SelectedMx);
+        Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
     }
 
     [Fact]
@@ -454,12 +785,34 @@ public sealed class EmailValidatorTests
                 false, TimeSpan.FromMilliseconds(1)));
     }
 
+    private sealed class MicrosoftConsumerDns : IDnsMailResolver
+    {
+        public Task<DnsLookupResult> ResolveAsync(
+            string domain,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DnsLookupResult(
+                DnsStatus.Success, true,
+                [new MxRecord(0, "outlook-com.olc.protection.outlook.com")],
+                false, TimeSpan.FromMilliseconds(1)));
+    }
+
     private sealed class MultiMxDns : IDnsMailResolver
     {
         public Task<DnsLookupResult> ResolveAsync(string domain, CancellationToken cancellationToken = default) =>
             Task.FromResult(new DnsLookupResult(
                 DnsStatus.Success, true,
                 [new MxRecord(10, "mx1.example.com"), new MxRecord(20, "mx2.example.com"), new MxRecord(30, "mx3.example.com")],
+                false, TimeSpan.Zero));
+    }
+
+    private sealed class EqualPreferenceMxDns : IDnsMailResolver
+    {
+        public Task<DnsLookupResult> ResolveAsync(
+            string domain,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DnsLookupResult(
+                DnsStatus.Success, true,
+                [new MxRecord(10, "mx1.example.com"), new MxRecord(10, "mx2.example.com")],
                 false, TimeSpan.Zero));
     }
 
@@ -478,7 +831,7 @@ public sealed class EmailValidatorTests
     private sealed class FakeSmtp : ISmtpMailboxProbe
     {
         public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new SmtpProbeResult(SmtpMailboxStatus.Accepted, 250, "ok", TimeSpan.Zero));
+            Task.FromResult(RecipientAccepted(mxHost));
     }
 
     private sealed class CountingSmtp : ISmtpMailboxProbe
@@ -491,8 +844,7 @@ public sealed class EmailValidatorTests
             CancellationToken cancellationToken = default)
         {
             Calls++;
-            return Task.FromResult(new SmtpProbeResult(
-                SmtpMailboxStatus.Accepted, 250, "ok", TimeSpan.Zero, Attempts: 1));
+            return Task.FromResult(RecipientAccepted(mxHost));
         }
     }
 
@@ -547,6 +899,109 @@ public sealed class EmailValidatorTests
             string domain, string mxHost, MailProvider provider,
             CancellationToken cancellationToken = default) => Task.FromResult(
                 new CatchAllDetectionResult(status, 1, 0, 0, 1, Confidence: 0.2));
+    }
+
+    private sealed class TimedCandidateCatchAll(DateTimeOffset observedAt) : ICatchAllDetector
+    {
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain,
+            string mxHost,
+            MailProvider provider,
+            CancellationToken cancellationToken = default) => Task.FromResult(
+            new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0,
+                "The endpoint accepted two randomized recipients; independent confirmation is required.",
+                0.71)
+            {
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                IndependentObservationCount = 0,
+                ObservedAt = observedAt,
+                RefreshAttemptedAt = observedAt,
+                RefreshInconclusive = true,
+                ProbeResults =
+                [
+                    RecipientAccepted(mxHost, observedAt.AddSeconds(-1)),
+                    RecipientAccepted(mxHost, observedAt)
+                ]
+            });
+    }
+
+    private sealed class TimedAcceptedSmtp(DateTimeOffset observedAt) : ISmtpMailboxProbe
+    {
+        public Task<SmtpProbeResult> ProbeAsync(
+            string mxHost,
+            string recipient,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(RecipientAccepted(mxHost, observedAt));
+    }
+
+    private sealed class BannerAcceptedSmtp(string banner) : ISmtpMailboxProbe
+    {
+        public Task<SmtpProbeResult> ProbeAsync(
+            string mxHost,
+            string recipient,
+            CancellationToken cancellationToken = default)
+        {
+            var accepted = RecipientAccepted(mxHost);
+            return Task.FromResult(accepted with
+            {
+                SessionEvidence = accepted.SessionEvidence! with { ServerBanner = banner }
+            });
+        }
+    }
+
+    private sealed class BannerRejectedSmtp(string banner) : ISmtpMailboxProbe
+    {
+        public Task<SmtpProbeResult> ProbeAsync(
+            string mxHost,
+            string recipient,
+            CancellationToken cancellationToken = default)
+        {
+            var rejected = RecipientRejected(mxHost);
+            return Task.FromResult(rejected with
+            {
+                SessionEvidence = rejected.SessionEvidence! with { ServerBanner = banner }
+            });
+        }
+    }
+
+    private sealed class BannerMailboxFullSmtp(string banner) : ISmtpMailboxProbe
+    {
+        public Task<SmtpProbeResult> ProbeAsync(
+            string mxHost,
+            string recipient,
+            CancellationToken cancellationToken = default)
+        {
+            var full = MailboxFull(mxHost);
+            return Task.FromResult(full with
+            {
+                SessionEvidence = full.SessionEvidence! with { ServerBanner = banner }
+            });
+        }
+    }
+
+    private sealed class MixedMxCandidateCatchAll(DateTimeOffset observedAt) : ICatchAllDetector
+    {
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain,
+            string mxHost,
+            MailProvider provider,
+            CancellationToken cancellationToken = default) => Task.FromResult(
+            new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0,
+                "The endpoint accepted controls on different MX hosts.",
+                0.60)
+            {
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                ObservedAt = observedAt,
+                RefreshAttemptedAt = observedAt,
+                RefreshInconclusive = true,
+                ProbeResults =
+                [
+                    RecipientAccepted(mxHost, observedAt.AddSeconds(-1)),
+                    RecipientAccepted("mx2.example.com", observedAt)
+                ]
+            });
     }
 
     private sealed class HighConfidenceCatchAll : ICatchAllDetector
@@ -672,11 +1127,11 @@ public sealed class EmailValidatorTests
             ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
             RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-            StrategyVersion = "1.1.0"
+            StrategyVersion = "1.2.0"
         },
         ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
         EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(50),
-        StrategyVersion = "1.1.0",
+        StrategyVersion = "1.2.0",
         IntelligencePolicyVersion = "2.0.0"
     };
 
@@ -713,12 +1168,12 @@ public sealed class EmailValidatorTests
             Evidence: evidence, SessionEvidence: session);
     }
 
-    private static SmtpProbeResult RecipientAccepted(string host)
+    private static SmtpProbeResult RecipientAccepted(string host, DateTimeOffset? observedAt = null)
     {
         var evidence = new SmtpEvidence(
             SmtpCommand.RcptTo, 250, "2.1.5", SmtpResponseCategory.Accepted,
             SmtpResponseTextClassification.Success, 1, MailProvider.GenericSmtp,
-            host, 1, DateTimeOffset.UtcNow, "250 2.1.5 OK");
+            host, 1, observedAt ?? DateTimeOffset.UtcNow, "250 2.1.5 OK");
         var session = RecipientSession(host, evidence.Category, 250, "2.1.5",
             SmtpResponseTextClassification.Success);
         return new(SmtpMailboxStatus.Accepted, 250, evidence.SanitizedResponse, TimeSpan.Zero,
@@ -735,6 +1190,28 @@ public sealed class EmailValidatorTests
             SmtpResponseTextClassification.TemporaryCondition);
         return new(SmtpMailboxStatus.TemporaryFailure, 451, evidence.SanitizedResponse, TimeSpan.Zero,
             Evidence: evidence, SessionEvidence: session);
+    }
+
+    private static SmtpProbeResult MailboxFull(string host)
+    {
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, 552, "5.2.2", SmtpResponseCategory.MailboxFull,
+            SmtpResponseTextClassification.MailboxFull, 1, MailProvider.GenericSmtp,
+            host, 1, DateTimeOffset.UtcNow, "552 5.2.2 Mailbox full");
+        var session = RecipientSession(host, evidence.Category, 552, "5.2.2",
+            SmtpResponseTextClassification.MailboxFull);
+        return new(SmtpMailboxStatus.MailboxFull, 552, evidence.SanitizedResponse, TimeSpan.Zero,
+            Evidence: evidence, SessionEvidence: session);
+    }
+
+    private static SmtpProbeResult RawMailboxFull(string host)
+    {
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, 552, "5.2.2", SmtpResponseCategory.MailboxFull,
+            SmtpResponseTextClassification.MailboxFull, 1, MailProvider.GenericSmtp,
+            host, 1, DateTimeOffset.UtcNow, "552 5.2.2 Mailbox full");
+        return new(SmtpMailboxStatus.MailboxFull, 552, evidence.SanitizedResponse, TimeSpan.Zero,
+            Evidence: evidence);
     }
 
     private static SmtpProbeResult LocalCooldown(string host) => new(

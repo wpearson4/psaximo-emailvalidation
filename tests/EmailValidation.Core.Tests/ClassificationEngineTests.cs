@@ -25,6 +25,18 @@ public sealed class ClassificationEngineTests
         Assert.Contains(ReasonCode.CatchAllUnknown, result.ReasonCodes);
     }
 
+    [Fact]
+    public void LegacyLikelyCatchAllWithoutProvenance_Abstains()
+    {
+        var result = _classifier.Classify(
+            Checks(SmtpMailboxStatus.Accepted, CatchAllStatus.LikelyCatchAll),
+            DnsStatus.Success);
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.AcceptAllCandidate, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.CatchAllDetected, result.ReasonCodes);
+    }
+
     [Theory]
     [InlineData(SmtpMailboxStatus.Rejected, ReasonCode.MailboxRejected)]
     public void DefinitiveMailboxFailure_IsInvalid(SmtpMailboxStatus mailbox, ReasonCode reason)

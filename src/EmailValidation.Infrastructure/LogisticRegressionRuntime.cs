@@ -65,12 +65,24 @@ public sealed class LogisticRegressionArtifactProvider
             string.IsNullOrWhiteSpace(artifact.OutcomeDefinitionVersion) ||
             string.IsNullOrWhiteSpace(artifact.TrainingDatasetId) || artifact.TrainingDataCutoffUtc == default)
             throw new InvalidDataException("Classification model artifact metadata is incomplete.");
-        if (artifact.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV1)
+        if (artifact.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV2)
             throw new InvalidDataException("Classification model artifact uses an unsupported feature schema.");
+        var expectedOutcomeDefinition = artifact.Target switch
+        {
+            PredictionTargetKind.MailboxExistence => EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
+            PredictionTargetKind.TechnicalDeliveryWithinWindow => "delivery-7d-v1",
+            PredictionTargetKind.HardBounceWithinWindow => "hard-bounce-7d-v1",
+            PredictionTargetKind.VerificationReliability => "verification-reliability-v1",
+            _ => throw new InvalidDataException("Classification model artifact uses an unsupported prediction target.")
+        };
+        if (!string.Equals(artifact.OutcomeDefinitionVersion, expectedOutcomeDefinition, StringComparison.Ordinal))
+            throw new InvalidDataException("Classification model target and outcome definition do not match.");
         if (!double.IsFinite(artifact.Intercept) || !double.IsFinite(artifact.CalibrationSlope) ||
             !double.IsFinite(artifact.CalibrationIntercept) || artifact.CalibrationSlope <= 0 ||
-            artifact.Coefficients.Count == 0 || artifact.Coefficients.Any(item =>
-                !LogisticFeatureEncoder.SupportedFeatures.Contains(item.Key) || !double.IsFinite(item.Value)))
+            artifact.Coefficients is null ||
+            !artifact.Coefficients.Keys.ToHashSet(StringComparer.Ordinal)
+                .SetEquals(LogisticFeatureEncoder.SupportedFeatures) ||
+            artifact.Coefficients.Any(item => !double.IsFinite(item.Value)))
             throw new InvalidDataException("Classification model coefficients or calibration parameters are invalid.");
     }
 }
@@ -89,7 +101,7 @@ public sealed class LogisticRegressionProbabilityScorer(
         var metadata = new PredictionModelMetadata(
             artifact.ModelName, artifact.ModelVersion, artifact.FeatureSchemaVersion,
             artifact.CalibrationVersion, artifact.OutcomeDefinitionVersion,
-            EvidenceBackedClassificationVersions.DefaultDecisionPolicyV1,
+            EvidenceBackedClassificationVersions.DefaultDecisionPolicyV2,
             artifact.TrainingDataCutoffUtc, artifact.TrainingDatasetId, checksum,
             DateTimeOffset.MinValue, ModelRolloutMode.Disabled);
         return new(artifact.Target, score, metadata);
@@ -120,7 +132,10 @@ public static class LogisticFeatureEncoder
         "provider_evidence_strength", "catch_all_evidence_strength", "recipient_stage_reached",
         "recipient_accepted", "provider_policy_block", "mailbox_full", "observation_count_log1p",
         "verification_reliability", "target_acceptance_rate", "recipient_rejection_rate",
-        "temporary_failure_rate", "rate_limit_rate", "probe_attempted"
+        "temporary_failure_rate", "rate_limit_rate", "probe_attempted",
+        "recipient_behavior_recipient_specific", "recipient_behavior_catch_all",
+        "recipient_behavior_accept_all", "accept_all_candidate", "mx_evidence_conflicting",
+        "provider_evidence_conflicting"
     };
 
     public static IReadOnlyDictionary<string, double> Encode(EmailValidationFeatureSnapshot snapshot) =>
@@ -133,6 +148,15 @@ public static class LogisticFeatureEncoder
             ["mx_count"] = snapshot.Domain.MxCount,
             ["provider_evidence_strength"] = snapshot.Domain.ProviderEvidenceStrength,
             ["catch_all_evidence_strength"] = snapshot.Domain.CatchAllEvidenceStrength,
+            ["recipient_behavior_recipient_specific"] = Bool(
+                snapshot.Domain.RecipientBehavior == DomainRecipientBehavior.RecipientSpecific),
+            ["recipient_behavior_catch_all"] = Bool(
+                snapshot.Domain.RecipientBehavior == DomainRecipientBehavior.CatchAll),
+            ["recipient_behavior_accept_all"] = Bool(
+                snapshot.Domain.RecipientBehavior == DomainRecipientBehavior.AcceptAll),
+            ["accept_all_candidate"] = Bool(snapshot.Domain.AcceptAllCandidate),
+            ["mx_evidence_conflicting"] = Bool(snapshot.Domain.MxEvidenceConflicting),
+            ["provider_evidence_conflicting"] = Bool(snapshot.Domain.ProviderEvidenceConflicting),
             ["recipient_stage_reached"] = Bool(snapshot.Smtp.RecipientStageReached),
             ["recipient_accepted"] = Bool(snapshot.Smtp.RecipientAccepted),
             ["provider_policy_block"] = Bool(snapshot.Smtp.ProviderPolicyBlock),

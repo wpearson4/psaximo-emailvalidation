@@ -30,8 +30,8 @@ public sealed class CatchAllDetector(
             var result = await smtpProbe.ProbeAsync(mxHost, $"dwcheck-{token}@{domain}", provider, cancellationToken);
             results.Add(result);
             attempted++;
-            if (result.Status == SmtpMailboxStatus.Accepted) accepted++;
-            else if (result.Status == SmtpMailboxStatus.Rejected) rejected++;
+            if (SmtpRecipientEvidencePolicy.HasRecipientAcceptance(result)) accepted++;
+            else if (SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(result)) rejected++;
             else ambiguous++;
 
             if (attempted >= minimumInitial && !WouldAdditionalProbeMatter(
@@ -67,7 +67,10 @@ public sealed class CatchAllDetector(
                 confidence)
             {
                 ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
-                IndependentObservationCount = 1
+                // Controls alone establish only an endpoint-level candidate. The
+                // target RCPT result is correlated later before this becomes one
+                // qualifying independent observation.
+                IndependentObservationCount = 0
             }, results);
         }
 
@@ -87,10 +90,17 @@ public sealed class CatchAllDetector(
         int maximum,
         int minimumAccepted)
     {
-        if (attempted >= maximum || rejected == attempted || accepted >= minimumAccepted) return false;
-        if (accepted > 0) return true;
+        if (attempted >= maximum) return false;
+        // Once two response classes have appeared, neither an all-accepted nor an
+        // all-rejected conclusion is still possible in this observation. Sending
+        // another randomized RCPT would add traffic without changing the result.
+        if ((accepted > 0 && rejected > 0) ||
+            (ambiguous > 0 && (accepted > 0 || rejected > 0)))
+            return false;
+        if (accepted == attempted) return accepted < minimumAccepted;
+        if (rejected == attempted) return rejected < minimumAccepted;
         if (ambiguous == attempted) return attempted < 2;
-        return accepted > 0 && rejected > 0 && attempted < 3;
+        return false;
     }
 
     private CatchAllDetectionResult WithResults(
@@ -101,6 +111,7 @@ public sealed class CatchAllDetector(
         return result with
         {
             ProbeResults = results,
+            EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
             ObservedAt = now,
             StrategyVersion = _strategyVersion,
             RefreshAttemptedAt = now,

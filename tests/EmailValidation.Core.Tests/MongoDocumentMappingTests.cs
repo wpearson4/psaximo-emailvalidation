@@ -60,6 +60,7 @@ public sealed class MongoDocumentMappingTests
                 ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
                 RecipientBehavior = DomainRecipientBehavior.AcceptAll,
                 IndependentObservationCount = 2,
+                EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
                 ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
                 StrategyVersion = "1.1.0"
             }
@@ -81,12 +82,18 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(2, document.RandomProbeAcceptedCount);
         Assert.Equal(0, document.RandomProbeRejectedCount);
         Assert.Equal("1.1.0", document.CatchAllStrategyVersion);
+        Assert.Equal(
+            CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
+            document.CatchAllEvidenceContractVersion);
         Assert.NotNull(document.CatchAllObservedAt);
         Assert.NotNull(restored);
         Assert.Empty(restored!.CatchAll.ProbeResults);
         Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, restored.CatchAll.ReasonCode);
         Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
         Assert.Equal(2, restored.CatchAll.IndependentObservationCount);
+        Assert.Equal(
+            CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
+            restored.CatchAll.EvidenceContractVersion);
     }
 
     [Fact]
@@ -102,8 +109,13 @@ public sealed class MongoDocumentMappingTests
             }
         };
         var document = MongoValidationIntelligenceStore.DomainIntelligenceDocument.FromModel(legacy);
+        Assert.Equal(CatchAllStatus.Unknown, document.CatchAllStatus);
+        Assert.Equal(DomainRecipientBehavior.Unknown, document.RecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, document.CatchAllReasonCode);
         var payload = JsonNode.Parse(document.PayloadJson!)!;
-        payload["catchAll"]!.AsObject().Remove("recipientBehavior");
+        // Reproduce the real legacy laundering shape: older writers persisted
+        // EffectiveRecipientBehavior=CatchAll for SMTP-only random acceptance.
+        payload["catchAll"]!["recipientBehavior"] = (int)DomainRecipientBehavior.CatchAll;
         document.PayloadJson = payload.ToJsonString();
 
         var restored = document.ToModel();
@@ -112,7 +124,7 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(CatchAllStatus.Unknown, restored!.CatchAll.Status);
         Assert.Equal(DomainRecipientBehavior.Unknown, restored.CatchAll.RecipientBehavior);
         Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, restored.CatchAll.ReasonCode);
-        Assert.Equal(1, restored.CatchAll.IndependentObservationCount);
+        Assert.Equal(0, restored.CatchAll.IndependentObservationCount);
         Assert.True(restored.CatchAll.RefreshInconclusive);
     }
 

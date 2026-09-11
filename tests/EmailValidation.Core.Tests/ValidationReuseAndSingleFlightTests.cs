@@ -10,7 +10,7 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class ValidationReuseAndSingleFlightTests
 {
-    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.2.0", "3.1.0", "1.1.0");
+    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.3.0", "3.1.0", "1.2.0");
     private static readonly string[] DistinctEmails =
         ["one@example.test", "two@example.test", "three@example.test"];
 
@@ -27,7 +27,7 @@ public sealed class ValidationReuseAndSingleFlightTests
         var second = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
 
         Assert.Equal(1, executor.Calls);
-        Assert.Equal(readsAfterLive, store.Reads);
+        Assert.Equal(readsAfterLive + 1, store.Reads);
         Assert.Equal(ValidationResultSource.LiveValidation, first.Metadata!.ResultSource);
         Assert.Equal(ValidationResultSource.MemoryCache, second.Metadata!.ResultSource);
         Assert.Equal(first.Metadata.ValidatedAt, second.Metadata.ValidatedAt);
@@ -55,7 +55,7 @@ public sealed class ValidationReuseAndSingleFlightTests
         var memory = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
 
         Assert.Equal(0, executor.Calls);
-        Assert.Equal(readsAfterPersistentHit, store.Reads);
+        Assert.Equal(readsAfterPersistentHit + 1, store.Reads);
         Assert.Equal(ValidationResultSource.PersistentReuse, persistent.Metadata!.ResultSource);
         Assert.Equal(ValidationResultSource.MemoryCache, memory.Metadata!.ResultSource);
         Assert.Equal(original, persistent.Metadata.OriginalValidatedAt);
@@ -223,6 +223,237 @@ public sealed class ValidationReuseAndSingleFlightTests
         Assert.Equal(ValidationReuseAction.CannotReuse, versionDecision.Action);
         Assert.Equal(ValidationReuseRejectionReason.MxTopology, topologyDecision.RejectionReason);
         Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, topologyDecision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_RejectsPositiveResultWhenDomainRecipientBehaviorChanges()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var options = Options.Create(new EmailValidationOptions());
+        var policy = new ValidationResultReusePolicy(options);
+        var originalDomain = Domain(clock, "example.test");
+        var mailbox = Mailbox(
+            Result("person@example.test", clock.GetUtcNow(), originalDomain),
+            clock.GetUtcNow());
+        var changedDomain = originalDomain with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0, "Accept-all candidate", .70)
+            {
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                ObservedAt = clock.GetUtcNow().AddMinutes(1)
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            changedDomain,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.RecipientBehavior, decision.RejectionReason);
+        Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_RejectsValidResultWhenRecipientDifferentiationWeakens()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var strongDomain = Domain(clock, "example.test") with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.NotCatchAll, 2, 0, 2, 0, Confidence: .95)
+            {
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific
+            }
+        };
+        var mailbox = Mailbox(
+            Result(
+                "person@example.test",
+                clock.GetUtcNow(),
+                strongDomain,
+                EmailValidationStatus.Valid),
+            clock.GetUtcNow());
+        var weakerDomain = strongDomain with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.LikelyNotCatchAll, 1, 0, 1, 0, Confidence: .82)
+            {
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            weakerDomain,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.RecipientBehavior, decision.RejectionReason);
+        Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_RejectsPositiveWhenProviderInterpretationChanges()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var originalDomain = Domain(clock, "example.test");
+        var mailbox = Mailbox(
+            Result("person@example.test", clock.GetUtcNow(), originalDomain),
+            clock.GetUtcNow());
+        var changedDomain = originalDomain with
+        {
+            Provider = originalDomain.Provider with
+            {
+                Provider = MailProvider.GoogleWorkspace,
+                GatewayProvider = GatewayProvider.GoogleWorkspace
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            changedDomain,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.ProviderStrategy, decision.RejectionReason);
+        Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_RejectsRiskyAcceptedWhenProviderInterpretationChanges()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var originalDomain = Domain(clock, "example.test");
+        var mailbox = Mailbox(
+            Result(
+                "person@example.test",
+                clock.GetUtcNow(),
+                originalDomain,
+                EmailValidationStatus.Risky,
+                SmtpMailboxStatus.Accepted),
+            clock.GetUtcNow());
+        var changedDomain = originalDomain with
+        {
+            Provider = originalDomain.Provider with
+            {
+                Provider = MailProvider.GoogleWorkspace,
+                GatewayProvider = GatewayProvider.GoogleWorkspace
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            changedDomain,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.ProviderStrategy, decision.RejectionReason);
+        Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_RejectsRiskyAcceptedWhenProviderEvidenceBecomesConflicting()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var originalDomain = Domain(clock, "example.test");
+        var mailbox = Mailbox(
+            Result(
+                "person@example.test",
+                clock.GetUtcNow(),
+                originalDomain,
+                EmailValidationStatus.Risky,
+                SmtpMailboxStatus.Accepted),
+            clock.GetUtcNow());
+        var conflictedDomain = originalDomain with
+        {
+            Provider = originalDomain.Provider with
+            {
+                Provider = MailProvider.Unknown,
+                Evidence = ["ProviderEvidenceConflict"]
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            conflictedDomain,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.ProviderStrategy, decision.RejectionReason);
+        Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_TreatsAcceptAllContradictionAsMaterialBehaviorChange()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var originalDomain = Domain(clock, "example.test") with
+        {
+            CatchAll = new CatchAllDetectionResult(CatchAllStatus.Unknown, 0, 0, 0, 0)
+            {
+                ReasonCode = CatchAllReasonCode.MixedOrInconclusive
+            }
+        };
+        var mailbox = Mailbox(
+            Result("person@example.test", clock.GetUtcNow(), originalDomain),
+            clock.GetUtcNow());
+        var contradicted = originalDomain with
+        {
+            CatchAll = originalDomain.CatchAll with
+            {
+                ReasonCode = CatchAllReasonCode.TargetRecipientContradictedAcceptAll
+            }
+        };
+
+        var decision = policy.Evaluate(
+            mailbox,
+            contradicted,
+            new EmailValidationRequest(true),
+            Policy,
+            clock.GetUtcNow());
+
+        Assert.Equal(ValidationReuseRejectionReason.RecipientBehavior, decision.RejectionReason);
+    }
+
+    [Fact]
+    public async Task MemoryCache_DoesNotReusePositiveAfterDomainBecomesAcceptAllCandidate()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));
+        var store = new TrackingStore();
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, store, clock);
+
+        var first = await validator.ValidateAsync(
+            "person@example.test", new EmailValidationRequest(true));
+        Assert.Equal(EmailValidationStatus.LikelyValid, first.Status);
+
+        store.Domain = store.Domain! with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0, "Accept-all candidate", .70)
+            {
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate,
+                IndependentObservationCount = 1,
+                ObservedAt = clock.GetUtcNow()
+            }
+        };
+
+        var refreshed = await validator.ValidateAsync(
+            "person@example.test", new EmailValidationRequest(true));
+
+        Assert.Equal(2, executor.Calls);
+        Assert.Equal(ValidationResultSource.LiveValidation, refreshed.Metadata!.ResultSource);
     }
 
     [Fact]

@@ -101,6 +101,21 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
             return Reject(ValidationReuseAction.RevalidateDomainAndMailbox, ValidationReuseRejectionReason.DomainStale);
         if (!string.Equals(currentDomain.Provider.TopologyFingerprint, intelligence.MxTopologyFingerprint, StringComparison.Ordinal))
             return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.MxTopology);
+        var previousCatchAll = intelligence.LastResult.CatchAllEvidence ??
+            intelligence.LastResult.DomainIntelligence?.CatchAll ??
+            CatchAllFromChecks(intelligence.LastResult.Checks.CatchAll);
+        if (previousCatchAll is null
+                ? currentDomain.CatchAll.EffectiveRecipientBehavior != DomainRecipientBehavior.Unknown ||
+                  currentDomain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate
+                : !DomainRecipientBehaviorPolicy.IsSemanticallyEquivalent(previousCatchAll, currentDomain.CatchAll))
+            return Reject(
+                ValidationReuseAction.RevalidateMailboxOnly,
+                ValidationReuseRejectionReason.RecipientBehavior);
+        if (intelligence.PreviousMailboxResult == SmtpMailboxStatus.Accepted &&
+            !HasEquivalentProviderStrategy(intelligence, currentDomain))
+            return Reject(
+                ValidationReuseAction.RevalidateMailboxOnly,
+                ValidationReuseRejectionReason.ProviderStrategy);
 
         var (lifetime, evidenceAt) = intelligence.PreviousStatus switch
         {
@@ -143,6 +158,47 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
             ReasonCode.ProviderVerificationBlocked or ReasonCode.ProviderBlockedVerification or
             ReasonCode.TemporarySmtpFailure or ReasonCode.TemporaryFailure or ReasonCode.SmtpTimeout or
             ReasonCode.Timeout or ReasonCode.Greylisted or ReasonCode.RateLimited or ReasonCode.LocalCooldown);
+
+    private static bool HasEquivalentProviderStrategy(
+        MailboxIntelligence intelligence,
+        DomainIntelligence currentDomain)
+    {
+        var previousConflict = intelligence.ReasonCodes.Contains(ReasonCode.ProviderEvidenceConflicting);
+        var currentConflict = currentDomain.Provider.Evidence?
+            .Contains("ProviderEvidenceConflict", StringComparer.Ordinal) == true;
+        if (previousConflict != currentConflict) return false;
+        if (ProviderStrategyBucket(intelligence.ProviderAtValidation) !=
+            ProviderStrategyBucket(currentDomain.Provider.Provider))
+            return false;
+
+        var previousGateway = intelligence.LastResult.Provider?.GatewayProvider ?? GatewayProvider.Unknown;
+        return previousGateway == currentDomain.Provider.GatewayProvider;
+    }
+
+    private static int ProviderStrategyBucket(MailProvider provider) => provider switch
+    {
+        MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer => 1,
+        MailProvider.GoogleWorkspace => 2,
+        MailProvider.Proofpoint => 3,
+        MailProvider.Mimecast => 4,
+        MailProvider.AppleICloud or MailProvider.Proton => 5,
+        MailProvider.Comcast => 6,
+        _ => 7
+    };
+
+    private static CatchAllDetectionResult? CatchAllFromChecks(CatchAllStatus status) => status switch
+    {
+        CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll =>
+            new CatchAllDetectionResult(
+                status, 0, 0, 0, 0,
+                Confidence: status == CatchAllStatus.NotCatchAll ? 0.75 : 0.70)
+            {
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific
+            },
+        CatchAllStatus.Unknown or CatchAllStatus.NotAttempted =>
+            new CatchAllDetectionResult(status, 0, 0, 0, 0),
+        _ => null
+    };
 
     private static ValidationReuseDecision Reject(
         ValidationReuseAction action,
@@ -529,14 +585,14 @@ public sealed class ConfidenceCalibrationService(IDeliveryOutcomeStore outcomes)
     }
 
     private static bool IsPositive(EmailValidationStatus status) =>
-        status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll;
+        status is EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid;
 
     private static bool IsNegative(EmailValidationStatus status) =>
         status is EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid;
 
     private static double DeliveryProbability(ValidationPredictionSnapshot prediction) => prediction.PredictedStatus switch
     {
-        EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid or EmailValidationStatus.CatchAll => prediction.PredictedConfidence,
+        EmailValidationStatus.Valid or EmailValidationStatus.LikelyValid => prediction.PredictedConfidence,
         EmailValidationStatus.Invalid or EmailValidationStatus.LikelyInvalid => 1 - prediction.PredictedConfidence,
         _ => 0.5
     };
@@ -738,6 +794,12 @@ public static class ValidationSubStatusMapper
     {
         if (result.MailingRisk?.RiskReasons.Contains(MailingRiskReason.KnownSuppression) == true)
             return DetailedStatus.KnownSuppression;
+        if (result.MxValidation?.Consensus == MxConsensus.Conflicting ||
+            result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting))
+            return DetailedStatus.ConflictingMxEvidence;
+        if (result.Status == EmailValidationStatus.Unknown &&
+            result.ReasonCodes.Contains(ReasonCode.ProviderEvidenceConflicting))
+            return DetailedStatus.ConflictingProviderEvidence;
         if (result.AddressIntelligence?.Typo.TypoDetected == true) return DetailedStatus.TypoDetected;
         if (result.DomainIntelligence?.Dns.ExplicitNullMx == true) return DetailedStatus.NullMx;
         if (result.ReasonCodes.Contains(ReasonCode.DomainNotFound)) return DetailedStatus.DomainNotFound;
@@ -746,6 +808,20 @@ public static class ValidationSubStatusMapper
         if (result.ReasonCodes.Contains(ReasonCode.ProviderVerificationBlocked)) return DetailedStatus.ProviderVerificationBlocked;
         if (result.ReasonCodes.Contains(ReasonCode.SenderIdentityRejected)) return DetailedStatus.SenderIdentityRejected;
         if (result.ReasonCodes.Contains(ReasonCode.PolicyBlock)) return DetailedStatus.PolicyBlocked;
+        if (result.ProviderValidation?.EffectiveCategory == SmtpResponseCategory.Greylisted)
+            return DetailedStatus.Greylisted;
+        if (result.ProviderValidation?.EffectiveCategory == SmtpResponseCategory.RateLimited)
+            return DetailedStatus.RateLimited;
+        if (result.ProviderValidation?.EffectiveCategory == SmtpResponseCategory.TemporaryFailure)
+            return DetailedStatus.TemporaryFailure;
+        if (result.ProviderValidation?.EffectiveCategory == SmtpResponseCategory.Timeout)
+            return DetailedStatus.Timeout;
+        if (result.Status == EmailValidationStatus.Unknown &&
+            result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.AcceptAll)
+            return DetailedStatus.AcceptAllConfirmed;
+        if (result.Status == EmailValidationStatus.Unknown &&
+            result.DomainIntelligence?.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
+            return DetailedStatus.AcceptAllCandidate;
         if (result.DetailedStatuses.Contains(DetailedStatus.MailboxNotFound)) return DetailedStatus.MailboxNotFound;
         if (result.ReasonCodes.Contains(ReasonCode.MailboxRejected)) return DetailedStatus.RecipientRejected;
         if (result.Checks.CatchAll == CatchAllStatus.LikelyCatchAll) return DetailedStatus.LikelyCatchAll;
@@ -789,7 +865,8 @@ public sealed class IntelligenceEmailValidator(
         }
 
         var key = CreateExecutionKey(normalized.NormalizedEmail!, request);
-        var cached = await GetCachedAsync(key, cancellationToken).ConfigureAwait(false);
+        var cached = await GetReusableCachedAsync(
+            key, normalized.Domain!, request, cancellationToken).ConfigureAwait(false);
         if (cached is not null)
         {
             if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
@@ -809,7 +886,8 @@ public sealed class IntelligenceEmailValidator(
         {
             // A previous flight can finish after this request's outer misses but before
             // this request becomes the next leader. Recheck the hot cache before live work.
-            var leaderCached = await GetCachedAsync(key, operationToken).ConfigureAwait(false);
+            var leaderCached = await GetReusableCachedAsync(
+                key, normalized.Domain!, request, operationToken).ConfigureAwait(false);
             if (leaderCached is not null)
             {
                 if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
@@ -999,6 +1077,47 @@ public sealed class IntelligenceEmailValidator(
         }
         persistenceMetrics.RecordMemoryCacheLookup(cached is not null);
         return cached;
+    }
+
+    private async Task<EmailValidationResult?> GetReusableCachedAsync(
+        string key,
+        string domain,
+        EmailValidationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var cached = await GetCachedAsync(key, cancellationToken).ConfigureAwait(false);
+        if (cached is null) return null;
+
+        DomainIntelligence? currentDomain;
+        try
+        {
+            currentDomain = await store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsRecoverableCacheFailure(exception))
+        {
+            logger.LogWarning(
+                "Domain evidence could not be checked for a cached result; live validation will be used ({ErrorType})",
+                exception.GetType().Name);
+            currentDomain = null;
+        }
+
+        if (currentDomain is not null && cached.NormalizedEmail is not null && cached.Metadata is not null)
+        {
+            var intelligence = ToMailboxIntelligence(
+                cached,
+                cached.ProbeAttempted || cached.Checks.Mailbox != SmtpMailboxStatus.NotAttempted);
+            var decision = reusePolicy.Evaluate(
+                intelligence,
+                currentDomain,
+                request,
+                _policy,
+                timeProvider.GetUtcNow());
+            if (decision.CanReuse) return cached;
+            persistenceMetrics.RecordReuseMiss(decision.RejectionReason);
+        }
+
+        await TryRemoveCachedAsync(key, cancellationToken).ConfigureAwait(false);
+        return null;
     }
 
     private async Task CacheIfReusableAsync(

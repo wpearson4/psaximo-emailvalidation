@@ -71,6 +71,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 if (catchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
                 {
                     reasons.Add(ReasonCode.AcceptAllCandidate);
+                    reasons.Add(ReasonCode.RetryRecommended);
                     Add(contributions, "Accept-all candidate", 0,
                         "One non-discriminating SMTP observation requires independent confirmation.");
                 }
@@ -224,6 +225,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         var score = Math.Clamp(contributions.Sum(item => item.Weight), 0, 1);
         if (catchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
         {
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
             reasons.Remove(ReasonCode.MailboxAcceptanceAmbiguous);
             return FinalizeResult(
                 EmailValidationStatus.Unknown,
@@ -234,6 +236,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
 
         if (recipientBehavior == DomainRecipientBehavior.CatchAll)
         {
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
             return FinalizeResult(
                 EmailValidationStatus.CatchAll,
                 Math.Max(score, catchAll.Confidence),
@@ -246,6 +249,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         {
             // Repeating the same mailbox probe cannot resolve an endpoint that is
             // already known to accept arbitrary recipients.
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
             reasons.Remove(ReasonCode.MailboxAcceptanceAmbiguous);
             return FinalizeResult(
                 EmailValidationStatus.Unknown,
@@ -257,6 +261,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
         if (category == SmtpResponseCategory.GatewayAccepted &&
             recipientBehavior != DomainRecipientBehavior.RecipientSpecific)
         {
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
             reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
             return FinalizeResult(
                 EmailValidationStatus.Unknown,
@@ -279,7 +284,7 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
             return FinalizeResult(EmailValidationStatus.Risky, riskConfidence, reasons, contributions);
         }
 
-        var strongCatchAllNegative = (catchAll.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll) &&
+        var strongCatchAllNegative = catchAll.Status == CatchAllStatus.NotCatchAll &&
             catchAll.Confidence >= 0.75;
         var status = providerResult.AcceptanceStrength == AcceptanceStrength.High && strongCatchAllNegative
             ? EmailValidationStatus.Valid
@@ -308,7 +313,16 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 TimeSpan.Zero),
             Provider = new ProviderDetectionResult(MailProvider.GenericSmtp, 0.55, "compatibility"),
             Disposable = checks.DisposableDomain,
-            CatchAll = new CatchAllDetectionResult(checks.CatchAll, 0, 0, 0, 0, Confidence: catchAllConfidence),
+            CatchAll = checks.CatchAll == CatchAllStatus.LikelyCatchAll
+                ? new CatchAllDetectionResult(
+                    CatchAllStatus.Unknown, 0, 0, 0, 0,
+                    "Legacy catch-all status lacks independent routing provenance.",
+                    catchAllConfidence)
+                {
+                    ReasonCode = CatchAllReasonCode.AcceptAllCandidate
+                }
+                : new CatchAllDetectionResult(
+                    checks.CatchAll, 0, 0, 0, 0, Confidence: catchAllConfidence),
             ObservedAt = DateTimeOffset.UtcNow
         };
         var category = MailProviderStrategyBase.ToCategory(checks.Mailbox);

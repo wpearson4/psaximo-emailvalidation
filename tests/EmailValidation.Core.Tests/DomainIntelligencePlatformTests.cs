@@ -159,7 +159,21 @@ public sealed class DomainIntelligencePlatformTests
 
         Assert.Equal(MailProvider.Microsoft365, detected.SmtpObservedProvider);
         Assert.True(detected.SmtpEvidenceConfidence > 0.8);
-        Assert.Contains("SmtpGreetingOrEhlo", detected.Evidence!);
+        Assert.Contains("SmtpGreeting", detected.Evidence!);
+        Assert.Equal("smtp-banner-1.1.0", detected.DetectionVersion);
+    }
+
+    [Fact]
+    public void SmtpBannerDetection_DoesNotTreatClientEhloAsProviderEvidence()
+    {
+        var evidence = new SmtpSessionEvidence(
+            null, [], "mx.gateway.test", TimeSpan.Zero, "probe@example.test",
+            "220 mx.gateway.test ESMTP", "smtp.google.com");
+
+        var detected = new SmtpBannerProviderDetector().Detect(evidence);
+
+        Assert.Equal(MailProvider.Unknown, detected.SmtpObservedProvider);
+        Assert.DoesNotContain("SmtpGreeting", detected.Evidence ?? []);
     }
 
     [Fact]
@@ -196,6 +210,101 @@ public sealed class DomainIntelligencePlatformTests
         Assert.Equal(1, second.Intelligence.ChangeCount);
         Assert.NotNull(second.Intelligence.LastChangedUtc);
         Assert.Equal(CatchAllStatus.NotAttempted, second.Intelligence.CatchAll.Status);
+    }
+
+    [Fact]
+    public async Task ProviderStrategyVersionChange_ForcesLiveDomainReanalysisDespiteFreshCache()
+    {
+        var options = FreshOptions();
+        var routing = new CountingRoutingAnalyzer();
+        var cache = new StickyDomainCache();
+        using var service = CreateService(routing, new CountingCatchAllDetector(), cache, options);
+        var baseline = await service.AcquireAsync("example.test", false);
+        cache.Store(
+            baseline.Intelligence with
+            {
+                StrategyVersion = "legacy-provider-strategy",
+                EvidenceExpiresAt = DateTimeOffset.UtcNow.AddHours(1)
+            },
+            TimeSpan.FromHours(1));
+
+        var refreshed = await service.AcquireAsync("example.test", false);
+
+        Assert.Equal(2, routing.Calls);
+        Assert.Equal(DomainIntelligenceSource.LiveAnalysis, refreshed.Source);
+        Assert.Equal(options.Policy.ProviderStrategyVersion, refreshed.Intelligence.StrategyVersion);
+    }
+
+    [Fact]
+    public async Task InconclusiveSameTopologyRefresh_PreservesConfirmedAcceptAll()
+    {
+        var options = FreshOptions();
+        var cache = new StickyDomainCache();
+        var catchAll = new CountingCatchAllDetector();
+        using var service = CreateService(new CountingRoutingAnalyzer(), catchAll, cache, options);
+        var baseline = await service.AcquireAsync("example.test", false);
+        var old = DateTimeOffset.UtcNow.AddHours(-2);
+        var confirmed = baseline.Intelligence with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0,
+                "Confirmed endpoint accept-all behavior.",
+                .92)
+            {
+                RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+                IndependentObservationCount = 2,
+                EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
+                ObservedAt = old,
+                StrategyVersion = baseline.Intelligence.StrategyVersion
+            }
+        };
+        cache.Store(confirmed, TimeSpan.FromHours(1));
+
+        var refreshed = await service.AcquireAsync("example.test", true);
+
+        Assert.Equal(DomainRecipientBehavior.AcceptAll,
+            refreshed.Intelligence.CatchAll.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed,
+            refreshed.Intelligence.CatchAll.ReasonCode);
+        Assert.True(refreshed.Intelligence.CatchAll.RefreshInconclusive);
+        Assert.Equal(1, catchAll.Calls);
+    }
+
+    [Fact]
+    public async Task StrongControlContradiction_IsNotHiddenByInconclusiveRefreshPreservation()
+    {
+        var options = FreshOptions();
+        var cache = new StickyDomainCache();
+        using var service = CreateService(
+            new CountingRoutingAnalyzer(), new StrongMixedCatchAllDetector(), cache, options);
+        var baseline = await service.AcquireAsync("example.test", false);
+        var confirmed = baseline.Intelligence with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0,
+                "Confirmed endpoint accept-all behavior.", .92)
+            {
+                RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+                IndependentObservationCount = 2,
+                EvidenceContractVersion =
+                    CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
+                ObservedAt = DateTimeOffset.UtcNow.AddHours(-2),
+                StrategyVersion = baseline.Intelligence.StrategyVersion
+            }
+        };
+        cache.Store(confirmed, TimeSpan.FromHours(1));
+
+        var refreshed = await service.AcquireAsync("example.test", true);
+
+        Assert.Equal(DomainRecipientBehavior.Unknown,
+            refreshed.Intelligence.CatchAll.EffectiveRecipientBehavior);
+        Assert.Equal(CatchAllReasonCode.MixedOrInconclusive,
+            refreshed.Intelligence.CatchAll.ReasonCode);
+        Assert.Contains(
+            refreshed.Intelligence.CatchAll.ProbeResults,
+            SmtpRecipientEvidencePolicy.HasStrongRecipientRejection);
     }
 
     [Fact]
@@ -437,6 +546,61 @@ public sealed class DomainIntelligencePlatformTests
             {
                 ReasonCode = CatchAllReasonCode.RandomRecipientsAccepted
             };
+        }
+    }
+
+    private sealed class StrongMixedCatchAllDetector : ICatchAllDetector
+    {
+        public Task<CatchAllDetectionResult> DetectAsync(
+            string domain,
+            string mxHost,
+            MailProvider provider,
+            CancellationToken cancellationToken = default)
+        {
+            var observedAt = DateTimeOffset.UtcNow;
+            return Task.FromResult(new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 1, 1, 0,
+                "Randomized controls returned mixed recipient outcomes.", .20)
+            {
+                ReasonCode = CatchAllReasonCode.MixedOrInconclusive,
+                RefreshInconclusive = true,
+                ObservedAt = observedAt,
+                ProbeResults =
+                [
+                    RecipientProbe(mxHost, observedAt.AddSeconds(-1), true),
+                    RecipientProbe(mxHost, observedAt, false)
+                ]
+            });
+        }
+
+        private static SmtpProbeResult RecipientProbe(
+            string host,
+            DateTimeOffset observedAt,
+            bool accepted)
+        {
+            var code = accepted ? 250 : 550;
+            var category = accepted
+                ? SmtpResponseCategory.Accepted
+                : SmtpResponseCategory.RecipientRejected;
+            var text = accepted
+                ? SmtpResponseTextClassification.Success
+                : SmtpResponseTextClassification.RecipientDoesNotExist;
+            var evidence = new SmtpEvidence(
+                SmtpCommand.RcptTo, code, accepted ? "2.1.5" : "5.1.1",
+                category, text, 1, MailProvider.GenericSmtp, host, 1, observedAt);
+            var session = new SmtpSessionEvidence(
+                accepted ? null : SmtpCommand.RcptTo,
+                [
+                    new(SmtpCommand.MailFrom, 250, "2.1.0", SmtpResponseCategory.Accepted,
+                        SmtpResponseTextClassification.Success, TimeSpan.Zero),
+                    new(SmtpCommand.RcptTo, code, accepted ? "2.1.5" : "5.1.1",
+                        category, text, TimeSpan.Zero)
+                ],
+                host, TimeSpan.Zero, "probe@validator.example");
+            return new SmtpProbeResult(
+                accepted ? SmtpMailboxStatus.Accepted : SmtpMailboxStatus.Rejected,
+                code, evidence.SanitizedResponse, TimeSpan.Zero,
+                Evidence: evidence, SessionEvidence: session);
         }
     }
 

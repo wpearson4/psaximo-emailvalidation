@@ -24,6 +24,20 @@ public sealed class ResultEvaluator : IResultEvaluator
 
         AddRouting(domain, details, reasons, provenance);
         AddMailbox(providerValidation, smtpEvidence, details, reasons, provenance);
+        if (domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
+        {
+            details.Remove(DetailedStatus.MailboxAccepted);
+            Add(details, DetailedStatus.AcceptAllCandidate);
+        }
+        else if (domain.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.AcceptAll)
+        {
+            details.Remove(DetailedStatus.MailboxAccepted);
+            Add(details, DetailedStatus.AcceptAllConfirmed);
+        }
+        else if (domain.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.CatchAll)
+        {
+            details.Remove(DetailedStatus.MailboxAccepted);
+        }
         AddDomainIntelligence(checks, domain, details, reasons, provenance);
         AddAddressIntelligence(address, details, reasons, provenance);
 
@@ -36,7 +50,10 @@ public sealed class ResultEvaluator : IResultEvaluator
         if (checks.CatchAll == CatchAllStatus.LikelyCatchAll)
         {
             Add(details, DetailedStatus.CatchAll);
-            provenance.Add(new("CatchAll", EvidenceSource.Smtp,
+            provenance.Add(new("CatchAll",
+                domain.CatchAll.HasIndependentRoutingEvidence
+                    ? EvidenceSource.ConfiguredIntelligenceProvider
+                    : EvidenceSource.Smtp,
                 domain.CatchAll.Confidence, domain.CatchAll.Detail ?? "Random-recipient SMTP evidence."));
         }
         if (checks.RoleAccount && checks.CatchAll == CatchAllStatus.LikelyCatchAll)
@@ -275,6 +292,7 @@ public sealed class ResultEvaluator : IResultEvaluator
             DetailedStatus.Disposable, DetailedStatus.RoleBasedCatchAll, DetailedStatus.CatchAll,
             DetailedStatus.Greylisted, DetailedStatus.RateLimited, DetailedStatus.VerificationBlocked,
             DetailedStatus.LocalCooldown, DetailedStatus.TemporaryFailure, DetailedStatus.Timeout, DetailedStatus.TypoDetected,
+            DetailedStatus.AcceptAllConfirmed, DetailedStatus.AcceptAllCandidate,
             DetailedStatus.MailboxAccepted, DetailedStatus.RoleBased, DetailedStatus.MxForward,
             DetailedStatus.Alias, DetailedStatus.AlternateAddress
         ];

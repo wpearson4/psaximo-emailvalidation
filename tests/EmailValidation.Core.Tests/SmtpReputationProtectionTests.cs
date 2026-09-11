@@ -3,6 +3,8 @@ using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 
 namespace EmailValidation.Core.Tests;
 
@@ -293,14 +295,31 @@ public sealed class SmtpReputationProtectionTests
         var observation = new ValidationObservation(
             "example.test", ValidationObservationType.MailboxProbe, MailProvider.Microsoft365,
             "mx.example.test", CatchAllStatus.NotCatchAll, 0.9,
-            SmtpResponseCategory.LocalCooldown, Now, 0, Reputation: evidence);
+            SmtpResponseCategory.LocalCooldown, Now, 0, Reputation: evidence,
+            ObservationSessionId: "validation-session-1",
+            RecipientEvidenceQualified: false,
+            CorrelatedTargetResponseCategory: SmtpResponseCategory.Accepted,
+            CorrelatedTargetObservedAt: Now.AddSeconds(3),
+            CorrelatedTargetMxHost: "mx.example.test",
+            CorrelatedTargetRecipientEvidenceQualified: true,
+            RecipientEvidenceContested: true);
         var observationDocument = MongoValidationIntelligenceStore.ValidationObservationDocument
             .FromModel(observation);
-        var restored = observationDocument.ToModel();
+        var serializedObservation = observationDocument.ToBson();
+        var restoredDocument = BsonSerializer.Deserialize<
+            MongoValidationIntelligenceStore.ValidationObservationDocument>(serializedObservation);
+        var restored = restoredDocument.ToModel();
 
         Assert.Equal(SmtpReputationProtectionMode.Enforced, restored.Reputation!.Mode);
         Assert.Equal(SmtpReputationScopeType.ProviderIdentity, restored.Reputation.RestrictingScope);
         Assert.Equal("test-v1", restored.Reputation.PolicyVersion);
+        Assert.Equal("validation-session-1", restored.ObservationSessionId);
+        Assert.False(restored.RecipientEvidenceQualified);
+        Assert.Equal(SmtpResponseCategory.Accepted, restored.CorrelatedTargetResponseCategory);
+        Assert.Equal(Now.AddSeconds(3), restored.CorrelatedTargetObservedAt);
+        Assert.Equal("mx.example.test", restored.CorrelatedTargetMxHost);
+        Assert.True(restored.CorrelatedTargetRecipientEvidenceQualified);
+        Assert.True(restored.RecipientEvidenceContested);
     }
 
     [Fact]

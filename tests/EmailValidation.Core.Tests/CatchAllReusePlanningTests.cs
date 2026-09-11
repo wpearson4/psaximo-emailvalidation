@@ -6,7 +6,7 @@ namespace EmailValidation.Core.Tests;
 public sealed class CatchAllReusePlanningTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
-    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.2.0", "3.1.0", "1.1.0");
+    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.2.0", "3.1.0", "1.2.0");
 
     [Fact]
     public void FreshHighConfidenceCatchAll_UsesPersistedDomainEvidenceAndSkipsSmtpWork()

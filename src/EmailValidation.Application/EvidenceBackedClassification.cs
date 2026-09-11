@@ -10,8 +10,12 @@ namespace EmailValidation.Application;
 public static class EvidenceBackedClassificationVersions
 {
     public const string FeatureSchemaV1 = "email-validation-features-v1";
+    public const string FeatureSchemaV2 = "email-validation-features-v2";
     public const string BuilderV1 = "training-dataset-builder-v1";
     public const string DefaultDecisionPolicyV1 = "classification-decision-policy-v1";
+    public const string DefaultDecisionPolicyV2 = "classification-decision-policy-v2";
+    public const string MailboxExistenceOutcomeV1 = "mailbox-existence-v1";
+    public const string MailboxExistenceOutcomeV2 = "mailbox-existence-v2";
 }
 
 public interface IOutcomeDefinitionCatalog
@@ -24,7 +28,8 @@ public sealed class OutcomeDefinitionCatalog : IOutcomeDefinitionCatalog
 {
     private static readonly OutcomeDefinition[] Definitions =
     [
-        new(PredictionTargetKind.MailboxExistence, "mailbox-existence-v1", TimeSpan.FromDays(7),
+        new(PredictionTargetKind.MailboxExistence, EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV1,
+            TimeSpan.FromDays(7),
             Set(EmailDeliveryOutcome.Delivered), Set(EmailDeliveryOutcome.HardBounce),
             Set(EmailDeliveryOutcome.SoftBounce, EmailDeliveryOutcome.UnknownOutcome),
             Set(EmailDeliveryOutcome.Complaint, EmailDeliveryOutcome.Suppressed,
@@ -32,6 +37,16 @@ public sealed class OutcomeDefinitionCatalog : IOutcomeDefinitionCatalog
             "duplicate event IDs are ignored", "conflicts remain auditable and the row is excluded",
             "authoritative provider event, provider event, internal delivery event, customer assertion",
             "delivery-outcome-normalization-v1"),
+        new(PredictionTargetKind.MailboxExistence, EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
+            TimeSpan.FromDays(7),
+            Set(EmailDeliveryOutcome.Delivered), Set(EmailDeliveryOutcome.HardBounce),
+            Set(EmailDeliveryOutcome.SoftBounce, EmailDeliveryOutcome.UnknownOutcome),
+            Set(EmailDeliveryOutcome.Complaint, EmailDeliveryOutcome.Suppressed,
+                EmailDeliveryOutcome.RejectedBySenderPolicy),
+            "duplicate event IDs are ignored",
+            "conflicts remain auditable; non-discriminating deliveries and non-recipient-specific hard bounces are excluded",
+            "authoritative provider event, provider event, internal delivery event, customer assertion",
+            "delivery-outcome-normalization-v2-recipient-specific-hard-bounce"),
         new(PredictionTargetKind.TechnicalDeliveryWithinWindow, "delivery-7d-v1", TimeSpan.FromDays(7),
             Set(EmailDeliveryOutcome.Delivered), Set(EmailDeliveryOutcome.HardBounce),
             Set(EmailDeliveryOutcome.SoftBounce, EmailDeliveryOutcome.UnknownOutcome),
@@ -184,7 +199,7 @@ public sealed class EmailValidationFeatureSnapshotFactory(
         var history = result.HistoricalEvidence ?? HistoricalSignalSummary.Empty;
         var reputation = smtp?.Reputation;
         var snapshotId = StableId(request.ValidationId, result.AttemptNumber,
-            EvidenceBackedClassificationVersions.FeatureSchemaV1, result.Metadata.ValidatedAt);
+            EvidenceBackedClassificationVersions.FeatureSchemaV2, result.Metadata.ValidatedAt);
         return new EmailValidationFeatureSnapshot
         {
             SnapshotId = snapshotId,
@@ -193,7 +208,7 @@ public sealed class EmailValidationFeatureSnapshotFactory(
             DomainCorrelationId = domain.Id,
             TenantId = request.TenantId,
             SnapshotAtUtc = at,
-            FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV1,
+            FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV2,
             Syntax = new(
                 result.Checks.SyntaxValid,
                 result.NormalizedEmail is not null,
@@ -215,7 +230,17 @@ public sealed class EmailValidationFeatureSnapshotFactory(
                 domainEvidence?.Authentication.Dmarc.State ?? AuthenticationRecordState.Unknown,
                 result.Checks.CatchAll,
                 result.CatchAll?.Confidence ?? 0,
-                result.Metadata.MxTopologyFingerprint),
+                result.Metadata.MxTopologyFingerprint)
+            {
+                RecipientBehavior = domainEvidence?.CatchAll.EffectiveRecipientBehavior ??
+                    DomainRecipientBehavior.Unknown,
+                AcceptAllCandidate = domainEvidence?.CatchAll.ReasonCode ==
+                    CatchAllReasonCode.AcceptAllCandidate,
+                MxEvidenceConflicting = result.MxValidation?.Consensus == MxConsensus.Conflicting ||
+                    result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting),
+                ProviderEvidenceConflicting = result.ReasonCodes.Contains(
+                    ReasonCode.ProviderEvidenceConflicting)
+            },
             Smtp = new(
                 result.ProbeDisposition,
                 smtp?.Command ?? (session is { Stages.Count: > 0 } ? session.Stages[^1].Stage : null),
@@ -278,18 +303,28 @@ public sealed class TrainingDatasetBuilder(
     {
         if (request.StartUtc >= request.EndUtc || request.MaturationCutoffUtc < request.EndUtc)
             throw new ArgumentException("Dataset time range or maturation cutoff is invalid.", nameof(request));
+        if (request.Target == PredictionTargetKind.MailboxExistence &&
+            (request.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV2 ||
+             request.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2))
+            throw new ArgumentException(
+                "Mailbox-existence datasets require feature schema v2 and mailbox-existence outcome definition v2.",
+                nameof(request));
         var definition = definitions.Resolve(request.Target, request.OutcomeDefinitionVersion);
-        var featureRows = await snapshots.QueryAsync(
-            request.StartUtc, request.EndUtc, request.FeatureSchemaVersion, request.TenantId, cancellationToken)
+        // Include later snapshots through the maturation cutoff when assigning outcomes.
+        // Otherwise a send tied to a later retry could also label every earlier attempt.
+        var associationSnapshots = await snapshots.QueryAsync(
+            request.StartUtc, request.MaturationCutoffUtc, request.FeatureSchemaVersion, request.TenantId,
+            cancellationToken)
             .ConfigureAwait(false);
+        var featureRows = associationSnapshots
+            .Where(item => item.SnapshotAtUtc <= request.EndUtc)
+            .ToArray();
         var outcomeRows = await outcomes.QueryAsync(
             request.StartUtc, request.MaturationCutoffUtc, request.TenantId, cancellationToken)
             .ConfigureAwait(false);
-        var outcomeLookup = outcomeRows
-            .Where(item => item.Confidence >= request.MinimumOutcomeConfidence)
-            .GroupBy(item => item.EmailCorrelationId, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.OrderBy(item => item.ObservedAtUtc).ToArray(),
-                StringComparer.Ordinal);
+        var outcomeLookup = AssignOutcomesToLatestSnapshots(
+            associationSnapshots,
+            outcomeRows.Where(item => item.Confidence >= request.MinimumOutcomeConfidence));
         var rows = new List<TrainingDatasetRow>();
         var excluded = 0;
         var unresolved = 0;
@@ -298,12 +333,18 @@ public sealed class TrainingDatasetBuilder(
         {
             if (request.Providers is { Count: > 0 } && !request.Providers.Contains(snapshot.Domain.Provider))
                 continue;
-            outcomeLookup.TryGetValue(snapshot.EmailCorrelationId, out var candidateOutcomes);
+            outcomeLookup.TryGetValue(snapshot.SnapshotId, out var candidateOutcomes);
             var candidates = (candidateOutcomes ?? [])
-                .Where(item => item.SendAttemptAtUtc >= snapshot.SnapshotAtUtc &&
-                    item.ObservedAtUtc >= item.SendAttemptAtUtc && item.ObservedAtUtc <= request.MaturationCutoffUtc)
+                .Where(item => item.ObservedAtUtc >= item.SendAttemptAtUtc &&
+                    item.ObservedAtUtc <= request.MaturationCutoffUtc)
                 .ToArray();
             var resolved = Resolve(snapshot, candidates, definition, request.MaturationCutoffUtc);
+            if (request.Target == PredictionTargetKind.MailboxExistence &&
+                ShouldExcludeMailboxExistenceLabel(snapshot, resolved))
+            {
+                excluded++;
+                continue;
+            }
             switch (resolved.State)
             {
                 case OutcomeLabelState.Matured:
@@ -331,7 +372,7 @@ public sealed class TrainingDatasetBuilder(
             rows.GroupBy(item => item.Snapshot.Domain.Provider)
                 .ToDictionary(group => group.Key, group => group.Count()),
             hash,
-            $"snapshots:{featureRows.Count};outcomes:{outcomeRows.Count};cutoff:{request.MaturationCutoffUtc:O}",
+            $"snapshots:{featureRows.Length};outcomes:{outcomeRows.Count};cutoff:{request.MaturationCutoffUtc:O}",
             EvidenceBackedClassificationVersions.BuilderV1);
         metrics.RecordDataset(manifest);
         return new(manifest, rows);
@@ -382,6 +423,79 @@ public sealed class TrainingDatasetBuilder(
         OutcomeLabelState State,
         BinaryOutcomeLabel? Label = null,
         EmailDeliveryOutcomeObservation? Observation = null);
+
+    private static Dictionary<string, EmailDeliveryOutcomeObservation[]> AssignOutcomesToLatestSnapshots(
+        IReadOnlyList<EmailValidationFeatureSnapshot> snapshots,
+        IEnumerable<EmailDeliveryOutcomeObservation> outcomes)
+    {
+        var snapshotLookup = snapshots
+            .GroupBy(item => new OutcomeAssociationKey(item.EmailCorrelationId, item.ValidationId))
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(item => item.SnapshotAtUtc)
+                    .ThenBy(item => item.Operational.AttemptNumber)
+                    .ThenBy(item => item.SnapshotId, StringComparer.Ordinal)
+                    .ToArray());
+        var assigned = new Dictionary<string, List<EmailDeliveryOutcomeObservation>>(StringComparer.Ordinal);
+        foreach (var outcome in outcomes.Where(item => !string.IsNullOrWhiteSpace(item.ValidationId)))
+        {
+            var key = new OutcomeAssociationKey(outcome.EmailCorrelationId, outcome.ValidationId!);
+            if (!snapshotLookup.TryGetValue(key, out var candidates)) continue;
+            var latest = candidates.LastOrDefault(item => item.SnapshotAtUtc <= outcome.SendAttemptAtUtc);
+            if (latest is null) continue;
+            if (!assigned.TryGetValue(latest.SnapshotId, out var values))
+            {
+                values = [];
+                assigned[latest.SnapshotId] = values;
+            }
+            values.Add(outcome);
+        }
+        return assigned.ToDictionary(
+            item => item.Key,
+            item => item.Value.OrderBy(outcome => outcome.ObservedAtUtc).ToArray(),
+            StringComparer.Ordinal);
+    }
+
+    private static bool ShouldExcludeMailboxExistenceLabel(
+        EmailValidationFeatureSnapshot snapshot,
+        ResolvedLabel resolved)
+    {
+        if (resolved is not { State: OutcomeLabelState.Matured, Observation: { } observation })
+            return false;
+        if (resolved.Label == BinaryOutcomeLabel.Positive &&
+            observation.Outcome == EmailDeliveryOutcome.Delivered)
+            return HasNonDiscriminatingRecipientRouting(snapshot);
+        return resolved.Label == BinaryOutcomeLabel.Negative &&
+            !IsRecipientSpecificMailboxRejection(observation);
+    }
+
+    private static bool HasNonDiscriminatingRecipientRouting(EmailValidationFeatureSnapshot snapshot) =>
+        snapshot.Domain.AcceptAllCandidate ||
+        snapshot.Domain.RecipientBehavior is DomainRecipientBehavior.CatchAll or DomainRecipientBehavior.AcceptAll ||
+        snapshot.Domain.CatchAllState == CatchAllStatus.LikelyCatchAll ||
+        snapshot.HeuristicStatus == EmailValidationStatus.CatchAll ||
+        snapshot.Smtp.Category == SmtpResponseCategory.GatewayAccepted;
+
+    private static bool IsRecipientSpecificMailboxRejection(EmailDeliveryOutcomeObservation observation)
+    {
+        if (observation.Outcome != EmailDeliveryOutcome.HardBounce) return false;
+        var normalized = observation.NormalizedReason?.Trim();
+        if (string.Equals(normalized, nameof(SmtpNormalizedReason.MailboxNotFound), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, nameof(SmtpResponseTextClassification.RecipientDoesNotExist),
+                StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // 5.1.1 is the standard bad-destination-mailbox signal. Exchange's
+        // documented 5.1.10 recipient-not-found variant is the only provider-specific
+        // equivalent admitted by this conservative outcome contract.
+        var enhanced = observation.EnhancedStatusCode?.Trim();
+        return string.Equals(enhanced, "5.1.1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(enhanced, "5.1.10", StringComparison.OrdinalIgnoreCase) &&
+            observation.Provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer;
+    }
+
+    private readonly record struct OutcomeAssociationKey(string EmailCorrelationId, string ValidationId);
 }
 
 public sealed record DataSufficiencyPolicy(
@@ -598,7 +712,7 @@ public sealed class TransparentPredictionUncertaintyPolicy(
         if (snapshot.Domain.DnsSecurity == DnsSecurityState.Unknown) missing++;
         if (snapshot.Domain.SpfState == AuthenticationRecordState.Unknown) missing++;
         if (snapshot.Domain.DmarcState == AuthenticationRecordState.Unknown) missing++;
-        if (snapshot.Domain.CatchAllState is CatchAllStatus.Unknown or CatchAllStatus.NotAttempted) missing++;
+        if (snapshot.Domain.RecipientBehavior == DomainRecipientBehavior.Unknown) missing++;
         if (snapshot.Smtp.StageReached is null) missing++;
         if (snapshot.History.ObservationCount == 0) missing++;
         return missing / (double)total;
@@ -616,15 +730,48 @@ public sealed class VersionedValidationDecisionPolicy(
         PredictionUncertainty uncertainty)
     {
         if (heuristicResult.Status is EmailValidationStatus.Valid or EmailValidationStatus.Invalid or
-            EmailValidationStatus.CatchAll)
-            return new(heuristicResult.Status, "Deterministic/conclusive heuristic evidence remains authoritative.", true);
+            EmailValidationStatus.CatchAll or EmailValidationStatus.Risky)
+            return new(
+                heuristicResult.Status,
+                "Conclusive or independently risky heuristic evidence remains authoritative.",
+                true);
+        if (prediction.Target != PredictionTargetKind.MailboxExistence ||
+            !string.Equals(
+                prediction.Model.FeatureSchemaVersion,
+                EvidenceBackedClassificationVersions.FeatureSchemaV2,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                prediction.Model.OutcomeDefinitionVersion,
+                EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
+                StringComparison.Ordinal))
+            return new(
+                heuristicResult.Status,
+                "Only an approved mailbox-existence prediction can alter canonical mailbox status.",
+                true);
+        var catchAllEvidence = heuristicResult.CatchAllEvidence ??
+            heuristicResult.DomainIntelligence?.CatchAll;
+        if (heuristicResult.Status == EmailValidationStatus.Unknown &&
+            (catchAllEvidence?.EffectiveRecipientBehavior is
+                 DomainRecipientBehavior.CatchAll or DomainRecipientBehavior.AcceptAll ||
+             catchAllEvidence?.ReasonCode == CatchAllReasonCode.AcceptAllCandidate ||
+             heuristicResult.ProviderValidation?.EffectiveCategory == SmtpResponseCategory.GatewayAccepted ||
+             heuristicResult.ReasonCodes.Contains(ReasonCode.MailboxAcceptanceAmbiguous) ||
+             heuristicResult.ReasonCodes.Contains(ReasonCode.ProviderEvidenceConflicting) ||
+             heuristicResult.MxValidation?.Consensus == MxConsensus.Conflicting ||
+             heuristicResult.ReasonCodes.Contains(ReasonCode.MxResultsConflicting)))
+            return new(
+                EmailValidationStatus.Unknown,
+                "Deterministic SMTP ambiguity remains authoritative over a mailbox-existence prediction.",
+                true);
         if (uncertainty.Disposition != PredictionDisposition.AcceptedPrediction)
-            return new(EmailValidationStatus.Unknown, uncertainty.Reason);
+            return new(heuristicResult.Status, uncertainty.Reason);
         if (prediction.Probability >= _options.LikelyValidThreshold)
             return new(EmailValidationStatus.LikelyValid, "Calibrated probability exceeds the likely-valid threshold.");
         if (prediction.Probability <= _options.LikelyInvalidThreshold)
             return new(EmailValidationStatus.LikelyInvalid, "Calibrated probability is below the likely-invalid threshold.");
-        return new(EmailValidationStatus.Risky, "Calibrated probability is between the approved decision thresholds.");
+        return new(
+            heuristicResult.Status,
+            "The calibrated probability does not satisfy an approved canonical decision threshold.");
     }
 }
 
@@ -704,6 +851,73 @@ public sealed class DisabledClassificationPredictionOrchestrator : IClassificati
     }
 }
 
+internal static class EnforcedValidationResultProjection
+{
+    public static EmailValidationResult Apply(
+        EmailValidationResult result,
+        EmailValidationPrediction prediction)
+    {
+        if (prediction.MailboxExistenceProbability is not { } mailboxExistenceProbability ||
+            prediction.Uncertainty.Disposition != PredictionDisposition.AcceptedPrediction ||
+            prediction.Decision.DeterministicOverride ||
+            prediction.Decision.Status == result.Status ||
+            prediction.Decision.Status is not (EmailValidationStatus.LikelyValid or
+                EmailValidationStatus.LikelyInvalid) ||
+            prediction.Model is not { } model ||
+            model.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV2 ||
+            model.OutcomeDefinitionVersion !=
+                EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2)
+            return result;
+
+        var confidence = prediction.Decision.Status == EmailValidationStatus.LikelyValid
+            ? mailboxExistenceProbability
+            : 1 - mailboxExistenceProbability;
+        var recommendation = ProjectRecommendation(result, prediction.Decision.Status);
+        var projected = result with
+        {
+            Status = prediction.Decision.Status,
+            Confidence = Math.Round(Math.Clamp(confidence, 0, 1), 4),
+            ConfidenceType = ConfidenceType.CalibratedProbability,
+            ConfidenceReason = prediction.Decision.Reason,
+            UnknownContext = null,
+            Recommendation = recommendation,
+            MailingRisk = result.MailingRisk is null
+                ? null
+                : result.MailingRisk with
+                {
+                    DeliverabilityStatus = prediction.Decision.Status,
+                    DeliverabilityConfidence = Math.Round(Math.Clamp(confidence, 0, 1), 4)
+                },
+            ConfidenceEvidence = [],
+            DetailedStatus = DetailedStatus.Unknown,
+            DetailedStatuses = [],
+            SubStatus = DetailedStatus.Unknown,
+            SubStatuses = []
+        };
+        return projected.Status == EmailValidationStatus.Unknown
+            ? projected with { UnknownContext = UnknownValidationContextBuilder.Build(projected) }
+            : projected;
+    }
+
+    private static SendRecommendation ProjectRecommendation(
+        EmailValidationResult result,
+        EmailValidationStatus status)
+    {
+        if (status == EmailValidationStatus.LikelyInvalid)
+        {
+            const string predictionReason = "CalibratedMailboxExistencePrediction";
+            var existingReasons = result.Recommendation?.Reasons ?? [];
+            var reasons = existingReasons.Contains(predictionReason, StringComparer.Ordinal)
+                ? existingReasons
+                : [.. existingReasons, predictionReason];
+            return new(false, RecommendationRisk.High, reasons);
+        }
+        if (result.Recommendation?.Send == false)
+            return result.Recommendation;
+        return new(true, RecommendationRisk.Moderate, ["CalibratedMailboxExistencePrediction"]);
+    }
+}
+
 public sealed class EvidenceBackedEmailValidationService(
     IntelligenceEmailValidator inner,
     IEmailValidationFeatureSnapshotFactory snapshotFactory,
@@ -734,7 +948,7 @@ public sealed class EvidenceBackedEmailValidationService(
             // Shadow and Advisory cannot alter canonical behavior. Enforced still passes
             // through the decision policy, which protects deterministic Valid/Invalid evidence.
             return prediction.Model?.RolloutMode == ModelRolloutMode.Enforced
-                ? staged with { Status = prediction.Decision.Status }
+                ? EnforcedValidationResultProjection.Apply(staged, prediction)
                 : staged;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

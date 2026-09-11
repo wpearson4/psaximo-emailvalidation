@@ -241,7 +241,11 @@ public sealed record SmtpSessionEvidence(
     public bool MailFromSucceeded => MailFrom?.ResponseCode is >= 200 and < 300;
     public bool RecipientStageReached => MailFromSucceeded && RcptTo is not null;
     public bool HasStrongRecipientRejection => RecipientStageReached &&
-        RcptTo!.Category == SmtpResponseCategory.RecipientRejected;
+        RcptTo is
+        {
+            ResponseCode: >= 500 and < 600,
+            Category: SmtpResponseCategory.RecipientRejected
+        };
 }
 
 public enum MxConsensus
@@ -422,7 +426,14 @@ public sealed record ValidationObservation(
     int RandomRecipientRejectedCount = 0,
     GatewayProvider GatewayProvider = GatewayProvider.Unknown,
     string? TopologyFingerprint = null,
-    SmtpReputationEvidence? Reputation = null);
+    SmtpReputationEvidence? Reputation = null,
+    string? ObservationSessionId = null,
+    bool RecipientEvidenceQualified = false,
+    SmtpResponseCategory? CorrelatedTargetResponseCategory = null,
+    DateTimeOffset? CorrelatedTargetObservedAt = null,
+    string? CorrelatedTargetMxHost = null,
+    bool CorrelatedTargetRecipientEvidenceQualified = false,
+    bool RecipientEvidenceContested = false);
 
 public sealed record HistoricalSignalSummary(
     int ObservationCount,

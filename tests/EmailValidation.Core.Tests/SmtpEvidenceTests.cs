@@ -147,10 +147,20 @@ public sealed class SmtpEvidenceTests
                     SmtpResponseTextClassification.RecipientDoesNotExist, TimeSpan.Zero)
             ],
             "mx.example.com", TimeSpan.Zero, "probe@validator.example");
+        var transientRecipientFailure = new SmtpSessionEvidence(
+            SmtpCommand.RcptTo,
+            [
+                new(SmtpCommand.MailFrom, 250, "2.1.0", SmtpResponseCategory.Accepted,
+                    SmtpResponseTextClassification.Success, TimeSpan.Zero),
+                new(SmtpCommand.RcptTo, 450, "4.1.1", SmtpResponseCategory.RecipientRejected,
+                    SmtpResponseTextClassification.RecipientDoesNotExist, TimeSpan.Zero)
+            ],
+            "mx.example.com", TimeSpan.Zero, "probe@validator.example");
 
         Assert.False(mailFromRejected.RecipientStageReached);
         Assert.False(mailFromRejected.HasStrongRecipientRejection);
         Assert.True(recipientRejected.RecipientStageReached);
         Assert.True(recipientRejected.HasStrongRecipientRejection);
+        Assert.False(transientRecipientFailure.HasStrongRecipientRejection);
     }
 }

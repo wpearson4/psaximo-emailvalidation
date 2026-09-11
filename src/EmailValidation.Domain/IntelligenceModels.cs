@@ -46,7 +46,9 @@ public enum ValidationReuseRejectionReason
     DomainStale,
     MxTopology,
     ResultNotReusable,
-    Stale
+    Stale,
+    RecipientBehavior,
+    ProviderStrategy
 }
 
 public sealed record ValidationReuseDecision(

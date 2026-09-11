@@ -44,9 +44,13 @@ public sealed class EvidenceBackedClassificationTests
         var snapshot = await factory.CreateAsync(result, new EmailValidationRequest(
             ValidationId: "validation-1", TenantId: "tenant-1"));
         Assert.NotNull(snapshot);
-        Assert.Equal(EvidenceBackedClassificationVersions.FeatureSchemaV1, snapshot.FeatureSchemaVersion);
+        Assert.Equal(EvidenceBackedClassificationVersions.FeatureSchemaV2, snapshot.FeatureSchemaVersion);
         Assert.Equal(time.GetUtcNow(), snapshot.SnapshotAtUtc);
         Assert.Equal(result.Confidence, snapshot.HeuristicEvidenceStrength);
+        Assert.Equal(DomainRecipientBehavior.RecipientSpecific, snapshot.Domain.RecipientBehavior);
+        Assert.False(snapshot.Domain.AcceptAllCandidate);
+        Assert.False(snapshot.Domain.MxEvidenceConflicting);
+        Assert.False(snapshot.Domain.ProviderEvidenceConflicting);
 
         var changed = result with
         {
@@ -58,6 +62,69 @@ public sealed class EvidenceBackedClassificationTests
         var json = JsonSerializer.Serialize(snapshot);
         Assert.DoesNotContain("person@example.test", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("person", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task FeatureSnapshotV2_CarriesRecipientBehaviorAndConflictSemantics()
+    {
+        var at = new DateTimeOffset(2026, 1, 2, 12, 0, 0, TimeSpan.Zero);
+        var factory = new EmailValidationFeatureSnapshotFactory(
+            new FakeCorrelationService(), new FixedTimeProvider(at));
+        var baseline = Result("person@example.test", at.AddMinutes(-1));
+        var candidate = new CatchAllDetectionResult(
+            CatchAllStatus.Unknown, 2, 2, 0, 0, "Candidate", 0.75)
+        {
+            ReasonCode = CatchAllReasonCode.AcceptAllCandidate
+        };
+        var result = baseline with
+        {
+            Status = EmailValidationStatus.Unknown,
+            Checks = baseline.Checks with
+            {
+                CatchAll = CatchAllStatus.Unknown,
+                Mailbox = SmtpMailboxStatus.Accepted
+            },
+            DomainIntelligence = baseline.DomainIntelligence! with { CatchAll = candidate },
+            CatchAllEvidence = candidate,
+            MxValidation = new MxValidationEvidence([], [], MxConsensus.Conflicting),
+            ReasonCodes = [ReasonCode.MxResultsConflicting, ReasonCode.ProviderEvidenceConflicting]
+        };
+
+        var snapshot = await factory.CreateAsync(result, new EmailValidationRequest(
+            ValidationId: "validation-ambiguity", TenantId: "tenant-1"));
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(DomainRecipientBehavior.Unknown, snapshot.Domain.RecipientBehavior);
+        Assert.True(snapshot.Domain.AcceptAllCandidate);
+        Assert.True(snapshot.Domain.MxEvidenceConflicting);
+        Assert.True(snapshot.Domain.ProviderEvidenceConflicting);
+        var ambiguityFeatures = LogisticFeatureEncoder.Encode(snapshot);
+        Assert.Equal(1d, ambiguityFeatures["accept_all_candidate"]);
+        Assert.Equal(1d, ambiguityFeatures["mx_evidence_conflicting"]);
+        Assert.Equal(1d, ambiguityFeatures["provider_evidence_conflicting"]);
+
+        var recipientSpecific = snapshot with
+        {
+            Domain = snapshot.Domain with
+            {
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific,
+                AcceptAllCandidate = false
+            }
+        };
+        var catchAll = snapshot with
+        {
+            Domain = snapshot.Domain with
+            {
+                RecipientBehavior = DomainRecipientBehavior.CatchAll,
+                AcceptAllCandidate = false
+            }
+        };
+        var recipientSpecificFeatures = LogisticFeatureEncoder.Encode(recipientSpecific);
+        var catchAllFeatures = LogisticFeatureEncoder.Encode(catchAll);
+        Assert.Equal(1d, recipientSpecificFeatures["recipient_behavior_recipient_specific"]);
+        Assert.Equal(0d, recipientSpecificFeatures["recipient_behavior_catch_all"]);
+        Assert.Equal(0d, catchAllFeatures["recipient_behavior_recipient_specific"]);
+        Assert.Equal(1d, catchAllFeatures["recipient_behavior_catch_all"]);
     }
 
     [Fact]
@@ -77,31 +144,35 @@ public sealed class EvidenceBackedClassificationTests
         await store.AppendAsync(Outcome("future-leak-guard", EmailDeliveryOutcome.Delivered) with
         {
             EmailCorrelationId = "email-1",
+            ValidationId = snapshot1.ValidationId,
             SendAttemptAtUtc = snapshotAt.AddDays(-2),
             ObservedAtUtc = snapshotAt.AddDays(-1)
         });
         await store.AppendAsync(Outcome("label-1", EmailDeliveryOutcome.Delivered) with
         {
             EmailCorrelationId = "email-1",
+            ValidationId = snapshot1.ValidationId,
             SendAttemptAtUtc = snapshotAt.AddDays(1),
             ObservedAtUtc = snapshotAt.AddDays(2)
         });
         await store.AppendAsync(Outcome("label-2a", EmailDeliveryOutcome.Delivered) with
         {
             EmailCorrelationId = "email-2",
+            ValidationId = snapshot2.ValidationId,
             SendAttemptAtUtc = snapshotAt.AddDays(3),
             ObservedAtUtc = snapshotAt.AddDays(4)
         });
         await store.AppendAsync(Outcome("label-2b", EmailDeliveryOutcome.HardBounce) with
         {
             EmailCorrelationId = "email-2",
+            ValidationId = snapshot2.ValidationId,
             SendAttemptAtUtc = snapshotAt.AddDays(3),
             ObservedAtUtc = snapshotAt.AddDays(4)
         });
         var request = new TrainingDatasetRequest(
             PredictionTargetKind.TechnicalDeliveryWithinWindow,
             "delivery-7d-v1",
-            EvidenceBackedClassificationVersions.FeatureSchemaV1,
+            EvidenceBackedClassificationVersions.FeatureSchemaV2,
             snapshotAt.AddDays(-1),
             snapshotAt.AddDays(4),
             snapshotAt.AddDays(20));
@@ -119,6 +190,118 @@ public sealed class EvidenceBackedClassificationTests
         Assert.Equal(1, first.Manifest.UnresolvedCount);
         Assert.Equal(first.Manifest.DatasetHash, second.Manifest.DatasetHash);
         Assert.Equal(first.Manifest.DatasetId, second.Manifest.DatasetId);
+    }
+
+    [Fact]
+    public async Task MailboxDataset_UsesLatestExactValidationAndExcludesAmbiguousLabels()
+    {
+        using var store = Store();
+        var metrics = new RecordingMetrics();
+        var snapshotAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var sendAt = snapshotAt.AddDays(5);
+        var early = Snapshot("early", "shared-email", "domain", snapshotAt, MailProvider.GenericSmtp) with
+        {
+            ValidationId = "validation-shared",
+            Operational = Snapshot("unused", "email", "domain", snapshotAt, MailProvider.GenericSmtp).Operational with
+            {
+                AttemptNumber = 1
+            }
+        };
+        var latest = early with
+        {
+            SnapshotId = "latest",
+            SnapshotAtUtc = snapshotAt.AddDays(2),
+            Operational = early.Operational with { AttemptNumber = 2 }
+        };
+        var mismatched = Snapshot("mismatch", "mismatch-email", "domain", snapshotAt, MailProvider.GenericSmtp);
+        var candidate = NonDiscriminatingSnapshot(
+            Snapshot("candidate", "candidate-email", "domain", snapshotAt, MailProvider.GenericSmtp),
+            DomainRecipientBehavior.Unknown,
+            acceptAllCandidate: true);
+        var acceptAll = NonDiscriminatingSnapshot(
+            Snapshot("accept-all", "accept-all-email", "domain", snapshotAt, MailProvider.GenericSmtp),
+            DomainRecipientBehavior.AcceptAll);
+        var catchAll = NonDiscriminatingSnapshot(
+            Snapshot("catch-all", "catch-all-email", "domain", snapshotAt, MailProvider.GenericSmtp),
+            DomainRecipientBehavior.CatchAll) with
+        {
+            HeuristicStatus = EmailValidationStatus.CatchAll
+        };
+        var gateway = NonDiscriminatingSnapshot(
+            Snapshot("gateway", "gateway-email", "domain", snapshotAt, MailProvider.GoogleWorkspace),
+            DomainRecipientBehavior.Unknown) with
+        {
+            Smtp = Snapshot("gateway-source", "email", "domain", snapshotAt, MailProvider.GoogleWorkspace).Smtp with
+            {
+                Category = SmtpResponseCategory.GatewayAccepted,
+                RecipientAccepted = false
+            }
+        };
+        var mailboxFull = Snapshot("mailbox-full", "full-email", "domain", snapshotAt, MailProvider.GenericSmtp) with
+        {
+            HeuristicStatus = EmailValidationStatus.Risky,
+            Smtp = Snapshot("full-source", "email", "domain", snapshotAt, MailProvider.GenericSmtp).Smtp with
+            {
+                Category = SmtpResponseCategory.MailboxFull,
+                MailboxFull = true
+            }
+        };
+        var genericBounce = Snapshot("generic-bounce", "generic-bounce-email", "domain", snapshotAt,
+            MailProvider.GenericSmtp);
+        var generic5110Bounce = Snapshot("generic-5110-bounce", "generic-5110-email", "domain", snapshotAt,
+            MailProvider.GenericSmtp);
+        var recipientBounce = Snapshot("recipient-bounce", "recipient-bounce-email", "domain", snapshotAt,
+            MailProvider.GenericSmtp);
+        EmailValidationFeatureSnapshot[] allSnapshots =
+        [
+            early, latest, mismatched, candidate, acceptAll, catchAll, gateway, mailboxFull,
+            genericBounce, generic5110Bounce, recipientBounce
+        ];
+        foreach (var snapshot in allSnapshots)
+            await ((IEmailValidationFeatureSnapshotStore)store).AppendAsync(snapshot);
+
+        await store.AppendAsync(OutcomeFor(latest, "latest-delivered", EmailDeliveryOutcome.Delivered, sendAt));
+        await store.AppendAsync(OutcomeFor(mismatched, "wrong-validation", EmailDeliveryOutcome.Delivered, sendAt) with
+        {
+            ValidationId = "different-validation"
+        });
+        foreach (var snapshot in new[] { candidate, acceptAll, catchAll, gateway, mailboxFull })
+            await store.AppendAsync(OutcomeFor(
+                snapshot, $"{snapshot.SnapshotId}-delivered", EmailDeliveryOutcome.Delivered, sendAt));
+        await store.AppendAsync(OutcomeFor(
+            genericBounce, "generic-hard-bounce", EmailDeliveryOutcome.HardBounce, sendAt));
+        await store.AppendAsync(OutcomeFor(
+            generic5110Bounce, "generic-5110-hard-bounce", EmailDeliveryOutcome.HardBounce, sendAt) with
+        {
+            EnhancedStatusCode = "5.1.10"
+        });
+        await store.AppendAsync(OutcomeFor(
+            recipientBounce, "recipient-hard-bounce", EmailDeliveryOutcome.HardBounce, sendAt) with
+        {
+            EnhancedStatusCode = "5.1.1"
+        });
+
+        var dataset = await new TrainingDatasetBuilder(
+            store, store, new OutcomeDefinitionCatalog(), metrics, new FixedTimeProvider(snapshotAt.AddDays(21)))
+            .BuildAsync(new TrainingDatasetRequest(
+                PredictionTargetKind.MailboxExistence,
+                EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
+                EvidenceBackedClassificationVersions.FeatureSchemaV2,
+                snapshotAt.AddDays(-1),
+                snapshotAt.AddDays(10),
+                snapshotAt.AddDays(20)));
+
+        Assert.Collection(
+            dataset.Rows.Select(row => row.SnapshotId).OrderBy(id => id, StringComparer.Ordinal),
+            id => Assert.Equal("latest", id),
+            id => Assert.Equal("mailbox-full", id),
+            id => Assert.Equal("recipient-bounce", id));
+        Assert.Equal(2, dataset.Manifest.PositiveCount);
+        Assert.Equal(1, dataset.Manifest.NegativeCount);
+        Assert.Equal(6, dataset.Manifest.ExcludedCount);
+        Assert.Equal(2, dataset.Manifest.UnresolvedCount);
+        Assert.DoesNotContain(dataset.Rows, row => row.SnapshotId == "early");
+        Assert.DoesNotContain(dataset.Rows, row => row.SnapshotId == "generic-5110-bounce");
     }
 
     [Fact]
@@ -143,7 +326,7 @@ public sealed class EvidenceBackedClassificationTests
     public void DataSufficiencyGate_RefusesEmptyRepositoryEvidence()
     {
         var dataset = new TrainingDataset(new TrainingDatasetManifest(
-            "empty", DateTimeOffset.UtcNow, EvidenceBackedClassificationVersions.FeatureSchemaV1,
+            "empty", DateTimeOffset.UtcNow, EvidenceBackedClassificationVersions.FeatureSchemaV2,
             "delivery-7d-v1", DateTimeOffset.UtcNow.AddDays(-30), DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow, 0, 0, 0, 0, 20, 0,
             new Dictionary<MailProvider, int>(), "hash", "none", "v1"), []);
@@ -192,7 +375,7 @@ public sealed class EvidenceBackedClassificationTests
     }
 
     [Fact]
-    public void DecisionPolicy_ProtectsDeterministicInvalid_AndAbstainsToUnknown()
+    public void DecisionPolicy_ProtectsDeterministicInvalid_AndLeavesHeuristicOnAbstention()
     {
         var options = Options.Create(new EmailValidationOptions());
         var policy = new VersionedValidationDecisionPolicy(options);
@@ -200,16 +383,193 @@ public sealed class EvidenceBackedClassificationTests
         {
             Status = EmailValidationStatus.Invalid
         };
-        var model = new PredictionModelMetadata("baseline", "1", EvidenceBackedClassificationVersions.FeatureSchemaV1,
-            "platt-1", "mailbox-existence-v1", "policy-1", DateTimeOffset.UtcNow, "dataset", "checksum",
+        var model = new PredictionModelMetadata("baseline", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-1",
+            DateTimeOffset.UtcNow, "dataset", "checksum",
             DateTimeOffset.UtcNow, ModelRolloutMode.Enforced);
         var prediction = new CalibratedPrediction(PredictionTargetKind.MailboxExistence, 0.99, model);
 
         Assert.True(policy.Decide(invalid, prediction,
             new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported")).DeterministicOverride);
-        Assert.Equal(EmailValidationStatus.Unknown, policy.Decide(
+        Assert.Equal(EmailValidationStatus.Risky, policy.Decide(
             invalid with { Status = EmailValidationStatus.Risky }, prediction,
             new PredictionUncertainty(PredictionDisposition.Abstain, "near threshold")).Status);
+
+        var acceptAllCandidate = invalid with
+        {
+            Status = EmailValidationStatus.Unknown,
+            CatchAllEvidence = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 2, 0, 0, "Candidate", .70)
+            {
+                ReasonCode = CatchAllReasonCode.AcceptAllCandidate
+            }
+        };
+        var protectedCandidate = policy.Decide(
+            acceptAllCandidate,
+            prediction,
+            new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"));
+        Assert.Equal(EmailValidationStatus.Unknown, protectedCandidate.Status);
+        Assert.True(protectedCandidate.DeterministicOverride);
+    }
+
+    [Fact]
+    public void DecisionPolicy_NonMailboxTargetCannotChangeCanonicalMailboxStatus()
+    {
+        var policy = new VersionedValidationDecisionPolicy(Options.Create(new EmailValidationOptions()));
+        var heuristic = Result("person@example.test", DateTimeOffset.UtcNow) with
+        {
+            Status = EmailValidationStatus.Unknown
+        };
+        var model = new PredictionModelMetadata(
+            "hard-bounce", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", "hard-bounce-7d-v1", "policy-1", DateTimeOffset.UtcNow,
+            "dataset", "checksum", DateTimeOffset.UtcNow, ModelRolloutMode.Enforced);
+
+        var decision = policy.Decide(
+            heuristic,
+            new CalibratedPrediction(PredictionTargetKind.HardBounceWithinWindow, 0.99, model),
+            new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"));
+
+        Assert.Equal(EmailValidationStatus.Unknown, decision.Status);
+        Assert.True(decision.DeterministicOverride);
+    }
+
+    [Fact]
+    public void DecisionPolicy_CatchAllWithTransientSmtp_RemainsUnknownDespiteExtremePrediction()
+    {
+        var policy = new VersionedValidationDecisionPolicy(Options.Create(new EmailValidationOptions()));
+        var heuristic = Result("person@example.test", DateTimeOffset.UtcNow) with
+        {
+            Status = EmailValidationStatus.Unknown,
+            CatchAllEvidence = new CatchAllDetectionResult(
+                CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
+                "Independent routing evidence confirms catch-all delivery.", .96)
+            {
+                RecipientBehavior = DomainRecipientBehavior.CatchAll,
+                ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence
+            },
+            ProviderValidation = new ProviderValidationResult(
+                MailProvider.GenericSmtp,
+                .80,
+                SmtpResponseCategory.TemporaryFailure,
+                AcceptanceStrength.None,
+                [ReasonCode.TemporarySmtpFailure],
+                "The destination returned a transient SMTP failure.")
+        };
+        var model = new PredictionModelMetadata(
+            "mailbox-existence", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-2",
+            DateTimeOffset.UtcNow, "dataset", "checksum",
+            DateTimeOffset.UtcNow, ModelRolloutMode.Enforced);
+
+        var decision = policy.Decide(
+            heuristic,
+            new CalibratedPrediction(PredictionTargetKind.MailboxExistence, .99, model),
+            new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"));
+
+        Assert.Equal(EmailValidationStatus.Unknown, decision.Status);
+        Assert.True(decision.DeterministicOverride);
+    }
+
+    [Fact]
+    public void DecisionPolicy_TypoRiskCannotBeErasedByMailboxExistencePrediction()
+    {
+        var policy = new VersionedValidationDecisionPolicy(Options.Create(new EmailValidationOptions()));
+        var heuristic = Result("person@exampel.test", DateTimeOffset.UtcNow) with
+        {
+            Status = EmailValidationStatus.Risky,
+            Confidence = .73,
+            ReasonCodes = [ReasonCode.TypoDetected, ReasonCode.SuggestedDomainCorrection],
+            Recommendation = new SendRecommendation(null, RecommendationRisk.Moderate, ["TypoDetected"])
+        };
+        var model = new PredictionModelMetadata(
+            "mailbox-existence", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-2",
+            DateTimeOffset.UtcNow, "dataset", "checksum",
+            DateTimeOffset.UtcNow, ModelRolloutMode.Enforced);
+        var calibrated = new CalibratedPrediction(PredictionTargetKind.MailboxExistence, .99, model);
+
+        var decision = policy.Decide(
+            heuristic,
+            calibrated,
+            new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"));
+        var prediction = new EmailValidationPrediction
+        {
+            HeuristicEvidenceStrength = heuristic.Confidence,
+            MailboxExistenceProbability = calibrated.Probability,
+            VerificationReliability = .8,
+            Uncertainty = new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"),
+            Model = model,
+            Decision = decision
+        };
+        var projected = EnforcedValidationResultProjection.Apply(
+            heuristic with { Prediction = prediction }, prediction);
+
+        Assert.Equal(EmailValidationStatus.Risky, decision.Status);
+        Assert.True(decision.DeterministicOverride);
+        Assert.Equal(EmailValidationStatus.Risky, projected.Status);
+        Assert.Equal(.73, projected.Confidence);
+        Assert.Null(projected.Recommendation?.Send);
+        Assert.Contains(ReasonCode.TypoDetected, projected.ReasonCodes);
+        Assert.Contains(ReasonCode.SuggestedDomainCorrection, projected.ReasonCodes);
+    }
+
+    [Fact]
+    public void EnforcedMailboxProjection_UpdatesCanonicalMetadataAndPreservesIndependentRisk()
+    {
+        var riskEvidence = new EvidenceProvenance(
+            "Suppression", EvidenceSource.ConfiguredIntelligenceProvider, 0.99, "Known suppression.");
+        var heuristic = Result("person@example.test", DateTimeOffset.UtcNow) with
+        {
+            Status = EmailValidationStatus.Unknown,
+            Confidence = 0.72,
+            ConfidenceType = ConfidenceType.Heuristic,
+            ConfidenceReason = "SMTP timed out.",
+            UnknownContext = new UnknownValidationContext(
+                UnknownCause.SmtpTimeout, "Timed out.", true, "Retry.", SmtpResponseCategory.Timeout),
+            DetailedStatus = DetailedStatus.Timeout,
+            DetailedStatuses = [DetailedStatus.Timeout],
+            SubStatus = DetailedStatus.Timeout,
+            SubStatuses = [DetailedStatus.Timeout],
+            Recommendation = new SendRecommendation(false, RecommendationRisk.High, ["Suppression"]),
+            MailingRisk = new EmailRiskResult(
+                EmailValidationStatus.Unknown, 0.72, MailingRiskLevel.High,
+                [MailingRiskReason.KnownSuppression], [riskEvidence])
+        };
+        var model = new PredictionModelMetadata(
+            "mailbox-existence", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-2",
+            DateTimeOffset.UtcNow, "dataset", "checksum", DateTimeOffset.UtcNow, ModelRolloutMode.Enforced);
+        var prediction = new EmailValidationPrediction
+        {
+            HeuristicEvidenceStrength = heuristic.Confidence,
+            MailboxExistenceProbability = 0.91,
+            VerificationReliability = 0.8,
+            Uncertainty = new PredictionUncertainty(PredictionDisposition.AcceptedPrediction, "supported"),
+            Model = model,
+            Decision = new ValidationDecision(
+                EmailValidationStatus.LikelyValid,
+                "Calibrated probability exceeds the likely-valid threshold.")
+        };
+
+        var projected = EnforcedValidationResultProjection.Apply(
+            heuristic with { Prediction = prediction }, prediction);
+
+        Assert.Equal(EmailValidationStatus.LikelyValid, projected.Status);
+        Assert.Equal(0.91, projected.Confidence);
+        Assert.Equal(ConfidenceType.CalibratedProbability, projected.ConfidenceType);
+        Assert.Equal(prediction.Decision.Reason, projected.ConfidenceReason);
+        Assert.Null(projected.UnknownContext);
+        Assert.Equal(DetailedStatus.Unknown, projected.DetailedStatus);
+        Assert.Empty(projected.DetailedStatuses);
+        Assert.Equal(DetailedStatus.Unknown, projected.SubStatus);
+        Assert.Empty(projected.SubStatuses);
+        Assert.False(projected.Recommendation?.Send);
+        Assert.Equal(EmailValidationStatus.LikelyValid, projected.MailingRisk?.DeliverabilityStatus);
+        Assert.Equal(0.91, projected.MailingRisk?.DeliverabilityConfidence);
+        Assert.Equal(MailingRiskLevel.High, projected.MailingRisk?.MailingRisk);
+        Assert.Equal([MailingRiskReason.KnownSuppression], projected.MailingRisk?.RiskReasons);
+        Assert.Equal([riskEvidence], projected.MailingRisk?.Evidence);
     }
 
     [Fact]
@@ -303,13 +663,16 @@ public sealed class EvidenceBackedClassificationTests
                 ModelName = "logistic-baseline",
                 ModelVersion = "1.0.0",
                 Target = PredictionTargetKind.MailboxExistence,
-                FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV1,
+                FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV2,
                 CalibrationVersion = "platt-1",
-                OutcomeDefinitionVersion = "mailbox-existence-v1",
+                OutcomeDefinitionVersion = EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
                 TrainingDataCutoffUtc = DateTimeOffset.UtcNow.AddDays(-1),
                 TrainingDatasetId = "dataset-1",
                 Intercept = -0.5,
-                Coefficients = new Dictionary<string, double> { ["heuristic_evidence_strength"] = 2 },
+                Coefficients = LogisticFeatureEncoder.SupportedFeatures.ToDictionary(
+                    name => name,
+                    name => name == "heuristic_evidence_strength" ? 2d : 0d,
+                    StringComparer.Ordinal),
                 CalibrationSlope = 1.1,
                 CalibrationIntercept = -0.1,
                 L2Regularization = 0.01,
@@ -350,6 +713,106 @@ public sealed class EvidenceBackedClassificationTests
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public void LogisticArtifact_RejectsV1AndIncompleteV2FeatureContracts()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var artifact = new LogisticRegressionArtifact
+            {
+                ModelName = "logistic-baseline",
+                ModelVersion = "1.0.0",
+                Target = PredictionTargetKind.MailboxExistence,
+                FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV1,
+                CalibrationVersion = "platt-1",
+                OutcomeDefinitionVersion = EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
+                TrainingDataCutoffUtc = DateTimeOffset.UtcNow.AddDays(-1),
+                TrainingDatasetId = "dataset-legacy",
+                Intercept = 0,
+                Coefficients = LogisticFeatureEncoder.SupportedFeatures.ToDictionary(
+                    name => name, _ => 0d, StringComparer.Ordinal),
+                CalibrationSlope = 1,
+                CalibrationIntercept = 0,
+                L2Regularization = 0.01,
+                RandomSeed = 17
+            };
+
+            AssertArtifactRejected(path, artifact);
+            AssertArtifactRejected(path, artifact with
+            {
+                FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV2,
+                Coefficients = new Dictionary<string, double>
+                {
+                    ["heuristic_evidence_strength"] = 1
+                }
+            });
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void AssertArtifactRejected(string path, LogisticRegressionArtifact artifact)
+    {
+        File.WriteAllText(path, JsonSerializer.Serialize(artifact));
+        var checksum = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))
+            .ToLowerInvariant();
+        var options = Options.Create(new EmailValidationOptions
+        {
+            ClassificationModel = new ClassificationModelOptions
+            {
+                Mode = ModelRolloutMode.Shadow,
+                ArtifactPath = path,
+                ArtifactChecksum = checksum
+            }
+        });
+        var scorer = new LogisticRegressionProbabilityScorer(new LogisticRegressionArtifactProvider(options));
+        Assert.Throws<InvalidDataException>(() => scorer.Score(
+            Snapshot("rejected-artifact", "email", "domain", DateTimeOffset.UtcNow,
+                MailProvider.GenericSmtp)));
+    }
+
+    private static EmailValidationFeatureSnapshot NonDiscriminatingSnapshot(
+        EmailValidationFeatureSnapshot snapshot,
+        DomainRecipientBehavior behavior,
+        bool acceptAllCandidate = false) => snapshot with
+        {
+            Domain = snapshot.Domain with
+            {
+                CatchAllState = behavior == DomainRecipientBehavior.CatchAll
+                    ? CatchAllStatus.LikelyCatchAll
+                    : CatchAllStatus.Unknown,
+                RecipientBehavior = behavior,
+                AcceptAllCandidate = acceptAllCandidate
+            },
+            Smtp = snapshot.Smtp with
+            {
+                Category = SmtpResponseCategory.Accepted,
+                RecipientAccepted = true
+            }
+        };
+
+    private static EmailDeliveryOutcomeObservation OutcomeFor(
+        EmailValidationFeatureSnapshot snapshot,
+        string eventId,
+        EmailDeliveryOutcome outcome,
+        DateTimeOffset sendAt) => new()
+        {
+            OutcomeEventId = eventId,
+            EmailCorrelationId = snapshot.EmailCorrelationId,
+            ValidationId = snapshot.ValidationId,
+            Outcome = outcome,
+            Confidence = OutcomeConfidence.Authoritative,
+            OutcomeSource = "provider-webhook",
+            SourceEventId = eventId,
+            Provider = snapshot.Domain.Provider,
+            SendAttemptAtUtc = sendAt,
+            ObservedAtUtc = sendAt.AddHours(1),
+            NormalizationVersion = "delivery-outcome-normalization-v2-recipient-specific-hard-bounce"
+        };
 
     private static LocalClassificationEvidenceStore Store() => new(Options.Create(new EmailValidationOptions
     {
@@ -393,8 +856,11 @@ public sealed class EvidenceBackedClassificationTests
             Confidence = 0.92,
             Checks = new EmailValidationChecks
             {
-                SyntaxValid = true, DomainExists = true, MxPresent = true,
-                CatchAll = CatchAllStatus.NotCatchAll, Mailbox = SmtpMailboxStatus.Accepted
+                SyntaxValid = true,
+                DomainExists = true,
+                MxPresent = true,
+                CatchAll = CatchAllStatus.NotCatchAll,
+                Mailbox = SmtpMailboxStatus.Accepted
             },
             MailProvider = MailProvider.GoogleWorkspace,
             Provider = domain.Provider,
@@ -416,11 +882,14 @@ public sealed class EvidenceBackedClassificationTests
             EmailCorrelationId = emailKey,
             DomainCorrelationId = domainKey,
             SnapshotAtUtc = at,
-            FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV1,
+            FeatureSchemaVersion = EvidenceBackedClassificationVersions.FeatureSchemaV2,
             Syntax = new(true, true, false, false, false, false),
             Domain = new(true, DnsStatus.Success, true, false, 1, false, provider, 0.8,
                 DnsSecurityState.Unknown, AuthenticationRecordState.Unknown, AuthenticationRecordState.Unknown,
-                CatchAllStatus.Unknown, 0.2, "mx"),
+                CatchAllStatus.NotCatchAll, 0.8, "mx")
+            {
+                RecipientBehavior = DomainRecipientBehavior.RecipientSpecific
+            },
             Smtp = new(SmtpProbeDisposition.NotAttempted, null, null, null,
                 SmtpResponseCategory.NotAttempted, null, false, false, false, false, false, false),
             History = new(0, 0, 0, 0, VerificationReliabilityLevel.Unknown, 0, 0, 0, 0, 0),
@@ -468,7 +937,8 @@ public sealed class EvidenceBackedClassificationTests
             PredictionTargetKind.MailboxExistence,
             rawScore,
             new PredictionModelMetadata("logistic-baseline", "1", snapshot.FeatureSchemaVersion,
-                "platt-1", "mailbox-existence-v1", "policy-1", DateTimeOffset.UtcNow,
+                "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-1",
+                DateTimeOffset.UtcNow,
                 "dataset-1", "checksum", DateTimeOffset.MinValue, ModelRolloutMode.Disabled));
     }
 

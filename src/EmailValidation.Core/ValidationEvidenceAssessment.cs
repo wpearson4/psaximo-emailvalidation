@@ -15,6 +15,13 @@ public static class ValidationEvidenceAssessment
         if (domain.Dns.Status == DnsStatus.DomainNotFound || domain.Dns.ExplicitNullMx ||
             !domain.Dns.MxPresent || domain.MailInfrastructure.Status == MailInfrastructureStatus.Unroutable)
             return EvidenceQuality.Conclusive;
+        if (provider.ReasonCodes.Contains(ReasonCode.MxResultsConflicting))
+            return EvidenceQuality.Partial;
+        if (probe.SessionEvidence?.HasStrongRecipientRejection == true ||
+            SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(probe))
+            return EvidenceQuality.Conclusive;
+        if (provider.ReasonCodes.Contains(ReasonCode.ProviderEvidenceConflicting))
+            return EvidenceQuality.Partial;
 
         var category = provider.EffectiveCategory;
         if (category == SmtpResponseCategory.LocalCooldown ||
@@ -30,7 +37,10 @@ public static class ValidationEvidenceAssessment
             SmtpResponseCategory.Unknown or SmtpResponseCategory.NotAttempted or
             SmtpResponseCategory.GatewayAccepted)
             return EvidenceQuality.Partial;
-        if (status == EmailValidationStatus.CatchAll)
+        if (status == EmailValidationStatus.CatchAll ||
+            domain.CatchAll.EffectiveRecipientBehavior is
+                DomainRecipientBehavior.CatchAll or DomainRecipientBehavior.AcceptAll ||
+            domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
             return EvidenceQuality.Partial;
         return EvidenceQuality.Conclusive;
     }

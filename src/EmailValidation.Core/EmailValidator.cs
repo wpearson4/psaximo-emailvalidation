@@ -32,6 +32,7 @@ public sealed class EmailValidator(
     {
         var stopwatch = Stopwatch.StartNew();
         var validatedAt = DateTimeOffset.UtcNow;
+        var observationSessionId = Guid.NewGuid().ToString("N");
         using var smtpBudget = smtpSessionBudget.Begin(_options.Smtp.MaxSmtpSessionsPerAddress);
         logger.LogInformation("Validation started");
         var normalized = normalizer.Normalize(email);
@@ -128,13 +129,22 @@ public sealed class EmailValidator(
             else persistenceMetrics.RecordSmtpValidationAvoided();
         }
 
+        var smtpProvider = mailbox.SessionEvidence is not null
+            ? smtpProviderDetector.Detect(mailbox.SessionEvidence)
+            : null;
+        var reconciledProvider = ReconcileProvider(domainData.Provider, smtpProvider);
+        var observationProvider = reconciledProvider.Provider;
+        var targetAcceptanceUncontested = mxValidation.Attempts.Count > 0 &&
+            mxValidation.Attempts.All(IsPositive);
         var evaluatedCatchAll = DomainRecipientBehaviorPolicy.Evaluate(
             domainData.CatchAll,
             mailbox,
             activeObservations,
-            domainData.Provider.Provider,
+            observationProvider,
             _options.CatchAll,
-            catchAllProbes > 0);
+            catchAllProbes > 0,
+            mxValidation.Consensus,
+            targetAcceptanceUncontested);
         if (evaluatedCatchAll != domainData.CatchAll)
         {
             activeDomainData = activeDomainData with { CatchAll = evaluatedCatchAll };
@@ -142,34 +152,66 @@ public sealed class EmailValidator(
                 .ConfigureAwait(false);
         }
 
-        var strategy = providerStrategyResolver.Resolve(domainData.Provider);
+        var strategyDomainData = activeDomainData with { Provider = reconciledProvider };
+        var strategy = providerStrategyResolver.Resolve(reconciledProvider);
         var providerValidation = await strategy.EvaluateAsync(
-            new ProviderValidationContext(activeDomainData, mailbox, history),
+            new ProviderValidationContext(strategyDomainData, mailbox, history),
             cancellationToken);
+        if (reconciledProvider.Evidence?.Contains("ProviderEvidenceConflict", StringComparer.Ordinal) == true)
+        {
+            var directRecipientOutcome =
+                SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(mailbox) ||
+                SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(mailbox);
+            providerValidation = directRecipientOutcome
+                ? providerValidation with
+                {
+                    ReasonCodes = providerValidation.ReasonCodes
+                        .Where(reason => reason != ReasonCode.ProviderDetected)
+                        .Append(ReasonCode.ProviderEvidenceConflicting)
+                        .Distinct()
+                        .ToArray(),
+                    Explanation = $"Provider identity is conflicting. {providerValidation.Explanation}"
+                }
+                : providerValidation with
+                {
+                    EffectiveCategory = SmtpResponseCategory.Unknown,
+                    AcceptanceStrength = AcceptanceStrength.None,
+                    ReasonCodes = providerValidation.ReasonCodes
+                        .Where(reason => reason != ReasonCode.ProviderDetected &&
+                            !IsMutuallyExclusiveMxOutcome(reason))
+                        .Append(ReasonCode.ProviderEvidenceConflicting)
+                        .Distinct()
+                        .ToArray(),
+                    Explanation = "Published MX identity and SMTP-observed provider identity conflict.",
+                    VerificationReliability = Math.Min(providerValidation.VerificationReliability, 0.20),
+                    VerificationReliabilityLevel = VerificationReliabilityLevel.Low
+                };
+        }
         if (mxValidation.Consensus == MxConsensus.Conflicting)
         {
             providerValidation = providerValidation with
             {
                 EffectiveCategory = SmtpResponseCategory.Unknown,
                 AcceptanceStrength = AcceptanceStrength.None,
-                ReasonCodes = providerValidation.ReasonCodes.Append(ReasonCode.MxResultsConflicting).Distinct().ToArray(),
+                ReasonCodes = providerValidation.ReasonCodes
+                    .Where(reason => !IsMutuallyExclusiveMxOutcome(reason))
+                    .Append(ReasonCode.MxResultsConflicting)
+                    .Distinct()
+                    .ToArray(),
                 Explanation = "The consulted MX hosts returned conflicting evidence.",
                 VerificationReliability = Math.Min(providerValidation.VerificationReliability, 0.25),
                 VerificationReliabilityLevel = VerificationReliabilityLevel.Low
             };
         }
-        var smtpProvider = mailbox.SessionEvidence is not null
-            ? smtpProviderDetector.Detect(mailbox.SessionEvidence)
-            : null;
-        var effectiveProvider = domainData.Provider with
+        var effectiveProvider = reconciledProvider with
         {
+            GatewayProvider = providerValidation.GatewayProvider != GatewayProvider.Unknown
+                ? providerValidation.GatewayProvider
+                : reconciledProvider.GatewayProvider,
             MailboxProvider = providerValidation.MailboxProvider,
             SmtpObservedProvider = smtpProvider?.SmtpObservedProvider ?? MailProvider.Unknown,
             SmtpEvidenceConfidence = smtpProvider?.SmtpEvidenceConfidence ?? 0,
-            Evidence = (domainData.Provider.Evidence ?? [])
-                .Concat(smtpProvider?.Evidence ?? [])
-                .Distinct(StringComparer.Ordinal)
-                .ToArray()
+            Evidence = reconciledProvider.Evidence ?? []
         };
         var effectiveDomainData = activeDomainData with { Provider = effectiveProvider };
         var mailboxEvidence = new MailboxEvidence(domain, selectedMx ?? string.Empty, mailbox, providerValidation);
@@ -182,13 +224,13 @@ public sealed class EmailValidator(
             UsedImplicitMxFallback = domainData.Dns.UsedAddressFallback,
             DisposableDomain = domainData.Disposable,
             RoleAccount = roleAccount,
-            CatchAll = domainData.CatchAll.Status,
+            CatchAll = activeDomainData.CatchAll.Status,
             Mailbox = ToInterpretedMailboxStatus(providerValidation.EffectiveCategory)
         };
         var classificationEvidence = new EmailClassificationEvidence(
             true,
             domainData.Dns.Status,
-            activeDomainData,
+            effectiveDomainData,
             roleAccount,
             mailboxEvidence,
             history)
@@ -199,11 +241,21 @@ public sealed class EmailValidator(
         var evaluation = resultEvaluator.Evaluate(
             classification.Status,
             checks,
-            activeDomainData,
+            effectiveDomainData,
             addressIntelligence,
             providerValidation,
             mailbox.Evidence,
             history);
+        var resultRetryAfter = mailbox.RetryAfter;
+        if (activeDomainData.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate &&
+            activeDomainData.CatchAll.ObservedAt is { } candidateObservedAt)
+        {
+            var confirmationAt = candidateObservedAt.AddMinutes(Math.Max(
+                1,
+                _options.CatchAll.AcceptAllMinimumObservationSeparationMinutes));
+            if (resultRetryAfter is null || resultRetryAfter < confirmationAt)
+                resultRetryAfter = confirmationAt;
+        }
         stopwatch.Stop();
 
         var result = new EmailValidationResult
@@ -214,16 +266,16 @@ public sealed class EmailValidator(
             Confidence = classification.Confidence,
             ConfidenceType = ConfidenceType.Heuristic,
             ConfidenceReason = EvidenceConfidenceExplainer.Explain(
-                classification.Status, activeDomainData, mailbox, mxValidation, probeSenderHealth, providerValidation),
+                classification.Status, effectiveDomainData, mailbox, mxValidation, probeSenderHealth, providerValidation),
             ProbeAttempted = mailbox.ProbeAttempted,
             ProbeDisposition = mailbox.Disposition,
-            RetryAfter = mailbox.RetryAfter,
+            RetryAfter = resultRetryAfter,
             RequiresSmtpUtf8 = normalized.RequiresSmtpUtf8,
             SmtpUtf8Supported = mailbox.SessionEvidence is null
                 ? null
                 : mailbox.SessionEvidence.SmtpUtf8Advertised,
             Checks = checks,
-            MailProvider = domainData.Provider.Provider,
+            MailProvider = effectiveProvider.Provider,
             Provider = effectiveProvider,
             MxRecords = domainData.Dns.MxRecords,
             SelectedMx = selectedMx,
@@ -232,7 +284,10 @@ public sealed class EmailValidator(
                 .Concat(SenderHealthReasons(probeSenderHealth))
                 .Distinct().ToArray(),
             UsedImplicitMxFallback = domainData.Dns.UsedAddressFallback,
-            DomainIntelligence = effectiveDomainData,
+            // SMTP banner reconciliation is evidence for this mailbox exchange, not
+            // a replacement for the DNS-derived domain provider persisted by the
+            // intelligence layer. Keep the effective provider on the result itself.
+            DomainIntelligence = activeDomainData,
             CatchAllEvidence = activeDomainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
             SmtpSessionEvidence = mailbox.SessionEvidence,
@@ -281,7 +336,7 @@ public sealed class EmailValidator(
                 ProbeAttempted = mailbox.ProbeAttempted,
                 ProbeDisposition = mailbox.Disposition,
                 SmtpResponseCategory = providerValidation.EffectiveCategory,
-                RetryAfter = mailbox.RetryAfter,
+                RetryAfter = resultRetryAfter,
                 Detail = domainData.Dns.Error ?? mailbox.Response
             } : null,
             Metadata = new ValidationResultMetadata(
@@ -293,9 +348,9 @@ public sealed class EmailValidator(
                     : ValidationResultSource.LiveValidation)
         };
         var evidenceQuality = ValidationEvidenceAssessment.Quality(
-            result.Status, activeDomainData, mailbox, providerValidation);
+            result.Status, effectiveDomainData, mailbox, providerValidation);
         var catchAllClassification = ValidationEvidenceAssessment.CatchAllType(
-            result.Status, activeDomainData, providerValidation, history);
+            result.Status, effectiveDomainData, providerValidation, history);
         var subStatus = catchAllClassification switch
         {
             CatchAllClassification.Confirmed => DetailedStatus.CatchAllConfirmed,
@@ -314,7 +369,17 @@ public sealed class EmailValidator(
         persistenceMetrics.RecordSmtpUtf8(
             result.RequiresSmtpUtf8,
             result.SmtpUtf8Supported is not false);
-        await RecordObservationsAsync(activeDomainData, mailbox, providerValidation, selectedMx, catchAllProbes, cancellationToken);
+        await RecordObservationsAsync(
+            effectiveDomainData,
+            mailbox,
+            providerValidation,
+            selectedMx,
+            catchAllProbes,
+            observationProvider,
+            observationSessionId,
+            targetAcceptanceUncontested,
+            mxValidation.Consensus == MxConsensus.Conflicting,
+            cancellationToken);
         logger.LogInformation(
             "Validation ended with {Status}, confidence {Confidence}, in {DurationMs} ms",
             result.Status, result.Confidence, result.DurationMs);
@@ -344,27 +409,36 @@ public sealed class EmailValidator(
         string recipient,
         CancellationToken cancellationToken)
     {
-        var hosts = domain.Dns.MxRecords
+        var endpoints = domain.Dns.MxRecords
             .OrderBy(record => record.Preference)
             .ThenBy(record => record.Host, StringComparer.OrdinalIgnoreCase)
-            .Select(record => record.Host)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(record => record.Host, StringComparer.OrdinalIgnoreCase)
             .Take(Math.Clamp(_options.Smtp.MaxMxAttempts, 1, 3))
             .ToArray();
-        var attempts = new List<SmtpProbeResult>(hosts.Length);
-        var attemptedHosts = new List<string>(hosts.Length);
+        var attempts = new List<SmtpProbeResult>(endpoints.Length);
+        var attemptedHosts = new List<string>(endpoints.Length);
+        var preferenceGroupStart = 0;
 
-        foreach (var host in hosts)
+        for (var index = 0; index < endpoints.Length; index++)
         {
+            var endpoint = endpoints[index];
             var result = await smtpProbe.ProbeAsync(
-                host, recipient, domain.Provider.Provider, cancellationToken);
+                endpoint.Host, recipient, domain.Provider.Provider, cancellationToken);
             attempts.Add(result);
-            attemptedHosts.Add(host);
-            if (IsConclusiveMxResult(result, domain.CatchAll.Status)) break;
+            attemptedHosts.Add(endpoint.Host);
+
+            var endOfPreferenceGroup = index == endpoints.Length - 1 ||
+                endpoints[index + 1].Preference != endpoint.Preference;
+            if (!endOfPreferenceGroup) continue;
+            if (attempts.Skip(preferenceGroupStart)
+                .Any(attempt => IsConclusiveMxResult(attempt, domain.CatchAll.Status)))
+                break;
+            preferenceGroupStart = attempts.Count;
         }
 
         var consensus = CalculateMxConsensus(attempts, domain.CatchAll.Status);
         var selected = attempts.FirstOrDefault(IsStrongNegative)
+            ?? attempts.FirstOrDefault(IsMailboxFull)
             ?? attempts.FirstOrDefault(IsPositive)
             // A later MX can be skipped after the first live attempt activates local
             // pacing. Preserve the actual SMTP evidence instead of replacing it with
@@ -376,17 +450,71 @@ public sealed class EmailValidator(
 
     private static bool IsConclusiveMxResult(SmtpProbeResult result, CatchAllStatus catchAll) =>
         IsStrongNegative(result) ||
-        result.Status == SmtpMailboxStatus.MailboxFull ||
+        IsMailboxFull(result) ||
         (IsPositive(result) && catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll);
 
     private static bool IsStrongNegative(SmtpProbeResult result) =>
-        result.SessionEvidence?.HasStrongRecipientRejection == true ||
-        (result.SessionEvidence is null && result.Evidence?.Command == SmtpCommand.RcptTo &&
-            result.Evidence.Category == SmtpResponseCategory.RecipientRejected);
+        SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(result);
 
     private static bool IsPositive(SmtpProbeResult result) =>
-        result.Status == SmtpMailboxStatus.Accepted &&
-        (result.SessionEvidence is null || result.SessionEvidence.RecipientStageReached);
+        SmtpRecipientEvidencePolicy.HasRecipientAcceptance(result);
+
+    private static bool IsMailboxFull(SmtpProbeResult result) =>
+        SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(result);
+
+    private static bool IsMutuallyExclusiveMxOutcome(ReasonCode reason) => reason is
+        ReasonCode.MailboxRejected or
+        ReasonCode.MicrosoftRecipientRejected or
+        ReasonCode.MailboxAccepted or
+        ReasonCode.GatewayAccepted or
+        ReasonCode.MailboxAcceptanceAmbiguous;
+
+    private static ProviderDetectionResult ReconcileProvider(
+        ProviderDetectionResult dnsProvider,
+        ProviderDetectionResult? smtpProvider)
+    {
+        var observed = smtpProvider?.SmtpObservedProvider ?? MailProvider.Unknown;
+        if (observed == MailProvider.Unknown) return dnsProvider;
+
+        var combinedEvidence = (dnsProvider.Evidence ?? [])
+            .Concat(smtpProvider?.Evidence ?? [])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var smtpConfidence = smtpProvider?.SmtpEvidenceConfidence ?? smtpProvider?.Confidence ?? 0;
+        if (dnsProvider.Provider is MailProvider.Unknown or MailProvider.GenericSmtp)
+            return dnsProvider with
+            {
+                Provider = observed,
+                Confidence = smtpConfidence,
+                MatchedSignature = smtpProvider?.MatchedSignature,
+                Evidence = combinedEvidence,
+                SmtpObservedProvider = observed,
+                SmtpEvidenceConfidence = smtpConfidence
+            };
+        if (AreProviderStrategiesCompatible(dnsProvider.Provider, observed))
+            return dnsProvider with
+            {
+                Confidence = Math.Max(dnsProvider.Confidence, smtpConfidence),
+                Evidence = combinedEvidence,
+                SmtpObservedProvider = observed,
+                SmtpEvidenceConfidence = smtpConfidence
+            };
+
+        return dnsProvider with
+        {
+            Provider = MailProvider.Unknown,
+            Confidence = Math.Min(dnsProvider.Confidence, smtpConfidence),
+            MatchedSignature = "Conflicting MX and SMTP provider evidence",
+            Evidence = combinedEvidence.Append("ProviderEvidenceConflict").Distinct(StringComparer.Ordinal).ToArray(),
+            SmtpObservedProvider = observed,
+            SmtpEvidenceConfidence = smtpConfidence
+        };
+    }
+
+    private static bool AreProviderStrategiesCompatible(MailProvider left, MailProvider right) =>
+        left == right ||
+        (left is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer &&
+         right is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer);
 
     private static MxConsensus CalculateMxConsensus(
         List<SmtpProbeResult> attempts,
@@ -394,12 +522,13 @@ public sealed class EmailValidator(
     {
         if (attempts.Count == 0) return MxConsensus.Unknown;
         var accepted = attempts.Any(IsPositive);
+        var mailboxFull = attempts.Any(IsMailboxFull);
         var strongPositive = accepted &&
             catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll;
         var negative = attempts.Any(IsStrongNegative);
-        if (accepted && negative) return MxConsensus.Conflicting;
+        if ((accepted || mailboxFull) && negative) return MxConsensus.Conflicting;
         if (negative) return MxConsensus.ConclusiveNegative;
-        if (strongPositive) return MxConsensus.ConclusivePositive;
+        if (mailboxFull || strongPositive) return MxConsensus.ConclusivePositive;
         return MxConsensus.ConsistentAmbiguous;
     }
 
@@ -445,33 +574,68 @@ public sealed class EmailValidator(
         ProviderValidationResult providerValidation,
         string? selectedMx,
         int catchAllProbes,
+        MailProvider observationProvider,
+        string observationSessionId,
+        bool targetAcceptanceUncontested,
+        bool targetEvidenceContested,
         CancellationToken cancellationToken)
     {
+        var targetObservedAt = SmtpRecipientEvidencePolicy.RecipientObservedAt(mailbox);
+        var targetStrongRejection = SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(mailbox);
+        var targetRecipientQualified = targetObservedAt is not null &&
+            (targetStrongRejection ||
+             targetAcceptanceUncontested && SmtpRecipientEvidencePolicy.HasRecipientAcceptance(mailbox));
+        var observedRecipientCategory = targetStrongRejection
+            ? SmtpResponseCategory.RecipientRejected
+            : providerValidation.EffectiveCategory;
+        var targetMx = SmtpRecipientEvidencePolicy.MxHost(mailbox);
         if (catchAllProbes > 0)
         {
-            var catchAllCategory = domain.CatchAll.RefreshInconclusive
-                ? SmtpResponseCategory.Unknown
-                : domain.CatchAll.Status switch
-                {
-                    CatchAllStatus.LikelyCatchAll => SmtpResponseCategory.Accepted,
-                    CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll => SmtpResponseCategory.RecipientRejected,
-                    _ => SmtpResponseCategory.Unknown
-                };
+            var controlResults = domain.CatchAll.ProbeResults
+                .TakeLast(Math.Min(catchAllProbes, domain.CatchAll.ProbeResults.Count))
+                .ToArray();
+            var accepted = controlResults.Count(SmtpRecipientEvidencePolicy.HasRecipientAcceptance);
+            var rejected = controlResults.Count(SmtpRecipientEvidencePolicy.HasStrongRecipientRejection);
+            var catchAllCategory = controlResults.Length > 0 && accepted == controlResults.Length
+                ? SmtpResponseCategory.Accepted
+                : controlResults.Length > 0 && rejected == controlResults.Length
+                    ? SmtpResponseCategory.RecipientRejected
+                    : SmtpResponseCategory.Unknown;
+            var controlHosts = controlResults
+                .Select(SmtpRecipientEvidencePolicy.MxHost)
+                .Where(host => host is not null)
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var controlMx = controlHosts.Length == 1
+                ? controlHosts[0]
+                : null;
+            var controlObservedAt = controlResults
+                .Select(SmtpRecipientEvidencePolicy.RecipientObservedAt)
+                .Where(timestamp => timestamp is not null)
+                .Cast<DateTimeOffset>()
+                .DefaultIfEmpty(domain.CatchAll.ObservedAt ?? DateTimeOffset.UtcNow)
+                .Max();
             await observationStore.RecordAsync(new ValidationObservation(
                 domain.Domain,
                 ValidationObservationType.CatchAllProbe,
-                domain.Provider.Provider,
-                selectedMx,
+                observationProvider,
+                controlMx,
                 domain.CatchAll.Status,
                 domain.CatchAll.Confidence,
                 catchAllCategory,
-                DateTimeOffset.UtcNow,
-                0,
-                domain.CatchAll.RefreshInconclusive ? 0 : domain.CatchAll.Accepted,
-                domain.CatchAll.RefreshInconclusive ? catchAllProbes : domain.CatchAll.Probes,
-                domain.CatchAll.RefreshInconclusive ? 0 : domain.CatchAll.Rejected,
+                controlObservedAt,
+                controlResults.Sum(result => result.Evidence?.ElapsedMilliseconds ?? 0),
+                accepted,
+                controlResults.Length,
+                rejected,
                 domain.Provider.GatewayProvider,
-                domain.Provider.TopologyFingerprint), cancellationToken);
+                domain.Provider.TopologyFingerprint,
+                ObservationSessionId: observationSessionId,
+                CorrelatedTargetResponseCategory: observedRecipientCategory,
+                CorrelatedTargetObservedAt: targetObservedAt,
+                CorrelatedTargetMxHost: targetMx,
+                CorrelatedTargetRecipientEvidenceQualified: targetRecipientQualified), cancellationToken);
         }
 
         if (mailbox.Status != SmtpMailboxStatus.NotAttempted || mailbox.Evidence?.Reputation is not null)
@@ -481,16 +645,19 @@ public sealed class EmailValidator(
                 mailbox.Status == SmtpMailboxStatus.NotAttempted
                     ? ValidationObservationType.ReputationDecision
                     : ValidationObservationType.MailboxProbe,
-                domain.Provider.Provider,
+                observationProvider,
                 selectedMx,
                 domain.CatchAll.Status,
                 domain.CatchAll.Confidence,
-                providerValidation.EffectiveCategory,
-                DateTimeOffset.UtcNow,
+                observedRecipientCategory,
+                mailbox.Evidence?.Timestamp ?? DateTimeOffset.UtcNow,
                 mailbox.Evidence?.ElapsedMilliseconds ?? (long)mailbox.ConnectionDuration.TotalMilliseconds,
                 GatewayProvider: domain.Provider.GatewayProvider,
                 TopologyFingerprint: domain.Provider.TopologyFingerprint,
-                Reputation: mailbox.Evidence?.Reputation), cancellationToken);
+                Reputation: mailbox.Evidence?.Reputation,
+                ObservationSessionId: observationSessionId,
+                RecipientEvidenceQualified: targetRecipientQualified,
+                RecipientEvidenceContested: targetEvidenceContested), cancellationToken);
         }
     }
 

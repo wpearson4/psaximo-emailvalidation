@@ -136,7 +136,10 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
                 Provider = new ProviderDetectionResult(MailProvider.Yahoo, .99),
                 CatchAll = new CatchAllDetectionResult(CatchAllStatus.Unknown, 2, 2, 0, 0)
                 {
-                    RecipientBehavior = DomainRecipientBehavior.AcceptAll
+                    RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+                    ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+                    IndependentObservationCount = 2,
+                    EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion
                 }
             },
             ValidationId = "validation-accept-all",

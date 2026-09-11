@@ -39,11 +39,14 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
         {
             category = acceptedCategory;
             strength = acceptedStrength;
-            reasons.Add(ReasonCode.MailboxAccepted);
             if (acceptedCategory == SmtpResponseCategory.GatewayAccepted)
             {
                 reasons.Add(ReasonCode.GatewayAccepted);
                 reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
+            }
+            else
+            {
+                reasons.Add(ReasonCode.MailboxAccepted);
             }
         }
         else
@@ -99,6 +102,14 @@ public abstract class MailProviderStrategyBase(MailProvider handledProvider) : I
     internal static SmtpResponseCategory ResolveCategory(SmtpProbeResult probe)
     {
         var category = probe.Evidence?.Category ?? ToCategory(probe.Status);
+        if (category == SmtpResponseCategory.Accepted)
+            return SmtpRecipientEvidencePolicy.HasRecipientAcceptance(probe)
+                ? category
+                : SmtpResponseCategory.VerificationBlocked;
+        if (category == SmtpResponseCategory.MailboxFull)
+            return SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(probe)
+                ? category
+                : SmtpResponseCategory.VerificationBlocked;
         if (category != SmtpResponseCategory.RecipientRejected) return category;
 
         // Session-aware results must prove that MAIL FROM succeeded and that the
@@ -193,7 +204,6 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
             effectiveCategory = SmtpResponseCategory.GatewayAccepted;
             strength = AcceptanceStrength.Low;
             reliability = recipientBehavior == DomainRecipientBehavior.CatchAll ? 0.20 : 0.30;
-            reasons.Add(ReasonCode.MailboxAccepted);
             reasons.Add(ReasonCode.GatewayAccepted);
             reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
             explanation = recipientBehavior switch

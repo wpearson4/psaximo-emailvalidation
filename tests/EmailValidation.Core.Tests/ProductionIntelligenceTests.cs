@@ -53,14 +53,82 @@ public sealed class ProductionIntelligenceTests
                     ObservedAt = DateTimeOffset.UtcNow
                 }
             };
-            await new JsonValidationIntelligenceStore(options).SaveDomainAsync(legacy);
+            var first = new JsonValidationIntelligenceStore(options);
+            await first.SaveDomainAsync(legacy);
+
+            var sameInstance = await first.GetDomainAsync("example.test");
 
             var restored = await new JsonValidationIntelligenceStore(options).GetDomainAsync("example.test");
 
+            Assert.NotNull(sameInstance);
+            Assert.Equal(DomainRecipientBehavior.Unknown, sameInstance!.CatchAll.RecipientBehavior);
+            Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, sameInstance.CatchAll.ReasonCode);
             Assert.NotNull(restored);
             Assert.Equal(DomainRecipientBehavior.Unknown, restored!.CatchAll.RecipientBehavior);
             Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, restored.CatchAll.ReasonCode);
-            Assert.Equal(1, restored.CatchAll.IndependentObservationCount);
+            Assert.Equal(0, restored.CatchAll.IndependentObservationCount);
+        }
+        finally
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistentStore_ReservesRetentionForRecipientBehaviorSessions()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "email-validation-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var options = Options.Create(new EmailValidationOptions
+            {
+                Persistence = new PersistenceOptions
+                {
+                    Enabled = true,
+                    StoragePath = path,
+                    MaximumObservationsPerDomain = 2
+                }
+            });
+            var store = new JsonValidationIntelligenceStore(options);
+            var at = DateTimeOffset.UtcNow.AddMinutes(-20);
+            await store.RecordAsync(new ValidationObservation(
+                "example.test", ValidationObservationType.CatchAllProbe,
+                MailProvider.GenericSmtp, "mx.example.test", CatchAllStatus.Unknown,
+                .70, SmtpResponseCategory.Accepted, at, 1,
+                RandomRecipientAcceptedCount: 2,
+                RandomRecipientProbeCount: 2,
+                ObservationSessionId: "protected-session",
+                CorrelatedTargetResponseCategory: SmtpResponseCategory.Accepted,
+                CorrelatedTargetObservedAt: at.AddSeconds(5),
+                CorrelatedTargetMxHost: "mx.example.test",
+                CorrelatedTargetRecipientEvidenceQualified: true));
+            await store.RecordAsync(new ValidationObservation(
+                "example.test", ValidationObservationType.MailboxProbe,
+                MailProvider.GenericSmtp, "mx.example.test", CatchAllStatus.Unknown,
+                .90, SmtpResponseCategory.RecipientRejected, at.AddMinutes(1), 1,
+                ObservationSessionId: "protected-rejection",
+                RecipientEvidenceQualified: true,
+                RecipientEvidenceContested: true));
+            for (var index = 0; index < 3; index++)
+            {
+                await store.RecordAsync(new ValidationObservation(
+                    "example.test", ValidationObservationType.MailboxProbe,
+                    MailProvider.GenericSmtp, "mx.example.test", CatchAllStatus.Unknown,
+                    .20, SmtpResponseCategory.Accepted, at.AddMinutes(index + 1), 1,
+                    ObservationSessionId: $"mailbox-{index}",
+                    RecipientEvidenceQualified: true));
+            }
+
+            var restored = await new JsonValidationIntelligenceStore(options)
+                .GetDomainObservationsAsync("example.test");
+
+            Assert.Contains(restored, observation =>
+                observation.ObservationSessionId == "protected-session");
+            Assert.Contains(restored, observation =>
+                observation.ObservationSessionId == "protected-rejection" &&
+                observation.RecipientEvidenceContested);
+            Assert.Equal(2, restored.Count(observation =>
+                observation.ObservationSessionId?.StartsWith("mailbox-", StringComparison.Ordinal) == true));
         }
         finally
         {
@@ -275,6 +343,29 @@ public sealed class ProductionIntelligenceTests
     }
 
     [Fact]
+    public async Task CatchAllStatus_IsNeutralInLegacyDeliveryCalibration()
+    {
+        var recorder = new InMemoryDeliveryOutcomeRecorder();
+        var policy = new ValidationPolicyVersions("1", "2.1", "3", "4");
+        var prediction = Snapshot(
+            EmailValidationStatus.CatchAll,
+            0.95,
+            policy,
+            DateTimeOffset.UtcNow.AddDays(-1));
+        await recorder.RecordAsync(new(
+            prediction, DeliveryOutcomeKind.Delivered, DateTimeOffset.UtcNow));
+        await recorder.RecordAsync(new(
+            prediction, DeliveryOutcomeKind.HardBounce, DateTimeOffset.UtcNow));
+
+        var result = await new ConfidenceCalibrationService(recorder)
+            .EvaluateAsync(new CalibrationQuery());
+
+        Assert.Equal(0, result.Metrics.FalseValidRate);
+        Assert.Equal(0, result.Metrics.Precision);
+        Assert.Equal(0.25, result.Metrics.BrierScore);
+    }
+
+    [Fact]
     public async Task RiskIntelligence_DoesNotChangeDeliverabilityForKnownSuppression()
     {
         var source = new ExistingIntelligenceRiskDataSource();
@@ -446,7 +537,7 @@ public sealed class ProductionIntelligenceTests
         DetailedStatus = DetailedStatus.MailboxAccepted,
         DetailedStatuses = [DetailedStatus.MailboxAccepted],
         Metadata = new ValidationResultMetadata(
-            new ValidationPolicyVersions("1.1.0", "2.2.0", "3.1.0", "1.1.0"),
+            new ValidationPolicyVersions("1.1.0", "2.3.0", "3.1.0", "1.2.0"),
             DateTimeOffset.UtcNow,
             MxTopologyFingerprint: "topology-1")
     };

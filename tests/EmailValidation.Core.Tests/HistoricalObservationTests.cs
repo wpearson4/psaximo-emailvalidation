@@ -41,7 +41,8 @@ public sealed class HistoricalObservationTests
                 randomAccepted ? SmtpResponseCategory.GatewayAccepted : SmtpResponseCategory.Accepted,
                 DateTimeOffset.UtcNow, 10,
                 GatewayProvider: GatewayProvider.MicrosoftExchangeOnlineProtection,
-                TopologyFingerprint: "0:tenant.mail.protection.outlook.com"));
+                TopologyFingerprint: "0:tenant.mail.protection.outlook.com",
+                RecipientEvidenceQualified: true));
             observations.Add(new ValidationObservation(
                 "example.com", ValidationObservationType.CatchAllProbe, MailProvider.Microsoft365,
                 "tenant.mail.protection.outlook.com",
@@ -64,8 +65,35 @@ public sealed class HistoricalObservationTests
         Assert.Equal(expectedReliability, result.VerificationReliabilityLevel);
     }
 
+    [Fact]
+    public void Aggregator_ExcludesContestedMxOutcomeFromRecipientRates()
+    {
+        var observations = new[]
+        {
+            MailboxObservation(
+                SmtpResponseCategory.RecipientRejected,
+                recipientEvidenceContested: true),
+            MailboxObservation(SmtpResponseCategory.Accepted)
+        };
+
+        var result = new HistoricalSignalAggregator().Aggregate(observations);
+
+        Assert.Equal(1, result.TargetAcceptedCount);
+        Assert.Equal(0, result.TargetRejectedCount);
+        Assert.Equal(1.0, result.TargetAcceptanceRate);
+        Assert.Equal(0.0, result.RecipientRejectionRate);
+    }
+
     private static ValidationObservation Observation(CatchAllStatus catchAll, SmtpResponseCategory category) => new(
         "example.com", ValidationObservationType.CatchAllProbe, MailProvider.GenericSmtp,
         "mx.example.com", catchAll, 0.85, category, DateTimeOffset.UtcNow, 10,
         catchAll == CatchAllStatus.LikelyCatchAll ? 1 : 0);
+
+    private static ValidationObservation MailboxObservation(
+        SmtpResponseCategory category,
+        bool recipientEvidenceContested = false) => new(
+        "example.com", ValidationObservationType.MailboxProbe, MailProvider.GenericSmtp,
+        "mx.example.com", CatchAllStatus.Unknown, 0, category, DateTimeOffset.UtcNow, 10,
+        RecipientEvidenceQualified: true,
+        RecipientEvidenceContested: recipientEvidenceContested);
 }

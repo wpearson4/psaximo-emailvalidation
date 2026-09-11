@@ -273,8 +273,10 @@ public sealed class SmtpBannerProviderDetector : ISmtpProviderDetector
 
     public ProviderDetectionResult Detect(SmtpSessionEvidence evidence)
     {
-        var source = string.Join(' ', new[] { evidence.ServerBanner, evidence.EhloHost }
-            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        // EhloHost is the validator's own client identity, not a server claim.
+        // Only server-controlled greeting text may corroborate the destination
+        // provider here; MX-host evidence is evaluated by MailProviderDetector.
+        var source = evidence.ServerBanner ?? string.Empty;
         foreach (var signature in Signatures)
         {
             if (!source.Contains(signature.Token, StringComparison.OrdinalIgnoreCase)) continue;
@@ -282,18 +284,18 @@ public sealed class SmtpBannerProviderDetector : ISmtpProviderDetector
                 signature.Provider,
                 signature.Confidence,
                 MatchedSignature: signature.Token,
-                Evidence: ["SmtpGreetingOrEhlo"],
+                Evidence: ["SmtpGreeting"],
                 DetectedAtUtc: DateTimeOffset.UtcNow,
-                DetectionVersion: "smtp-banner-1.0.0",
+                DetectionVersion: "smtp-banner-1.1.0",
                 SmtpObservedProvider: signature.Provider,
                 SmtpEvidenceConfidence: signature.Confidence);
         }
         return new ProviderDetectionResult(
             MailProvider.Unknown,
             0,
-            Evidence: source.Length == 0 ? [] : ["UnrecognizedSmtpGreetingOrEhlo"],
+            Evidence: source.Length == 0 ? [] : ["UnrecognizedSmtpGreeting"],
             DetectedAtUtc: DateTimeOffset.UtcNow,
-            DetectionVersion: "smtp-banner-1.0.0");
+            DetectionVersion: "smtp-banner-1.1.0");
     }
 }
 

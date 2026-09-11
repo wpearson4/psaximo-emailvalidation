@@ -36,7 +36,7 @@ public sealed class ClassificationModelOptions
     public double AbstentionUpperBound { get; set; } = 0.6;
     public double MinimumVerificationReliability { get; set; } = 0.25;
     public double MaximumMissingFeatureFraction { get; set; } = 0.35;
-    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v1";
+    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v2";
 }
 
 public sealed class EmailValidationProjectionOptions
@@ -283,9 +283,9 @@ public sealed class ResultReuseOptions
 public sealed class ValidationPolicyOptions
 {
     public string ValidationEngineVersion { get; set; } = "1.1.0";
-    public string ClassificationPolicyVersion { get; set; } = "2.2.0";
+    public string ClassificationPolicyVersion { get; set; } = "2.3.0";
     public string ConfidenceModelVersion { get; set; } = "3.1.0";
-    public string ProviderStrategyVersion { get; set; } = "1.1.0";
+    public string ProviderStrategyVersion { get; set; } = "1.2.0";
 
     public ValidationPolicyVersions ToVersions() => new(
         ValidationEngineVersion,

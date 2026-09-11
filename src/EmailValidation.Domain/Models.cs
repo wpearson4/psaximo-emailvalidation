@@ -31,7 +31,10 @@ public enum UnknownCause
     ConflictingMxEvidence,
     AmbiguousSmtpResponse,
     ExecutionFailure,
-    NoEligibleOutboundIdentity
+    NoEligibleOutboundIdentity,
+    AcceptAllPendingConfirmation,
+    NonDiscriminatingSmtpEndpoint,
+    ConflictingProviderEvidence
 }
 public enum ProbeSenderHealthStatus { NotChecked, NotConfigured, InvalidSyntax, DomainNotFound, NoMailRouting, DnsUnavailable, Valid }
 public enum ReasonCode
@@ -52,7 +55,8 @@ public enum ReasonCode
     RelayDenied, ProbeSenderNotConfigured, ProbeSenderUnhealthy, MxResultsConflicting,
     LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported,
     NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid,
-    AcceptAllObserved, RecipientSpecificBehavior, AcceptAllCandidate
+    AcceptAllObserved, RecipientSpecificBehavior, AcceptAllCandidate,
+    ProviderEvidenceConflicting
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -265,19 +269,43 @@ public sealed record CatchAllDetectionResult(
     string? Detail = null,
     double Confidence = 0)
 {
+    public const string CurrentRecipientBehaviorEvidenceContractVersion = "recipient-behavior-evidence-v2";
     public bool RandomRecipientAccepted => Accepted > 0;
     public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
     public int IndependentObservationCount { get; init; }
+    public string? EvidenceContractVersion { get; init; }
     [JsonIgnore]
-    public DomainRecipientBehavior EffectiveRecipientBehavior => RecipientBehavior != DomainRecipientBehavior.Unknown
-        ? RecipientBehavior
-        : Status switch
+    public bool HasIndependentRoutingEvidence =>
+        Status == CatchAllStatus.LikelyCatchAll &&
+        RecipientBehavior == DomainRecipientBehavior.CatchAll &&
+        ReasonCode == CatchAllReasonCode.IndependentRoutingEvidence;
+    [JsonIgnore]
+    public bool HasConfirmedAcceptAllEvidence =>
+        RecipientBehavior == DomainRecipientBehavior.AcceptAll &&
+        ReasonCode == CatchAllReasonCode.AcceptAllConfirmed &&
+        string.Equals(
+            EvidenceContractVersion,
+            CurrentRecipientBehaviorEvidenceContractVersion,
+            StringComparison.Ordinal) &&
+        IndependentObservationCount >= 2 &&
+        Probes >= 2 && Accepted == Probes && Rejected == 0 && Ambiguous == 0;
+    [JsonIgnore]
+    public DomainRecipientBehavior EffectiveRecipientBehavior => RecipientBehavior switch
+    {
+        DomainRecipientBehavior.CatchAll => HasIndependentRoutingEvidence
+            ? DomainRecipientBehavior.CatchAll
+            : DomainRecipientBehavior.Unknown,
+        DomainRecipientBehavior.AcceptAll => HasConfirmedAcceptAllEvidence
+            ? DomainRecipientBehavior.AcceptAll
+            : DomainRecipientBehavior.Unknown,
+        DomainRecipientBehavior.RecipientSpecific => DomainRecipientBehavior.RecipientSpecific,
+        _ => Status switch
         {
             CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll =>
                 DomainRecipientBehavior.RecipientSpecific,
-            CatchAllStatus.LikelyCatchAll => DomainRecipientBehavior.CatchAll,
             _ => DomainRecipientBehavior.Unknown
-        };
+        }
+    };
     public IReadOnlyList<SmtpProbeResult> ProbeResults { get; init; } = [];
     public CatchAllReasonCode ReasonCode { get; init; }
     public DateTimeOffset? ObservedAt { get; init; }
@@ -300,7 +328,8 @@ public enum CatchAllReasonCode
     RecipientSpecificObserved,
     IndependentRoutingEvidence,
     AcceptAllCandidate,
-    AcceptAllConfirmed
+    AcceptAllConfirmed,
+    TargetRecipientContradictedAcceptAll
 }
 
 public sealed record DomainValidationData(

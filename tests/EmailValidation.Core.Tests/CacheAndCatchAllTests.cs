@@ -45,7 +45,7 @@ public sealed class CacheAndCatchAllTests
         Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
         Assert.NotEqual(DomainRecipientBehavior.CatchAll, result.RecipientBehavior);
         Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, result.ReasonCode);
-        Assert.Equal(1, result.IndependentObservationCount);
+        Assert.Equal(0, result.IndependentObservationCount);
         Assert.True(result.RefreshInconclusive);
         Assert.Equal(2, result.Accepted);
     }
@@ -117,6 +117,32 @@ public sealed class CacheAndCatchAllTests
     }
 
     [Fact]
+    public async Task CatchAll_AdaptivePlanner_CollectsSecondRejectionForStrongDifferentiation()
+    {
+        var options = new EmailValidationOptions
+        {
+            CatchAll = new CatchAllOptions
+            {
+                ProbeCount = 1,
+                MaxProbeCount = 3,
+                MinimumAcceptedProbes = 2
+            }
+        };
+        var detector = new CatchAllDetector(
+            new FakeProbe(SmtpMailboxStatus.Rejected),
+            Microsoft.Extensions.Options.Options.Create(options));
+
+        var result = await detector.DetectAsync(
+            "example.com", "mx.example.com", MailProvider.GenericSmtp);
+
+        Assert.Equal(CatchAllStatus.NotCatchAll, result.Status);
+        Assert.Equal(DomainRecipientBehavior.RecipientSpecific, result.RecipientBehavior);
+        Assert.Equal(2, result.Probes);
+        Assert.Equal(2, result.Rejected);
+        Assert.True(result.Confidence >= .95);
+    }
+
+    [Fact]
     public async Task CatchAll_AmbiguousResponse_IsUnknown()
     {
         var detector = Detector(SmtpMailboxStatus.TemporaryFailure);
@@ -147,7 +173,7 @@ public sealed class CacheAndCatchAllTests
     {
         var options = new EmailValidationOptions
         {
-            CatchAll = new CatchAllOptions { ProbeCount = 2, MaxProbeCount = 2, MinimumAcceptedProbes = 2 }
+            CatchAll = new CatchAllOptions { ProbeCount = 2, MaxProbeCount = 3, MinimumAcceptedProbes = 2 }
         };
         var detector = new CatchAllDetector(
             new SequenceProbe(SmtpMailboxStatus.Accepted, SmtpMailboxStatus.Rejected),
@@ -157,6 +183,7 @@ public sealed class CacheAndCatchAllTests
 
         Assert.Equal(CatchAllStatus.Unknown, result.Status);
         Assert.Equal(DomainRecipientBehavior.Unknown, result.RecipientBehavior);
+        Assert.Equal(2, result.Probes);
     }
 
     private static CatchAllDetector Detector(SmtpMailboxStatus status, int probeCount = 1)
@@ -186,7 +213,7 @@ public sealed class CacheAndCatchAllTests
     private sealed class FakeProbe(SmtpMailboxStatus status) : ISmtpMailboxProbe
     {
         public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new SmtpProbeResult(status, null, null, TimeSpan.Zero));
+            Task.FromResult(Probe(status, mxHost));
     }
 
     private sealed class SequenceProbe(params SmtpMailboxStatus[] statuses) : ISmtpMailboxProbe
@@ -197,6 +224,34 @@ public sealed class CacheAndCatchAllTests
             string mxHost,
             string recipient,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(new SmtpProbeResult(statuses[_index++], null, null, TimeSpan.Zero));
+            Task.FromResult(Probe(statuses[_index++], mxHost));
+    }
+
+    private static SmtpProbeResult Probe(SmtpMailboxStatus status, string host)
+    {
+        var (code, enhanced, category, text) = status switch
+        {
+            SmtpMailboxStatus.Accepted =>
+                (250, "2.1.5", SmtpResponseCategory.Accepted, SmtpResponseTextClassification.Success),
+            SmtpMailboxStatus.Rejected =>
+                (550, "5.1.1", SmtpResponseCategory.RecipientRejected,
+                    SmtpResponseTextClassification.RecipientDoesNotExist),
+            _ =>
+                (451, "4.3.0", SmtpResponseCategory.TemporaryFailure,
+                    SmtpResponseTextClassification.TemporaryCondition)
+        };
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, code, enhanced, category, text, 1,
+            MailProvider.GenericSmtp, host, 1, DateTimeOffset.UtcNow);
+        var session = new SmtpSessionEvidence(
+            category == SmtpResponseCategory.Accepted ? null : SmtpCommand.RcptTo,
+            [
+                new(SmtpCommand.MailFrom, 250, "2.1.0", SmtpResponseCategory.Accepted,
+                    SmtpResponseTextClassification.Success, TimeSpan.Zero),
+                new(SmtpCommand.RcptTo, code, enhanced, category, text, TimeSpan.Zero)
+            ],
+            host, TimeSpan.Zero, "probe@validator.example");
+        return new SmtpProbeResult(status, code, enhanced, TimeSpan.Zero,
+            Evidence: evidence, SessionEvidence: session);
     }
 }

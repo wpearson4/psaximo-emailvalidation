@@ -240,7 +240,15 @@ public sealed class AdvancedIntelligenceTests
         MailInfrastructure = new MailInfrastructureResult(
             MailInfrastructureStatus.Routable, ["mx.example.test"], [], 0.95),
         CatchAll = new CatchAllDetectionResult(catchAll, 1, catchAll == CatchAllStatus.LikelyCatchAll ? 1 : 0,
-            catchAll == CatchAllStatus.NotCatchAll ? 1 : 0, 0, Confidence: 0.90),
+            catchAll == CatchAllStatus.NotCatchAll ? 1 : 0, 0, Confidence: 0.90)
+        {
+            RecipientBehavior = catchAll == CatchAllStatus.LikelyCatchAll
+                ? DomainRecipientBehavior.CatchAll
+                : DomainRecipientBehavior.Unknown,
+            ReasonCode = catchAll == CatchAllStatus.LikelyCatchAll
+                ? CatchAllReasonCode.IndependentRoutingEvidence
+                : CatchAllReasonCode.None
+        },
         ObservedAt = DateTimeOffset.UtcNow
     };
 

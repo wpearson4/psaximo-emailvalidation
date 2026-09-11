@@ -49,7 +49,7 @@ public sealed class ProviderStrategyTests
     [Fact]
     public async Task MicrosoftTargetAcceptedAndRandomRejected_IsStrongDifferentiatedEvidence()
     {
-        var context = Context(MailProvider.Microsoft365, SmtpResponseCategory.Accepted, CatchAllStatus.LikelyNotCatchAll);
+        var context = Context(MailProvider.Microsoft365, SmtpResponseCategory.Accepted, CatchAllStatus.NotCatchAll);
         var result = await new Microsoft365Strategy().EvaluateAsync(context);
 
         Assert.Equal(SmtpResponseCategory.Accepted, result.EffectiveCategory);
@@ -57,6 +57,19 @@ public sealed class ProviderStrategyTests
         Assert.Equal(MailProvider.Microsoft365, result.MailboxProvider);
         Assert.Equal(VerificationReliabilityLevel.High, result.VerificationReliabilityLevel);
         Assert.Equal(EmailValidationStatus.Valid, Classify(context, result).Status);
+    }
+
+    [Fact]
+    public async Task OneRandomRejection_IsLikelyValidRatherThanDefinitive()
+    {
+        var context = Context(
+            MailProvider.Microsoft365,
+            SmtpResponseCategory.Accepted,
+            CatchAllStatus.LikelyNotCatchAll);
+        var result = await new Microsoft365Strategy().EvaluateAsync(context);
+
+        Assert.Equal(AcceptanceStrength.High, result.AcceptanceStrength);
+        Assert.Equal(EmailValidationStatus.LikelyValid, Classify(context, result).Status);
     }
 
     [Fact]
@@ -134,6 +147,27 @@ public sealed class ProviderStrategyTests
     }
 
     [Fact]
+    public async Task BareAcceptedStatus_DoesNotBecomeMailboxEvidence()
+    {
+        var original = Context(
+            MailProvider.GenericSmtp,
+            SmtpResponseCategory.Accepted,
+            CatchAllStatus.NotCatchAll);
+        var context = original with
+        {
+            MailboxProbe = new SmtpProbeResult(
+                SmtpMailboxStatus.Accepted, 250, "accepted", TimeSpan.Zero)
+        };
+
+        var provider = await new GenericSmtpStrategy().EvaluateAsync(context);
+        var result = Classify(context, provider);
+
+        Assert.Equal(SmtpResponseCategory.VerificationBlocked, provider.EffectiveCategory);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, result.ReasonCodes);
+    }
+
+    [Fact]
     public void Resolver_UsesGenericStrategyAsFallback()
     {
         IMailProviderStrategy[] strategies = [new Microsoft365Strategy(), new GenericSmtpStrategy()];
@@ -194,7 +228,23 @@ public sealed class ProviderStrategyTests
         SmtpResponseCategory category,
         CatchAllStatus catchAll)
     {
-        var catchAllEvidence = new CatchAllDetectionResult(catchAll, 1, 0, 1, 0, Confidence: 0.85);
+        var catchAllEvidence = new CatchAllDetectionResult(
+            catchAll,
+            catchAll == CatchAllStatus.NotCatchAll ? 2 : 1,
+            catchAll == CatchAllStatus.LikelyCatchAll ? 1 : 0,
+            catchAll == CatchAllStatus.NotCatchAll
+                ? 2
+                : catchAll == CatchAllStatus.LikelyCatchAll ? 0 : 1,
+            0,
+            Confidence: 0.85)
+        {
+            RecipientBehavior = catchAll == CatchAllStatus.LikelyCatchAll
+                ? DomainRecipientBehavior.CatchAll
+                : DomainRecipientBehavior.Unknown,
+            ReasonCode = catchAll == CatchAllStatus.LikelyCatchAll
+                ? CatchAllReasonCode.IndependentRoutingEvidence
+                : CatchAllReasonCode.None
+        };
         var domain = new DomainIntelligence
         {
             Domain = "example.com",

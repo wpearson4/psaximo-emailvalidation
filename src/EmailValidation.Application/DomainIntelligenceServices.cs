@@ -26,6 +26,9 @@ public sealed class DomainIntelligenceFreshnessPolicy(
         if (!string.Equals(existing.IntelligencePolicyVersion, _options.DomainIntelligence.PolicyVersion,
                 StringComparison.Ordinal))
             return new(false, false, "The domain-intelligence policy version changed.");
+        if (!string.Equals(existing.StrategyVersion, _options.Policy.ProviderStrategyVersion,
+                StringComparison.Ordinal))
+            return new(false, false, "The provider strategy version changed.");
         if (current is null)
             return new(true, IsCatchAllFresh(existing, now), "Fresh intelligence can be reused.");
 
@@ -378,14 +381,20 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             StrategyVersion = string.IsNullOrWhiteSpace(detection.StrategyVersion)
                 ? _options.Policy.ProviderStrategyVersion
                 : detection.StrategyVersion,
+            EvidenceContractVersion =
+                CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
             RefreshAttemptedAt = detection.RefreshAttemptedAt ?? now
         };
+        var hasStrongControlContradiction =
+            detection.ProbeResults.Any(SmtpRecipientEvidencePolicy.HasStrongRecipientRejection);
         if (detection.EffectiveRecipientBehavior == DomainRecipientBehavior.Unknown &&
+            !hasStrongControlContradiction &&
             CanPreserveAfterInconclusiveRefresh(current))
         {
             detection = current.CatchAll with
             {
                 Detail = $"{current.CatchAll.Detail} The latest refresh was inconclusive; historical evidence was preserved.",
+                ProbeResults = detection.ProbeResults,
                 RefreshAttemptedAt = now,
                 RefreshInconclusive = true
             };
@@ -398,8 +407,8 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             ObservedAt = now
         };
         await _cache.StoreAsync(updated, DomainLifetime(current.MailRouting?.TimeToLive), cancellationToken).ConfigureAwait(false);
-        if (detection.Status == CatchAllStatus.LikelyCatchAll &&
-            current.CatchAll.Status != CatchAllStatus.LikelyCatchAll)
+        if (detection.HasIndependentRoutingEvidence &&
+            !current.CatchAll.HasIndependentRoutingEvidence)
             _persistenceMetrics.RecordCatchAllDiscovered();
         return new(updated, probeCount);
     }
@@ -428,7 +437,8 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
     }
 
     private bool CanPreserveAfterInconclusiveRefresh(DomainIntelligence current) =>
-        current.CatchAll.Status == CatchAllStatus.LikelyCatchAll &&
+        (current.CatchAll.HasIndependentRoutingEvidence ||
+         current.CatchAll.HasConfirmedAcceptAllEvidence) &&
         string.Equals(current.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal) &&
         string.Equals(Fingerprints.Mx(current), current.Provider.TopologyFingerprint, StringComparison.Ordinal);
 
@@ -496,7 +506,10 @@ internal static class Fingerprints
         $"{authentication.Dkim.State}");
 
     public static string CreateCatchAll(CatchAllDetectionResult catchAll) => Hash(
-        $"{catchAll.Status}|{catchAll.EffectiveRecipientBehavior}|{catchAll.ReasonCode}|{catchAll.Confidence:F6}|{catchAll.StrategyVersion}");
+        $"{catchAll.Status}|{catchAll.EffectiveRecipientBehavior}|{catchAll.ReasonCode}|" +
+        $"{catchAll.Confidence:F6}|{catchAll.StrategyVersion}|{catchAll.EvidenceContractVersion}|" +
+        $"{catchAll.IndependentObservationCount}|{catchAll.Probes}|{catchAll.Accepted}|" +
+        $"{catchAll.Rejected}|{catchAll.Ambiguous}");
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

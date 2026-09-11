@@ -29,6 +29,56 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public void Policy_MxConflictOverridesLegacyTerminalRecipientReason()
+    {
+        var policy = new RevalidationPolicy(
+            new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+            Options(true));
+        var result = Result(EmailValidationStatus.Unknown, ReasonCode.MxResultsConflicting) with
+        {
+            ReasonCodes = [ReasonCode.MailboxRejected, ReasonCode.MxResultsConflicting],
+            MxValidation = new MxValidationEvidence([], [], MxConsensus.Conflicting)
+        };
+
+        var decision = policy.Evaluate(result, new RevalidationContext(1));
+
+        Assert.True(decision.ShouldRetry);
+        Assert.Equal(ReasonCode.MxResultsConflicting, decision.Reason);
+    }
+
+    [Fact]
+    public void Policy_AcceptAllCandidateGetsAnIndependentRetry()
+    {
+        var policy = new RevalidationPolicy(
+            new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+            Options(true));
+
+        var decision = policy.Evaluate(
+            Result(EmailValidationStatus.Unknown, ReasonCode.AcceptAllCandidate),
+            new RevalidationContext(1));
+
+        Assert.True(decision.ShouldRetry);
+        Assert.Equal(ReasonCode.AcceptAllCandidate, decision.Reason);
+    }
+
+    [Fact]
+    public void Policy_CurrentTimeoutTakesPriorityOverCandidateConfirmation()
+    {
+        var policy = new RevalidationPolicy(
+            new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+            Options(true));
+        var result = Result(EmailValidationStatus.Unknown, ReasonCode.AcceptAllCandidate) with
+        {
+            ReasonCodes = [ReasonCode.AcceptAllCandidate, ReasonCode.SmtpTimeout]
+        };
+
+        var decision = policy.Evaluate(result, new RevalidationContext(1));
+
+        Assert.True(decision.ShouldRetry);
+        Assert.Equal(ReasonCode.SmtpTimeout, decision.Reason);
+    }
+
+    [Fact]
     public void Policy_RetriesMailboxFullOnlyWhenResponseIntelligenceIsEnforced()
     {
         var policy = new RevalidationPolicy(
@@ -769,16 +819,16 @@ public sealed class RevalidationTests
         public Task<SmtpReputationEvidence> EvaluateAsync(
             SmtpReputationBudgetContext context,
             CancellationToken cancellationToken = default) => Task.FromResult(new SmtpReputationEvidence
-        {
-            Decision = SmtpProbeBudgetDecision.CircuitOpen,
-            WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
-            Mode = SmtpReputationProtectionMode.Enforced,
-            RestrictingScope = SmtpReputationScopeType.Provider,
-            CircuitState = SmtpReputationState.CircuitOpen,
-            RetryAtUtc = retryAt,
-            EvaluatedAtUtc = Now,
-            PolicyVersion = "test-v1"
-        });
+            {
+                Decision = SmtpProbeBudgetDecision.CircuitOpen,
+                WouldDecision = SmtpProbeBudgetDecision.CircuitOpen,
+                Mode = SmtpReputationProtectionMode.Enforced,
+                RestrictingScope = SmtpReputationScopeType.Provider,
+                CircuitState = SmtpReputationState.CircuitOpen,
+                RetryAtUtc = retryAt,
+                EvaluatedAtUtc = Now,
+                PolicyVersion = "test-v1"
+            });
 
         public Task RecordAsync(
             SmtpReputationObservation observation,

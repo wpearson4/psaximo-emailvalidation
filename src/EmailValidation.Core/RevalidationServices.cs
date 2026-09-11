@@ -27,9 +27,35 @@ public sealed class RevalidationPolicy(
         ReasonCode.LocalCooldown,
         ReasonCode.ReputationPolicyDeferred,
         ReasonCode.RetryRecommended,
+        ReasonCode.AcceptAllCandidate,
         ReasonCode.MailboxAcceptanceAmbiguous,
         ReasonCode.MxResultsConflicting,
+        ReasonCode.ProviderEvidenceConflicting,
         ReasonCode.MailboxFull
+    ];
+
+    private static readonly ReasonCode[] RetryPriority =
+    [
+        ReasonCode.MxResultsConflicting,
+        ReasonCode.ProviderEvidenceConflicting,
+        ReasonCode.DnsTimeout,
+        ReasonCode.DnsFailure,
+        ReasonCode.LocalCooldown,
+        ReasonCode.ReputationPolicyDeferred,
+        ReasonCode.RateLimited,
+        ReasonCode.Greylisted,
+        ReasonCode.SmtpTimeout,
+        ReasonCode.Timeout,
+        ReasonCode.SmtpConnectionFailure,
+        ReasonCode.TemporarySmtpFailure,
+        ReasonCode.TemporaryFailure,
+        ReasonCode.ProviderBlockedVerification,
+        ReasonCode.ProviderVerificationBlocked,
+        ReasonCode.PolicyBlock,
+        ReasonCode.MailboxFull,
+        ReasonCode.MailboxAcceptanceAmbiguous,
+        ReasonCode.AcceptAllCandidate,
+        ReasonCode.RetryRecommended
     ];
 
     private readonly RevalidationOptions _options = options.Value.Revalidation;
@@ -59,12 +85,14 @@ public sealed class RevalidationPolicy(
             IntelligenceMode: SmtpResponseIntelligenceMode.Enforced,
             Decision.RetryDisposition: not SmtpRetryDisposition.None
         };
+        var hasConflictingMxEvidence = result.MxValidation?.Consensus == MxConsensus.Conflicting ||
+            result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting);
         if (!_options.Enabled || (result.Status != EmailValidationStatus.Unknown && !enforcedIntelligenceRetry) ||
-            result.ReasonCodes.Any(TerminalReasons.Contains) ||
+            (!hasConflictingMxEvidence && result.ReasonCodes.Any(TerminalReasons.Contains)) ||
             result.MailingRisk?.RiskReasons.Contains(MailingRiskReason.KnownSuppression) == true)
             return new(false, null, maximum);
 
-        var reason = result.ReasonCodes.FirstOrDefault(RetryableReasons.Contains);
+        var reason = RetryPriority.FirstOrDefault(result.ReasonCodes.Contains);
         if (!RetryableReasons.Contains(reason))
             return new(false, null, maximum);
 

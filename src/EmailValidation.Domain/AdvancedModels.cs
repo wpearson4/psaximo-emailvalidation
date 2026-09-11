@@ -43,7 +43,11 @@ public enum DetailedStatus
     CatchAllConfirmed,
     CatchAllGatewayAmbiguous,
     CatchAllHistorical,
-    SmtpUtf8Unsupported
+    SmtpUtf8Unsupported,
+    AcceptAllCandidate,
+    AcceptAllConfirmed,
+    ConflictingMxEvidence,
+    ConflictingProviderEvidence
 }
 
 public enum EvidenceSource
