@@ -328,6 +328,30 @@ public sealed class EmailValidatorTests
         Assert.Equal(VerificationReliabilityLevel.Low, result.ProviderValidation?.VerificationReliabilityLevel);
     }
 
+    [Fact]
+    public async Task TemporaryPrimaryMx_FollowedByLocalCooldown_PreservesAttemptedEvidence()
+    {
+        var smtp = new MxSequenceSmtp(new Dictionary<string, SmtpProbeResult>
+        {
+            ["mx1.example.com"] = TemporaryFailure("mx1.example.com"),
+            ["mx2.example.com"] = LocalCooldown("mx2.example.com")
+        });
+        var settings = LiveSettings();
+        settings.Smtp.MaxMxAttempts = 2;
+        var validator = CreateValidator(
+            new MultiMxDns(), settings, smtp: smtp,
+            catchAll: new StaticCatchAll(CatchAllStatus.Unknown));
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true, Verbose: true));
+
+        Assert.True(result.ProbeAttempted);
+        Assert.Equal(SmtpProbeDisposition.Completed, result.ProbeDisposition);
+        Assert.Equal("mx1.example.com", result.SelectedMx);
+        Assert.Equal(SmtpResponseCategory.TemporaryFailure, result.ProviderValidation?.EffectiveCategory);
+        Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
+    }
+
     private static EmailValidator CreateValidator(
         IDnsMailResolver dns,
         EmailValidationOptions? settings = null,
@@ -696,6 +720,29 @@ public sealed class EmailValidatorTests
         return new(SmtpMailboxStatus.Accepted, 250, evidence.SanitizedResponse, TimeSpan.Zero,
             Evidence: evidence, SessionEvidence: session);
     }
+
+    private static SmtpProbeResult TemporaryFailure(string host)
+    {
+        var evidence = new SmtpEvidence(
+            SmtpCommand.RcptTo, 451, "4.7.1", SmtpResponseCategory.TemporaryFailure,
+            SmtpResponseTextClassification.TemporaryCondition, 1, MailProvider.GenericSmtp,
+            host, 1, DateTimeOffset.UtcNow, "451 4.7.1 Try again later");
+        var session = RecipientSession(host, evidence.Category, 451, "4.7.1",
+            SmtpResponseTextClassification.TemporaryCondition);
+        return new(SmtpMailboxStatus.TemporaryFailure, 451, evidence.SanitizedResponse, TimeSpan.Zero,
+            Evidence: evidence, SessionEvidence: session);
+    }
+
+    private static SmtpProbeResult LocalCooldown(string host) => new(
+        SmtpMailboxStatus.NotAttempted, null, "Local cooldown", TimeSpan.Zero, Attempts: 0,
+        Evidence: new SmtpEvidence(
+            SmtpCommand.Connect, null, null, SmtpResponseCategory.LocalCooldown,
+            SmtpResponseTextClassification.VerificationUnavailable, 0, MailProvider.GenericSmtp,
+            host, 0, DateTimeOffset.UtcNow, "Local cooldown"))
+    {
+        Disposition = SmtpProbeDisposition.LocalCooldown,
+        RetryAfter = DateTimeOffset.UtcNow.AddMinutes(1)
+    };
 
     private static SmtpSessionEvidence RecipientSession(
         string host, SmtpResponseCategory category, int code, string enhanced,

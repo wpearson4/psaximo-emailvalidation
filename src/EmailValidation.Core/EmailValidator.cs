@@ -352,6 +352,10 @@ public sealed class EmailValidator(
         var consensus = CalculateMxConsensus(attempts, domain.CatchAll.Status);
         var selected = attempts.FirstOrDefault(IsStrongNegative)
             ?? attempts.FirstOrDefault(IsPositive)
+            // A later MX can be skipped after the first live attempt activates local
+            // pacing. Preserve the actual SMTP evidence instead of replacing it with
+            // a control-path deferral that did not contact the destination.
+            ?? attempts.LastOrDefault(result => result.ProbeAttempted)
             ?? attempts.Last();
         return (selected, new MxValidationEvidence(attempts, attemptedHosts, consensus));
     }
