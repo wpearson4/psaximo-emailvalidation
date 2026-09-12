@@ -145,6 +145,132 @@ public sealed class ValidationJobResultProjector(
     }
 }
 
+/// <summary>
+/// Reconciles domain-scoped accept-all evidence without changing mailbox-scoped evidence.
+/// A later independent observation can confirm that a public SMTP endpoint is
+/// non-discriminating, so final candidate rows for the same domain should expose the
+/// stronger domain conclusion even though those mailboxes were not probed again.
+/// </summary>
+public static class ValidationJobResultEvidenceReconciler
+{
+    public static EmailValidationResult Normalize(EmailValidationResult result)
+    {
+        if (!HasConfirmedAcceptAll(result) ||
+            result.Status != EmailValidationStatus.Unknown ||
+            !HasCandidateArtifacts(result))
+            return result;
+
+        return ApplyConfirmedAcceptAll(result, result.DomainIntelligence!);
+    }
+
+    public static EmailValidationResult? ReconcilePeer(
+        EmailValidationResult peer,
+        EmailValidationResult confirmed)
+    {
+        if (peer.ResultState != ValidationResultState.Final ||
+            peer.Status != EmailValidationStatus.Unknown ||
+            !HasCandidateArtifacts(peer) ||
+            !HasConfirmedAcceptAll(confirmed) ||
+            !string.Equals(Domain(peer), Domain(confirmed), StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        return ApplyConfirmedAcceptAll(peer, confirmed.DomainIntelligence!);
+    }
+
+    public static string? Domain(EmailValidationResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.DomainIntelligence?.Domain))
+            return result.DomainIntelligence.Domain.Trim().TrimEnd('.').ToLowerInvariant();
+        var email = result.NormalizedEmail ?? result.Email;
+        var separator = email.LastIndexOf('@');
+        return separator >= 0 && separator < email.Length - 1
+            ? email[(separator + 1)..].Trim().TrimEnd('.').ToLowerInvariant()
+            : null;
+    }
+
+    public static string? Domain(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        var separator = email.LastIndexOf('@');
+        return separator >= 0 && separator < email.Length - 1
+            ? email[(separator + 1)..].Trim().TrimEnd('.').ToLowerInvariant()
+            : null;
+    }
+
+    private static bool HasConfirmedAcceptAll(EmailValidationResult result) =>
+        result.DomainIntelligence?.CatchAll.HasConfirmedAcceptAllEvidence == true;
+
+    private static bool HasCandidateArtifacts(EmailValidationResult result) =>
+        result.DomainIntelligence?.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate ||
+        result.CatchAllEvidence?.ReasonCode == CatchAllReasonCode.AcceptAllCandidate ||
+        result.ReasonCodes.Contains(ReasonCode.AcceptAllCandidate) ||
+        result.UnknownContext?.Cause == UnknownCause.AcceptAllPendingConfirmation ||
+        result.SubStatus == DetailedStatus.AcceptAllCandidate ||
+        result.DetailedStatuses.Contains(DetailedStatus.AcceptAllCandidate);
+
+    private static EmailValidationResult ApplyConfirmedAcceptAll(
+        EmailValidationResult result,
+        DomainIntelligence confirmedDomain)
+    {
+        var confirmed = confirmedDomain.CatchAll;
+        var reasons = result.ReasonCodes
+            .Where(reason => reason is not ReasonCode.AcceptAllCandidate and not ReasonCode.RetryRecommended)
+            .Append(ReasonCode.AcceptAllObserved)
+            .Distinct()
+            .ToArray();
+        var details = result.DetailedStatuses
+            .Where(detail => detail is not DetailedStatus.AcceptAllCandidate and not DetailedStatus.MailboxAccepted)
+            .Append(DetailedStatus.AcceptAllConfirmed)
+            .Distinct()
+            .ToArray();
+        var subStatuses = result.SubStatuses
+            .Where(detail => detail is not DetailedStatus.AcceptAllCandidate and not DetailedStatus.MailboxAccepted)
+            .Append(DetailedStatus.AcceptAllConfirmed)
+            .Distinct()
+            .ToArray();
+        var confidenceEvidence = result.ConfidenceEvidence
+            .Where(item => !string.Equals(item.Evidence, "Accept-all candidate", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (!confidenceEvidence.Any(item =>
+                string.Equals(item.Evidence, "Accept-all SMTP behavior", StringComparison.OrdinalIgnoreCase)))
+            confidenceEvidence.Add(new(
+                "Accept-all SMTP behavior",
+                0,
+                "Independent observations established that the public SMTP endpoint accepts arbitrary recipients."));
+
+        var staged = result with
+        {
+            Confidence = Math.Max(result.Confidence, confirmed.Confidence),
+            ConfidenceReason = "Mailbox existence is uncertain because the public SMTP endpoint accepts arbitrary recipients; this establishes accept-all behavior, not catch-all routing.",
+            Checks = result.Checks with { CatchAll = confirmed.Status },
+            DomainIntelligence = confirmedDomain,
+            CatchAllEvidence = confirmed,
+            CatchAll = new CatchAllValidationDetails(confirmed.Status, confirmed.Confidence),
+            ReasonCodes = reasons,
+            DetailedStatus = DetailedStatus.AcceptAllConfirmed,
+            DetailedStatuses = details,
+            SubStatus = DetailedStatus.AcceptAllConfirmed,
+            SubStatuses = subStatuses,
+            ConfidenceEvidence = confidenceEvidence,
+            RetryAfter = null,
+            RetryScheduled = false,
+            Diagnostics = result.Diagnostics is null
+                ? null
+                : result.Diagnostics with
+                {
+                    CatchAllProbes = confirmed.Probes,
+                    CatchAllAccepted = confirmed.Accepted,
+                    CatchAllRejected = confirmed.Rejected,
+                    CatchAllAmbiguous = confirmed.Ambiguous,
+                    CatchAllDetail = confirmed.Detail,
+                    CatchAllObservedAt = confirmed.ObservedAt ?? confirmedDomain.ObservedAt,
+                    RetryAfter = null
+                }
+        };
+        return staged with { UnknownContext = UnknownValidationContextBuilder.Build(staged) };
+    }
+}
+
 public interface IValidationJobDispatcher
 {
     Task EnqueueAsync(

@@ -113,16 +113,16 @@ public static class UnknownValidationContextBuilder
                 "Published MX identity and SMTP greeting evidence identify different providers.", true,
                 "Retry and review the provider evidence; do not apply provider-specific mailbox conclusions while it conflicts.", category);
 
+        if (result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.AcceptAll)
+            return Create(result, UnknownCause.NonDiscriminatingSmtpEndpoint,
+                "Independent SMTP sessions show that the endpoint accepts arbitrary recipients, so RCPT acceptance cannot establish this mailbox's existence.", false,
+                "Use authoritative directory or delivery evidence if mailbox existence must be established.", category);
+
         if (result.DomainIntelligence?.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate ||
             reasons.Contains(ReasonCode.AcceptAllCandidate))
             return Create(result, UnknownCause.AcceptAllPendingConfirmation,
                 "One correlated SMTP session accepted the target and randomized controls, so the endpoint may accept arbitrary recipients.", true,
                 "Retry at or after the indicated confirmation time; a second independent session can confirm endpoint behavior, not mailbox existence.", category);
-
-        if (result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.AcceptAll)
-            return Create(result, UnknownCause.NonDiscriminatingSmtpEndpoint,
-                "Independent SMTP sessions show that the endpoint accepts arbitrary recipients, so RCPT acceptance cannot establish this mailbox's existence.", false,
-                "Use authoritative directory or delivery evidence if mailbox existence must be established.", category);
 
         if (reasons.Contains(ReasonCode.SmtpDisabled) || category == SmtpResponseCategory.NotAttempted)
             return Create(result, UnknownCause.LiveVerificationDisabled,

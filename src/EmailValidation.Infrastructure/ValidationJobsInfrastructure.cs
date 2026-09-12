@@ -66,6 +66,10 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.ValidationId),
             new CreateIndexOptions { Name = "ix_job_item_validation", Sparse = true }),
             cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _items.Indexes.CreateOneAsync(new CreateIndexModel<ItemDocument>(
+            Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.Domain),
+            new CreateIndexOptions { Name = "ix_job_item_domain", Sparse = true }),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task CreateAsync(ValidationJobSnapshot job, IReadOnlyList<ValidationJobItem> items, CancellationToken cancellationToken = default)
@@ -421,6 +425,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         EmailValidationResult result,
         CancellationToken cancellationToken = default)
     {
+        result = ValidationJobResultEvidenceReconciler.Normalize(result);
         var direct = Builders<ItemDocument>.Filter.Eq(value => value.JobId, jobId) &
             Builders<ItemDocument>.Filter.Eq(value => value.ValidationId, validationId);
         var candidates = await _items.Find(direct).ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -459,6 +464,35 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
                 (previous.ResultState == ValidationResultState.Final ? 1 : 0);
             provisionalDelta += (result.ResultState == ValidationResultState.Provisional ? 1 : 0) -
                 (previous.ResultState == ValidationResultState.Provisional ? 1 : 0);
+        }
+
+        var domain = ValidationJobResultEvidenceReconciler.Domain(result);
+        if (result.DomainIntelligence?.CatchAll.HasConfirmedAcceptAllEvidence == true && domain is not null)
+        {
+            var peers = await _items.Find(
+                    Builders<ItemDocument>.Filter.Eq(value => value.JobId, jobId) &
+                    (Builders<ItemDocument>.Filter.Eq(value => value.Domain, domain) |
+                     Builders<ItemDocument>.Filter.Eq(value => value.Domain, null)))
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var peer in peers)
+            {
+                var previous = peer.ToModel().Result;
+                if (previous is null ||
+                    !string.Equals(ValidationJobResultEvidenceReconciler.Domain(previous), domain,
+                        StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var reconciled = ValidationJobResultEvidenceReconciler.ReconcilePeer(previous, result);
+                if (reconciled is null) continue;
+                var peerJson = JsonSerializer.Serialize(reconciled, JsonOptions);
+                var updated = await _items.UpdateOneAsync(
+                    value => value.Id == peer.Id && value.ResultJson == peer.ResultJson,
+                    Builders<ItemDocument>.Update
+                        .Set(value => value.ResultJson, peerJson)
+                        .Set(value => value.Domain, domain)
+                        .Set(value => value.Error, null),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                changed += updated.ModifiedCount;
+            }
         }
         if (changed == 0) return;
         await _jobs.UpdateOneAsync(
@@ -528,6 +562,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public string JobId { get; set; } = string.Empty;
         public int Position { get; set; }
         public string Email { get; set; } = string.Empty;
+        public string? Domain { get; set; }
         public ValidationJobItemState State { get; set; }
         public string? ResultJson { get; set; }
         public string? ValidationId { get; set; }
@@ -540,6 +575,10 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         {
             Id = $"{value.JobId}:{value.Position}", JobId = value.JobId, Position = value.Position,
             Email = value.Email, State = value.State, Error = value.Error,
+            Domain = value.Result is null
+                ? ValidationJobResultEvidenceReconciler.Domain(value.Email)
+                : ValidationJobResultEvidenceReconciler.Domain(value.Result) ??
+                  ValidationJobResultEvidenceReconciler.Domain(value.Email),
             ResultJson = value.Result is null ? null : JsonSerializer.Serialize(value.Result, JsonOptions),
             ValidationId = value.Result?.ValidationId,
             ResultState = value.Result?.ResultState,
@@ -893,6 +932,7 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        result = ValidationJobResultEvidenceReconciler.Normalize(result);
         lock (_sync)
         {
             if (!_items.TryGetValue(jobId, out var items) || !_jobs.TryGetValue(jobId, out var job))
@@ -911,6 +951,18 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
                 provisionalDelta += (result.ResultState == ValidationResultState.Provisional ? 1 : 0) -
                     (previous.ResultState == ValidationResultState.Provisional ? 1 : 0);
                 changed = true;
+            }
+            if (result.DomainIntelligence?.CatchAll.HasConfirmedAcceptAllEvidence == true)
+            {
+                foreach (var pair in items.ToArray())
+                {
+                    var previous = pair.Value.Result;
+                    if (previous is null) continue;
+                    var reconciled = ValidationJobResultEvidenceReconciler.ReconcilePeer(previous, result);
+                    if (reconciled is null) continue;
+                    items[pair.Key] = pair.Value with { Result = reconciled, Error = null };
+                    changed = true;
+                }
             }
             if (changed)
                 _jobs[jobId] = job with

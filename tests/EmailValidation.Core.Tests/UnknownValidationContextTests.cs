@@ -87,6 +87,40 @@ public sealed class UnknownValidationContextTests
     }
 
     [Fact]
+    public void ConfirmedAcceptAll_TakesPrecedenceOverStaleCandidateReason()
+    {
+        var confirmed = new CatchAllDetectionResult(
+            CatchAllStatus.Unknown, 2, 2, 0, 0, Confidence: 0.9)
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = CatchAllReasonCode.AcceptAllConfirmed,
+            IndependentObservationCount = 2,
+            EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion
+        };
+        var result = Result(
+            EmailValidationStatus.Unknown,
+            SmtpResponseCategory.GatewayAccepted,
+            ReasonCode.AcceptAllCandidate) with
+        {
+            DomainIntelligence = new DomainIntelligence
+            {
+                Domain = "example.test",
+                DomainExists = true,
+                Dns = new DnsLookupResult(
+                    DnsStatus.Success, true, [new MxRecord(10, "mx.example.test")], false, TimeSpan.Zero),
+                Provider = new ProviderDetectionResult(MailProvider.GenericSmtp, 0.8),
+                CatchAll = confirmed
+            }
+        };
+
+        var context = UnknownValidationContextBuilder.Build(result);
+
+        Assert.NotNull(context);
+        Assert.Equal(UnknownCause.NonDiscriminatingSmtpEndpoint, context.Cause);
+        Assert.False(context.Retryable);
+    }
+
+    [Fact]
     public void ProviderBlock_ExplicitlyRejectsCircumvention()
     {
         var context = UnknownValidationContextBuilder.Build(Result(

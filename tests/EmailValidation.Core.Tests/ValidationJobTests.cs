@@ -241,6 +241,67 @@ public sealed class ValidationJobTests
     }
 
     [Fact]
+    public async Task RetryProjection_PropagatesConfirmedAcceptAllEvidenceToFinalSameDomainCandidates()
+    {
+        const string candidateId = "validation-candidate";
+        const string confirmedId = "validation-confirmed";
+        const string unrelatedId = "validation-unrelated";
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["first@example.com", "second@example.com", "other@elsewhere.test"]));
+        var claims = await store.ClaimPendingAsync(job.JobId, 3, "worker-1", TimeSpan.FromMinutes(5));
+        Assert.Equal(3, claims.Count);
+        await store.CompleteClaimAsync(job.JobId, 0, "worker-1",
+            AcceptAllResult("first@example.com", candidateId, confirmed: false), null);
+        await store.CompleteClaimAsync(job.JobId, 1, "worker-1",
+            AcceptAllResult("second@example.com", confirmedId, confirmed: false), null);
+        await store.CompleteClaimAsync(job.JobId, 2, "worker-1",
+            AcceptAllResult("other@elsewhere.test", unrelatedId, confirmed: false), null);
+
+        var confirmed = AcceptAllResult("second@example.com", confirmedId, confirmed: true) with
+        {
+            // Simulate an older persisted result that still carried the candidate explanation.
+            ReasonCodes = [ReasonCode.AcceptAllCandidate, ReasonCode.RetryRecommended],
+            UnknownContext = new(
+                UnknownCause.AcceptAllPendingConfirmation,
+                "A second observation is required.",
+                true,
+                "Retry later.")
+        };
+        var lifecycles = new InMemoryValidationLifecycleStore();
+        await lifecycles.TrySaveAsync(new ValidationLifecycle
+        {
+            ValidationId = confirmedId,
+            NormalizedEmail = "second@example.com",
+            Request = new EmailValidationRequest(true, JobId: job.JobId),
+            ResultState = ValidationResultState.Final,
+            AttemptNumber = 2,
+            MaximumAttempts = 2,
+            CurrentResult = confirmed,
+            Version = 1
+        }, 0);
+
+        await new ValidationJobResultProjector(lifecycles, store).ProjectAsync(confirmedId);
+
+        var results = await service.GetResultsAsync(job.JobId, 0, 10);
+        var first = results[0].Result!;
+        var second = results[1].Result!;
+        var unrelated = results[2].Result!;
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, first.CatchAllEvidence?.ReasonCode);
+        Assert.Equal(DetailedStatus.AcceptAllConfirmed, first.SubStatus);
+        Assert.Equal(UnknownCause.NonDiscriminatingSmtpEndpoint, first.UnknownContext?.Cause);
+        Assert.False(first.UnknownContext?.Retryable);
+        Assert.DoesNotContain(ReasonCode.AcceptAllCandidate, first.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.RetryRecommended, first.ReasonCodes);
+        Assert.Equal(confirmedId, second.ValidationId);
+        Assert.Equal(UnknownCause.NonDiscriminatingSmtpEndpoint, second.UnknownContext?.Cause);
+        Assert.DoesNotContain(ReasonCode.AcceptAllCandidate, second.ReasonCodes);
+        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, unrelated.CatchAllEvidence?.ReasonCode);
+        Assert.Equal(DetailedStatus.AcceptAllCandidate, unrelated.SubStatus);
+    }
+
+    [Fact]
     public async Task Create_EnqueuesOneDurableMessagePerChunk()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
@@ -421,6 +482,61 @@ public sealed class ValidationJobTests
             MaximumAttempts = 2,
             RetryScheduled = state == ValidationResultState.Provisional
         };
+
+    private static EmailValidationResult AcceptAllResult(string email, string validationId, bool confirmed)
+    {
+        var domain = ValidationJobResultEvidenceReconciler.Domain(email)!;
+        var catchAll = new CatchAllDetectionResult(
+            CatchAllStatus.Unknown,
+            2,
+            2,
+            0,
+            0,
+            Confidence: confirmed ? 0.9 : 0.77)
+        {
+            RecipientBehavior = DomainRecipientBehavior.AcceptAll,
+            ReasonCode = confirmed
+                ? CatchAllReasonCode.AcceptAllConfirmed
+                : CatchAllReasonCode.AcceptAllCandidate,
+            IndependentObservationCount = confirmed ? 2 : 1,
+            EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion
+        };
+        return Result(
+            email,
+            validationId,
+            EmailValidationStatus.Unknown,
+            ValidationResultState.Final,
+            confirmed ? 2 : 1) with
+        {
+            Confidence = catchAll.Confidence,
+            DomainIntelligence = new DomainIntelligence
+            {
+                Domain = domain,
+                DomainExists = true,
+                Dns = new DnsLookupResult(
+                    DnsStatus.Success, true, [new MxRecord(10, $"mx.{domain}")], false, TimeSpan.Zero),
+                Provider = new ProviderDetectionResult(MailProvider.GenericSmtp, 0.8),
+                CatchAll = catchAll
+            },
+            CatchAllEvidence = catchAll,
+            CatchAll = new CatchAllValidationDetails(catchAll.Status, catchAll.Confidence),
+            ReasonCodes = confirmed
+                ? [ReasonCode.AcceptAllObserved]
+                : [ReasonCode.AcceptAllCandidate, ReasonCode.RetryRecommended],
+            DetailedStatus = confirmed ? DetailedStatus.AcceptAllConfirmed : DetailedStatus.AcceptAllCandidate,
+            DetailedStatuses = confirmed ? [DetailedStatus.AcceptAllConfirmed] : [DetailedStatus.AcceptAllCandidate],
+            SubStatus = confirmed ? DetailedStatus.AcceptAllConfirmed : DetailedStatus.AcceptAllCandidate,
+            SubStatuses = confirmed ? [DetailedStatus.AcceptAllConfirmed] : [DetailedStatus.AcceptAllCandidate],
+            RetryAfter = confirmed ? null : DateTimeOffset.UtcNow.AddMinutes(15),
+            UnknownContext = new(
+                confirmed
+                    ? UnknownCause.NonDiscriminatingSmtpEndpoint
+                    : UnknownCause.AcceptAllPendingConfirmation,
+                confirmed ? "The endpoint accepts arbitrary recipients." : "A second observation is required.",
+                !confirmed,
+                confirmed ? "Use authoritative evidence." : "Retry later.")
+        };
+    }
 
     private sealed class RecordingDispatcher(int failures = 0) : IValidationJobDispatcher
     {
