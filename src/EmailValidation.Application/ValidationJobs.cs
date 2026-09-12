@@ -61,7 +61,9 @@ public sealed record ValidationJobItem(
     string Email,
     ValidationJobItemState State,
     EmailValidationResult? Result = null,
-    string? Error = null);
+    string? Error = null,
+    string? LeaseOwner = null,
+    DateTimeOffset? LeaseExpiresAtUtc = null);
 
 public interface IValidationJobStore
 {
@@ -69,10 +71,33 @@ public interface IValidationJobStore
     Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default);
     Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(string sourceFileId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<ValidationJobItem>> GetPendingAsync(string jobId, int take, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ValidationJobItem>> ClaimPendingAsync(
+        string jobId,
+        int take,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+    Task<int> RenewClaimsAsync(
+        string jobId,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+    Task<int> ReleaseClaimsAsync(
+        string jobId,
+        string leaseOwner,
+        CancellationToken cancellationToken = default);
+    Task<bool> CompleteClaimAsync(
+        string jobId,
+        int position,
+        string leaseOwner,
+        EmailValidationResult? result,
+        string? failureReason,
+        CancellationToken cancellationToken = default);
+    Task<ValidationJobState?> TryFinalizeAsync(
+        string jobId,
+        CancellationToken cancellationToken = default);
     Task SetStateAsync(string jobId, ValidationJobState state, string? failureReason = null, CancellationToken cancellationToken = default);
     Task<bool> TrySetFailedAsync(string jobId, string failureReason, CancellationToken cancellationToken = default);
-    Task SaveResultAsync(string jobId, int position, EmailValidationResult? result, string? failureReason, CancellationToken cancellationToken = default);
 }
 
 public interface IValidationJobResultSink
@@ -105,7 +130,7 @@ public sealed class ValidationJobResultProjector(
 
 public interface IValidationJobDispatcher
 {
-    Task EnqueueAsync(string jobId, CancellationToken cancellationToken = default);
+    Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default);
 }
 
 public interface IValidationJobService
@@ -225,7 +250,7 @@ public sealed class ValidationJobService(
         metrics?.RecordCreated(items.Length);
         try
         {
-            await queue.EnqueueAsync(jobId, cancellationToken).ConfigureAwait(false);
+            await queue.EnqueueAsync(jobId, ChunkCount(inputs.Length), cancellationToken).ConfigureAwait(false);
             await store.SetStateAsync(jobId, ValidationJobState.Queued, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             return (await store.GetAsync(jobId, cancellationToken).ConfigureAwait(false))!;
@@ -259,17 +284,22 @@ public sealed class ValidationJobService(
         if (existing.State is not ValidationJobState.Failed)
             throw new ValidationJobSourceFileActiveException();
 
-        await queue.EnqueueAsync(existing.JobId, cancellationToken).ConfigureAwait(false);
+        await queue.EnqueueAsync(existing.JobId,
+            ChunkCount(Math.Max(1, existing.TotalItems - existing.ProcessedItems)), cancellationToken).ConfigureAwait(false);
         await store.SetStateAsync(existing.JobId, ValidationJobState.Queued,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return (await store.GetAsync(existing.JobId, cancellationToken).ConfigureAwait(false))!;
     }
+
+    private int ChunkCount(int itemCount) => Math.Max(1,
+        (itemCount + Math.Max(1, _options.ChunkSize) - 1) / Math.Max(1, _options.ChunkSize));
 }
 
 public sealed class ValidationJobProcessor(
     IValidationJobStore store,
     IEmailValidator validator,
     IOptions<EmailValidationOptions> options,
+    TimeProvider timeProvider,
     ILogger<ValidationJobProcessor> logger,
     IValidationJobMetrics? metrics = null) : IValidationJobProcessor
 {
@@ -280,17 +310,23 @@ public sealed class ValidationJobProcessor(
         var stopwatch = Stopwatch.StartNew();
         var job = await store.GetAsync(jobId, cancellationToken).ConfigureAwait(false);
         if (job is null) throw new ValidationJobNotFoundException(jobId);
-        if (job.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors) return;
+        if (job.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors or ValidationJobState.Failed)
+            return;
         await store.SetStateAsync(jobId, ValidationJobState.Processing, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
+        var leaseOwner = Guid.NewGuid().ToString("N");
+        var leaseDuration = TimeSpan.FromMinutes(Math.Max(1, _options.ItemLeaseMinutes));
+        var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? leaseRenewal = null;
         try
         {
-            while (true)
+            var items = await store.ClaimPendingAsync(
+                jobId, _options.ChunkSize, leaseOwner, leaseDuration, cancellationToken).ConfigureAwait(false);
+            if (items.Count > 0)
             {
-                var items = await store.GetPendingAsync(jobId, _options.ChunkSize, cancellationToken)
-                    .ConfigureAwait(false);
-                if (items.Count == 0) break;
+                leaseRenewal = RenewClaimsAsync(
+                    jobId, leaseOwner, leaseDuration, leaseRenewalCancellation.Token);
                 await Parallel.ForEachAsync(items, new ParallelOptions
                 {
                     MaxDegreeOfParallelism = _options.MaximumConcurrency,
@@ -301,21 +337,23 @@ public sealed class ValidationJobProcessor(
                     {
                         var result = await validator.ValidateAsync(item.Email,
                             new EmailValidationRequest(job.EnableSmtp, JobId: job.JobId), token).ConfigureAwait(false);
-                        await store.SaveResultAsync(jobId, item.Position, result, null, token).ConfigureAwait(false);
+                        if (!await store.CompleteClaimAsync(
+                                jobId, item.Position, leaseOwner, result, null, token).ConfigureAwait(false))
+                            logger.LogWarning(
+                                "Validation job {JobId} item {Position} completed after its lease was lost",
+                                jobId, item.Position);
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
                         logger.LogWarning(exception, "Validation job {JobId} item {Position} failed", jobId, item.Position);
-                        await store.SaveResultAsync(jobId, item.Position, null, exception.Message, token).ConfigureAwait(false);
+                        await store.CompleteClaimAsync(
+                            jobId, item.Position, leaseOwner, null, exception.Message, token).ConfigureAwait(false);
                     }
                 }).ConfigureAwait(false);
             }
 
-            var completed = await store.GetAsync(jobId, cancellationToken).ConfigureAwait(false);
-            var finalState = completed!.FailedItems == 0 ? ValidationJobState.Completed : ValidationJobState.CompletedWithErrors;
-            await store.SetStateAsync(jobId, finalState,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            metrics?.RecordCompleted(finalState, stopwatch.Elapsed);
+            var finalState = await store.TryFinalizeAsync(jobId, cancellationToken).ConfigureAwait(false);
+            if (finalState is not null) metrics?.RecordCompleted(finalState.Value, stopwatch.Elapsed);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -323,10 +361,32 @@ public sealed class ValidationJobProcessor(
         }
         catch (Exception exception)
         {
-            await store.SetStateAsync(jobId, ValidationJobState.Failed, exception.Message, CancellationToken.None)
-                .ConfigureAwait(false);
-            metrics?.RecordCompleted(ValidationJobState.Failed, stopwatch.Elapsed);
+            logger.LogWarning(exception,
+                "Validation job {JobId} chunk failed and will remain recoverable for broker redelivery", jobId);
             throw;
         }
+        finally
+        {
+            await leaseRenewalCancellation.CancelAsync().ConfigureAwait(false);
+            if (leaseRenewal is not null)
+            {
+                try { await leaseRenewal.ConfigureAwait(false); }
+                catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested) { }
+            }
+            leaseRenewalCancellation.Dispose();
+            await store.ReleaseClaimsAsync(jobId, leaseOwner, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RenewClaimsAsync(
+        string jobId,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        var interval = TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(1).Ticks, leaseDuration.Ticks / 3));
+        using var timer = new PeriodicTimer(interval, timeProvider);
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            await store.RenewClaimsAsync(jobId, leaseOwner, leaseDuration, cancellationToken).ConfigureAwait(false);
     }
 }

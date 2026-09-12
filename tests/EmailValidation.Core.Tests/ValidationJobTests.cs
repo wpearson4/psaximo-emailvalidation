@@ -22,6 +22,7 @@ public sealed class ValidationJobTests
         Assert.Equal(2, job.TotalItems);
         Assert.False(job.EnableSmtp);
         Assert.Equal(job.JobId, dispatcher.JobId);
+        Assert.Equal(1, dispatcher.MessageCount);
         Assert.Equal(["one@example.com", "two@example.com"],
             (await service.GetResultsAsync(job.JobId, 0, 10)).Select(value => value.Email));
     }
@@ -51,10 +52,10 @@ public sealed class ValidationJobTests
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             Enumerable.Range(0, 7).Select(index => $"person{index}@example.com").ToArray()));
         var validator = new TrackingValidator();
-        var processor = new ValidationJobProcessor(store, validator, Options(maximumConcurrency: 2),
+        var processor = new ValidationJobProcessor(store, validator, Options(maximumConcurrency: 2), TimeProvider.System,
             NullLogger<ValidationJobProcessor>.Instance);
 
-        await processor.ProcessAsync(job.JobId);
+        for (var chunk = 0; chunk < 3; chunk++) await processor.ProcessAsync(job.JobId);
 
         var completed = await service.GetAsync(job.JobId);
         Assert.Equal(ValidationJobState.Completed, completed!.State);
@@ -69,7 +70,7 @@ public sealed class ValidationJobTests
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com", "fail@example.com"]));
-        var processor = new ValidationJobProcessor(store, new TrackingValidator("fail@example.com"), Options(),
+        var processor = new ValidationJobProcessor(store, new TrackingValidator("fail@example.com"), Options(), TimeProvider.System,
             NullLogger<ValidationJobProcessor>.Instance);
 
         await processor.ProcessAsync(job.JobId);
@@ -90,7 +91,7 @@ public sealed class ValidationJobTests
         var request = new CreateValidationJobRequest(
             ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
         var job = await service.CreateAsync(request);
-        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(),
+        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(), TimeProvider.System,
             NullLogger<ValidationJobProcessor>.Instance);
         await processor.ProcessAsync(job.JobId);
 
@@ -113,6 +114,7 @@ public sealed class ValidationJobTests
         Assert.Equal(job.JobId, retried.JobId);
         Assert.Equal(ValidationJobState.Queued, retried.State);
         Assert.Equal(2, dispatcher.EnqueueCount);
+        Assert.Equal(2, dispatcher.MessageCount);
     }
 
     [Fact]
@@ -121,7 +123,7 @@ public sealed class ValidationJobTests
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
-        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(),
+        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(), TimeProvider.System,
             NullLogger<ValidationJobProcessor>.Instance);
         await processor.ProcessAsync(job.JobId);
 
@@ -157,8 +159,10 @@ public sealed class ValidationJobTests
             ["duplicate@example.com", "duplicate@example.com"]));
         var provisional = Result("duplicate@example.com", validationId,
             EmailValidationStatus.Unknown, ValidationResultState.Provisional, 1);
-        await store.SaveResultAsync(job.JobId, 0, provisional, null);
-        await store.SaveResultAsync(job.JobId, 1, provisional, null);
+        var claims = await store.ClaimPendingAsync(job.JobId, 2, "worker-1", TimeSpan.FromMinutes(5));
+        Assert.Equal(2, claims.Count);
+        await store.CompleteClaimAsync(job.JobId, 0, "worker-1", provisional, null);
+        await store.CompleteClaimAsync(job.JobId, 1, "worker-1", provisional, null);
         var final = Result("duplicate@example.com", validationId,
             EmailValidationStatus.Valid, ValidationResultState.Final, 2);
         var lifecycles = new InMemoryValidationLifecycleStore();
@@ -189,6 +193,47 @@ public sealed class ValidationJobTests
             Assert.Equal(ValidationResultState.Final, item.Result.ResultState);
             Assert.Equal(2, item.Result.AttemptNumber);
         });
+    }
+
+    [Fact]
+    public async Task Create_EnqueuesOneDurableMessagePerChunk()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var dispatcher = new RecordingDispatcher();
+        var service = new ValidationJobService(store, dispatcher, Options(), TimeProvider.System);
+
+        await service.CreateAsync(new CreateValidationJobRequest(
+            Enumerable.Range(0, 7).Select(index => $"person{index}@example.com").ToArray()));
+
+        Assert.Equal(1, dispatcher.EnqueueCount);
+        Assert.Equal(3, dispatcher.MessageCount);
+    }
+
+    [Fact]
+    public async Task Claims_AreExclusiveAndCanBeReclaimedAfterLeaseExpiry()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 11, 12, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryValidationJobStore(clock);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), clock);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["one@example.com", "two@example.com", "three@example.com"]));
+
+        var first = await store.ClaimPendingAsync(job.JobId, 2, "worker-a", TimeSpan.FromMinutes(5));
+        var second = await store.ClaimPendingAsync(job.JobId, 2, "worker-b", TimeSpan.FromMinutes(5));
+
+        Assert.Equal([0, 1], first.Select(item => item.Position));
+        Assert.Equal([2], second.Select(item => item.Position));
+        Assert.False(await store.CompleteClaimAsync(job.JobId, 0, "worker-b", Result(
+            "one@example.com", "validation-wrong", EmailValidationStatus.Valid, ValidationResultState.Final, 1), null));
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+        var reclaimed = await store.ClaimPendingAsync(job.JobId, 2, "worker-c", TimeSpan.FromMinutes(5));
+
+        Assert.Equal([0, 1], reclaimed.Select(item => item.Position));
+        Assert.False(await store.CompleteClaimAsync(job.JobId, 0, "worker-a", Result(
+            "one@example.com", "validation-stale", EmailValidationStatus.Valid, ValidationResultState.Final, 1), null));
+        Assert.True(await store.CompleteClaimAsync(job.JobId, 0, "worker-c", Result(
+            "one@example.com", "validation-current", EmailValidationStatus.Valid, ValidationResultState.Final, 1), null));
     }
 
     private static IOptions<EmailValidationOptions> Options(int maximumConcurrency = 2) =>
@@ -226,12 +271,21 @@ public sealed class ValidationJobTests
     {
         public string? JobId { get; private set; }
         public int EnqueueCount { get; private set; }
-        public Task EnqueueAsync(string jobId, CancellationToken cancellationToken = default)
+        public int MessageCount { get; private set; }
+        public Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default)
         {
             JobId = jobId;
             EnqueueCount++;
+            MessageCount += chunkCount;
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan duration) => _now = _now.Add(duration);
     }
 
     private sealed class TrackingValidator(string? failureEmail = null) : IEmailValidator
