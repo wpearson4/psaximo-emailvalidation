@@ -214,3 +214,31 @@ public sealed class RevalidationOutboxPublisherService(
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }
 }
+
+public sealed class ValidationJobOutboxPublisherService(
+    IOptions<EmailValidationOptions> options,
+    IValidationJobOutboxDispatcher dispatcher,
+    ILogger<ValidationJobOutboxPublisherService> logger) : BackgroundService
+{
+    private readonly ValidationJobsOptions _options = options.Value.Jobs;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!_options.Enabled) return;
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_options.OutboxDispatchIntervalSeconds));
+        do
+        {
+            try
+            {
+                var count = await dispatcher.DispatchPendingAsync(
+                    _options.OutboxBatchSize, stoppingToken).ConfigureAwait(false);
+                if (count > 0) logger.LogInformation("Dispatched {Count} pending validation jobs", count);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Validation job outbox dispatch failed");
+            }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+    }
+}

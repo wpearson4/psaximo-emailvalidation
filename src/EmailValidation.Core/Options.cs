@@ -181,6 +181,9 @@ public sealed class ValidationJobsOptions
     public int MaximumItemsPerJob { get; set; } = 100_000;
     public int ChunkSize { get; set; } = 100;
     public int ItemLeaseMinutes { get; set; } = 15;
+    public int OutboxDispatchIntervalSeconds { get; set; } = 5;
+    public int OutboxBatchSize { get; set; } = 20;
+    public int OutboxLeaseSeconds { get; set; } = 60;
     public int MaximumConcurrency { get; set; } = 8;
     public int MaximumResultPageSize { get; set; } = 1_000;
     public int MaxConcurrentCalls { get; set; } = 2;

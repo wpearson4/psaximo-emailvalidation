@@ -77,9 +77,11 @@ validator used by CSV and workers. A provisional validation returns immediately;
 independently.
 
 When `EmailValidation:Jobs:Enabled` is true, Mongo stores job headers and ordered item results in
-`EmailValidationJobs` and `EmailValidationJobItems`. Service Bus queue `email-validation-jobs` receives only a
-job identifier. `ChunkSize` and `MaximumConcurrency` bound execution; original positions are retained for ordered
-result retrieval. The connection string is resolved through the existing App Configuration/Key Vault path.
+`EmailValidationJobs` and `EmailValidationJobItems`. Initial queue dispatch is recorded in a leased Mongo outbox,
+then Service Bus queue `email-validation-jobs` receives only a job identifier. Stable dispatch message IDs make
+publication retries safe when Service Bus duplicate detection is enabled. `ChunkSize` and `MaximumConcurrency`
+bound execution; original positions are retained for ordered result retrieval. The connection string is resolved
+through the existing App Configuration/Key Vault path.
 Results with cooldown-driven retry work remain downloadable as provisional rows. The revalidation worker replaces
 those rows with the latest canonical lifecycle result and updates the job's final/provisional counters before settling
 each retry message, so clients can poll the job and generate progressively updated downloads.

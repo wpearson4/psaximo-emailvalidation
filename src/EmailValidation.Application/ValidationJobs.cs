@@ -10,6 +10,7 @@ namespace EmailValidation.Application;
 
 public enum ValidationJobState { Requested, Queued, Processing, Completed, CompletedWithErrors, Failed }
 public enum ValidationJobItemState { Pending, Processing, Completed, Failed }
+public enum ValidationJobDispatchState { Pending, Claimed, Published }
 
 public sealed class ValidationJobNotFoundException(string jobId)
     : Exception($"Validation job '{jobId}' does not exist.");
@@ -53,7 +54,10 @@ public sealed record ValidationJobSnapshot(
     bool EnableSmtp = true,
     string? SourceFileId = null,
     string? SourceFileName = null,
-    string? EmailColumn = null);
+    string? EmailColumn = null,
+    ValidationJobDispatchState DispatchState = ValidationJobDispatchState.Pending,
+    string? DispatchId = null,
+    int DispatchChunkCount = 0);
 
 public sealed record ValidationJobItem(
     string JobId,
@@ -96,6 +100,11 @@ public interface IValidationJobStore
     Task<ValidationJobState?> TryFinalizeAsync(
         string jobId,
         CancellationToken cancellationToken = default);
+    Task QueueDispatchAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default);
     Task SetStateAsync(string jobId, ValidationJobState state, string? failureReason = null, CancellationToken cancellationToken = default);
     Task<bool> TrySetFailedAsync(string jobId, string failureReason, CancellationToken cancellationToken = default);
 }
@@ -130,7 +139,43 @@ public sealed class ValidationJobResultProjector(
 
 public interface IValidationJobDispatcher
 {
-    Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default);
+    Task EnqueueAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record ValidationJobDispatch(
+    string JobId,
+    string DispatchId,
+    int ChunkCount,
+    int AttemptCount);
+
+public interface IValidationJobDispatchOutbox
+{
+    Task<IReadOnlyList<ValidationJobDispatch>> ClaimPendingAsync(
+        int take,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+    Task<bool> CompleteAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        CancellationToken cancellationToken = default);
+    Task<bool> ReleaseAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        DateTimeOffset retryAtUtc,
+        string failureReason,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IValidationJobOutboxDispatcher
+{
+    Task<int> DispatchPendingAsync(int take, CancellationToken cancellationToken = default);
 }
 
 public interface IValidationJobService
@@ -180,7 +225,6 @@ public sealed class ValidationJobMetrics : IValidationJobMetrics, IDisposable
 
 public sealed class ValidationJobService(
     IValidationJobStore store,
-    IValidationJobDispatcher queue,
     IOptions<EmailValidationOptions> options,
     TimeProvider timeProvider,
     IValidationJobMetrics? metrics = null) : IValidationJobService
@@ -233,7 +277,10 @@ public sealed class ValidationJobService(
             EnableSmtp: request.EnableSmtp,
             SourceFileId: sourceFileId,
             SourceFileName: request.SourceFileName,
-            EmailColumn: request.EmailColumn);
+            EmailColumn: request.EmailColumn,
+            DispatchState: ValidationJobDispatchState.Pending,
+            DispatchId: Guid.NewGuid().ToString("N"),
+            DispatchChunkCount: ChunkCount(inputs.Length));
         var items = inputs.Select(input =>
             new ValidationJobItem(jobId, input.Position, input.Email!, ValidationJobItemState.Pending)).ToArray();
         try
@@ -248,19 +295,7 @@ public sealed class ValidationJobService(
             throw;
         }
         metrics?.RecordCreated(items.Length);
-        try
-        {
-            await queue.EnqueueAsync(jobId, ChunkCount(inputs.Length), cancellationToken).ConfigureAwait(false);
-            await store.SetStateAsync(jobId, ValidationJobState.Queued, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-            return (await store.GetAsync(jobId, cancellationToken).ConfigureAwait(false))!;
-        }
-        catch
-        {
-            await store.SetStateAsync(jobId, ValidationJobState.Failed, "The durable job message could not be queued.",
-                CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
+        return (await store.GetAsync(jobId, cancellationToken).ConfigureAwait(false))!;
     }
 
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
@@ -284,15 +319,67 @@ public sealed class ValidationJobService(
         if (existing.State is not ValidationJobState.Failed)
             throw new ValidationJobSourceFileActiveException();
 
-        await queue.EnqueueAsync(existing.JobId,
-            ChunkCount(Math.Max(1, existing.TotalItems - existing.ProcessedItems)), cancellationToken).ConfigureAwait(false);
-        await store.SetStateAsync(existing.JobId, ValidationJobState.Queued,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        await store.QueueDispatchAsync(
+            existing.JobId,
+            Guid.NewGuid().ToString("N"),
+            ChunkCount(Math.Max(1, existing.TotalItems - existing.ProcessedItems)),
+            cancellationToken).ConfigureAwait(false);
         return (await store.GetAsync(existing.JobId, cancellationToken).ConfigureAwait(false))!;
     }
 
     private int ChunkCount(int itemCount) => Math.Max(1,
         (itemCount + Math.Max(1, _options.ChunkSize) - 1) / Math.Max(1, _options.ChunkSize));
+}
+
+public sealed class ValidationJobOutboxDispatcher(
+    IValidationJobDispatchOutbox outbox,
+    IValidationJobDispatcher dispatcher,
+    IOptions<EmailValidationOptions> options,
+    TimeProvider timeProvider,
+    ILogger<ValidationJobOutboxDispatcher> logger) : IValidationJobOutboxDispatcher
+{
+    private readonly ValidationJobsOptions _options = options.Value.Jobs;
+
+    public async Task<int> DispatchPendingAsync(int take, CancellationToken cancellationToken = default)
+    {
+        var leaseOwner = Guid.NewGuid().ToString("N");
+        var claimed = await outbox.ClaimPendingAsync(
+            Math.Max(1, take), leaseOwner, TimeSpan.FromSeconds(_options.OutboxLeaseSeconds), cancellationToken)
+            .ConfigureAwait(false);
+        var completed = 0;
+        foreach (var dispatch in claimed)
+        {
+            try
+            {
+                await dispatcher.EnqueueAsync(
+                    dispatch.JobId, dispatch.DispatchId, dispatch.ChunkCount, cancellationToken).ConfigureAwait(false);
+                if (await outbox.CompleteAsync(
+                        dispatch.JobId, dispatch.DispatchId, leaseOwner, cancellationToken).ConfigureAwait(false))
+                    completed++;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, Math.Min(8, dispatch.AttemptCount))));
+                logger.LogWarning(exception,
+                    "Validation job {JobId} dispatch {DispatchId} failed; retrying after {RetryAtUtc}",
+                    dispatch.JobId, dispatch.DispatchId, timeProvider.GetUtcNow().Add(delay));
+                await outbox.ReleaseAsync(
+                    dispatch.JobId,
+                    dispatch.DispatchId,
+                    leaseOwner,
+                    timeProvider.GetUtcNow().Add(delay),
+                    Truncate(exception.Message),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        return completed;
+    }
+
+    private static string Truncate(string value) => value.Length <= 1024 ? value : value[..1024];
 }
 
 public sealed class ValidationJobProcessor(

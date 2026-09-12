@@ -10,7 +10,8 @@ using MongoDB.Driver;
 
 namespace EmailValidation.Infrastructure;
 
-public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJobResultSink
+public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJobResultSink,
+    IValidationJobDispatchOutbox
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly IMongoCollection<JobDocument> _jobs;
@@ -37,6 +38,14 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
                 .Descending(value => value.CreatedAtUtc),
             new CreateIndexOptions { Name = "ix_job_source_file_state_created", Sparse = true }),
             cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _jobs.Indexes.CreateOneAsync(new CreateIndexModel<JobDocument>(
+            Builders<JobDocument>.IndexKeys.Ascending(value => value.ItemsReady)
+                .Ascending(value => value.DispatchState)
+                .Ascending(value => value.DispatchRetryAtUtc)
+                .Ascending(value => value.DispatchLeaseExpiresAtUtc)
+                .Ascending(value => value.CreatedAtUtc),
+            new CreateIndexOptions { Name = "ix_job_dispatch_outbox" }),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         await _items.Indexes.CreateOneAsync(new CreateIndexModel<ItemDocument>(
             Builders<ItemDocument>.IndexKeys.Ascending(value => value.JobId).Ascending(value => value.Position),
             new CreateIndexOptions { Name = "ux_job_item_position", Unique = true }),
@@ -59,9 +68,15 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         {
             await _items.InsertManyAsync(items.Select(ItemDocument.FromModel), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
+            await _jobs.UpdateOneAsync(
+                value => value.Id == job.JobId,
+                Builders<JobDocument>.Update.Set(value => value.ItemsReady, true)
+                    .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch
         {
+            await _items.DeleteManyAsync(value => value.JobId == job.JobId, CancellationToken.None).ConfigureAwait(false);
             await _jobs.DeleteOneAsync(value => value.Id == job.JobId, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
@@ -259,6 +274,128 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         return updated.ModifiedCount > 0 ? finalState : null;
     }
 
+    public async Task QueueDispatchAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default)
+    {
+        await _items.UpdateManyAsync(
+            value => value.JobId == jobId && value.State == ValidationJobItemState.Processing,
+            Builders<ItemDocument>.Update
+                .Set(value => value.State, ValidationJobItemState.Pending)
+                .Unset(value => value.LeaseOwner)
+                .Unset(value => value.LeaseExpiresAtUtc),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        var updated = await _jobs.UpdateOneAsync(
+            value => value.Id == jobId && value.State == ValidationJobState.Failed,
+            Builders<JobDocument>.Update
+                .Set(value => value.State, ValidationJobState.Requested)
+                .Set(value => value.FailureReason, null)
+                .Set(value => value.ItemsReady, true)
+                .Set(value => value.DispatchState, ValidationJobDispatchState.Pending)
+                .Set(value => value.DispatchId, dispatchId)
+                .Set(value => value.DispatchChunkCount, chunkCount)
+                .Set(value => value.DispatchAttemptCount, 0)
+                .Set(value => value.DispatchRetryAtUtc, null)
+                .Set(value => value.DispatchLastError, null)
+                .Unset(value => value.DispatchLeaseOwner)
+                .Unset(value => value.DispatchLeaseExpiresAtUtc)
+                .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (updated.ModifiedCount == 0)
+            throw new InvalidOperationException($"Validation job '{jobId}' could not be queued from its current state.");
+    }
+
+    public async Task<IReadOnlyList<ValidationJobDispatch>> ClaimPendingAsync(
+        int take,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+        var claimed = new List<ValidationJobDispatch>(Math.Max(0, take));
+        for (var index = 0; index < take; index++)
+        {
+            var now = _timeProvider.GetUtcNow();
+            var available = Builders<JobDocument>.Filter.Eq(value => value.ItemsReady, true) &
+                (Builders<JobDocument>.Filter.Eq(value => value.DispatchState, ValidationJobDispatchState.Pending) &
+                 (Builders<JobDocument>.Filter.Eq(value => value.DispatchRetryAtUtc, null) |
+                  Builders<JobDocument>.Filter.Lte(value => value.DispatchRetryAtUtc, now)) |
+                 Builders<JobDocument>.Filter.Eq(value => value.DispatchState, ValidationJobDispatchState.Claimed) &
+                 (Builders<JobDocument>.Filter.Eq(value => value.DispatchLeaseExpiresAtUtc, null) |
+                  Builders<JobDocument>.Filter.Lte(value => value.DispatchLeaseExpiresAtUtc, now)));
+            var document = await _jobs.FindOneAndUpdateAsync(
+                available,
+                Builders<JobDocument>.Update
+                    .Set(value => value.DispatchState, ValidationJobDispatchState.Claimed)
+                    .Set(value => value.DispatchLeaseOwner, leaseOwner)
+                    .Set(value => value.DispatchLeaseExpiresAtUtc, now.Add(leaseDuration))
+                    .Inc(value => value.DispatchAttemptCount, 1),
+                new FindOneAndUpdateOptions<JobDocument>
+                {
+                    Sort = Builders<JobDocument>.Sort.Ascending(value => value.CreatedAtUtc),
+                    ReturnDocument = ReturnDocument.After
+                },
+                cancellationToken).ConfigureAwait(false);
+            if (document is null) break;
+            if (string.IsNullOrWhiteSpace(document.DispatchId) || document.DispatchChunkCount < 1)
+                throw new InvalidOperationException($"Validation job '{document.Id}' has an invalid dispatch outbox entry.");
+            claimed.Add(new(document.Id, document.DispatchId, document.DispatchChunkCount,
+                document.DispatchAttemptCount));
+        }
+        return claimed;
+    }
+
+    public async Task<bool> CompleteAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        var claimed = Builders<JobDocument>.Filter.Eq(value => value.Id, jobId) &
+            Builders<JobDocument>.Filter.Eq(value => value.DispatchId, dispatchId) &
+            Builders<JobDocument>.Filter.Eq(value => value.DispatchState, ValidationJobDispatchState.Claimed) &
+            Builders<JobDocument>.Filter.Eq(value => value.DispatchLeaseOwner, leaseOwner);
+        var update = Builders<JobDocument>.Update
+            .Set(value => value.DispatchState, ValidationJobDispatchState.Published)
+            .Set(value => value.DispatchRetryAtUtc, null)
+            .Set(value => value.DispatchLastError, null)
+            .Unset(value => value.DispatchLeaseOwner)
+            .Unset(value => value.DispatchLeaseExpiresAtUtc)
+            .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow());
+        var queued = await _jobs.UpdateOneAsync(
+            claimed & Builders<JobDocument>.Filter.Eq(value => value.State, ValidationJobState.Requested),
+            update.Set(value => value.State, ValidationJobState.Queued),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (queued.ModifiedCount > 0) return true;
+        var published = await _jobs.UpdateOneAsync(claimed, update, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return published.ModifiedCount > 0;
+    }
+
+    public async Task<bool> ReleaseAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        DateTimeOffset retryAtUtc,
+        string failureReason,
+        CancellationToken cancellationToken = default)
+    {
+        var updated = await _jobs.UpdateOneAsync(
+            value => value.Id == jobId && value.DispatchId == dispatchId &&
+                value.DispatchState == ValidationJobDispatchState.Claimed &&
+                value.DispatchLeaseOwner == leaseOwner,
+            Builders<JobDocument>.Update
+                .Set(value => value.DispatchState, ValidationJobDispatchState.Pending)
+                .Set(value => value.DispatchRetryAtUtc, retryAtUtc)
+                .Set(value => value.DispatchLastError, failureReason)
+                .Unset(value => value.DispatchLeaseOwner)
+                .Unset(value => value.DispatchLeaseExpiresAtUtc)
+                .Set(value => value.UpdatedAtUtc, _timeProvider.GetUtcNow()),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return updated.ModifiedCount > 0;
+    }
+
     public async Task ProjectAsync(
         string jobId,
         string validationId,
@@ -331,6 +468,15 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public string? SourceFileId { get; set; }
         public string? SourceFileName { get; set; }
         public string? EmailColumn { get; set; }
+        public bool ItemsReady { get; set; }
+        public ValidationJobDispatchState DispatchState { get; set; }
+        public string? DispatchId { get; set; }
+        public int DispatchChunkCount { get; set; }
+        public int DispatchAttemptCount { get; set; }
+        public string? DispatchLeaseOwner { get; set; }
+        public DateTimeOffset? DispatchLeaseExpiresAtUtc { get; set; }
+        public DateTimeOffset? DispatchRetryAtUtc { get; set; }
+        public string? DispatchLastError { get; set; }
         public static JobDocument FromModel(ValidationJobSnapshot value) => new()
         {
             Id = value.JobId, CreatedAtUtc = value.CreatedAtUtc, State = value.State,
@@ -339,11 +485,14 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             FailedItems = value.FailedItems, UpdatedAtUtc = value.UpdatedAtUtc,
             FailureReason = value.FailureReason, EnableSmtp = value.EnableSmtp,
             SourceFileId = value.SourceFileId, SourceFileName = value.SourceFileName,
-            EmailColumn = value.EmailColumn
+            EmailColumn = value.EmailColumn,
+            DispatchState = value.DispatchState,
+            DispatchId = value.DispatchId,
+            DispatchChunkCount = value.DispatchChunkCount
         };
         public ValidationJobSnapshot ToModel() => new(Id, CreatedAtUtc, State, TotalItems, ProcessedItems,
             FinalItems, ProvisionalItems, FailedItems, UpdatedAtUtc, FailureReason, EnableSmtp,
-            SourceFileId, SourceFileName, EmailColumn);
+            SourceFileId, SourceFileName, EmailColumn, DispatchState, DispatchId, DispatchChunkCount);
     }
 
     [BsonIgnoreExtraElements]
@@ -378,16 +527,22 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
     }
 }
 
-public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IValidationJobStore, IValidationJobResultSink
+public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IValidationJobStore,
+    IValidationJobResultSink, IValidationJobDispatchOutbox
 {
     private readonly ConcurrentDictionary<string, ValidationJobSnapshot> _jobs = new();
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, ValidationJobItem>> _items = new();
+    private readonly ConcurrentDictionary<string, DispatchControl> _dispatches = new();
     private readonly object _sync = new();
 
     public Task CreateAsync(ValidationJobSnapshot job, IReadOnlyList<ValidationJobItem> items, CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(job.DispatchId) || job.DispatchChunkCount < 1)
+            throw new InvalidOperationException("A validation job requires a dispatch outbox entry.");
         if (!_jobs.TryAdd(job.JobId, job)) throw new InvalidOperationException("Duplicate job id.");
         _items[job.JobId] = new(items.ToDictionary(value => value.Position));
+        _dispatches[job.JobId] = new(
+            job.DispatchId, job.DispatchChunkCount, ValidationJobDispatchState.Pending, 0);
         return Task.CompletedTask;
     }
     public Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default) =>
@@ -567,6 +722,142 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
         }
     }
 
+    public Task QueueDispatchAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (!_jobs.TryGetValue(jobId, out var job) || job.State != ValidationJobState.Failed)
+                throw new InvalidOperationException($"Validation job '{jobId}' could not be queued from its current state.");
+            if (_items.TryGetValue(jobId, out var items))
+            {
+                foreach (var item in items.Values.Where(value => value.State == ValidationJobItemState.Processing).ToArray())
+                    items[item.Position] = item with
+                    {
+                        State = ValidationJobItemState.Pending,
+                        LeaseOwner = null,
+                        LeaseExpiresAtUtc = null
+                    };
+            }
+            _dispatches[jobId] = new(dispatchId, chunkCount, ValidationJobDispatchState.Pending, 0);
+            _jobs[jobId] = job with
+            {
+                State = ValidationJobState.Requested,
+                FailureReason = null,
+                DispatchState = ValidationJobDispatchState.Pending,
+                DispatchId = dispatchId,
+                DispatchChunkCount = chunkCount,
+                UpdatedAtUtc = timeProvider.GetUtcNow()
+            };
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<ValidationJobDispatch>> ClaimPendingAsync(
+        int take,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            var now = timeProvider.GetUtcNow();
+            var available = _dispatches
+                .Where(pair =>
+                    pair.Value.State == ValidationJobDispatchState.Pending &&
+                    (pair.Value.RetryAtUtc is null || pair.Value.RetryAtUtc <= now) ||
+                    pair.Value.State == ValidationJobDispatchState.Claimed &&
+                    (pair.Value.LeaseExpiresAtUtc is null || pair.Value.LeaseExpiresAtUtc <= now))
+                .OrderBy(pair => _jobs[pair.Key].CreatedAtUtc)
+                .Take(take)
+                .ToArray();
+            var results = new List<ValidationJobDispatch>(available.Length);
+            foreach (var pair in available)
+            {
+                var claimed = pair.Value with
+                {
+                    State = ValidationJobDispatchState.Claimed,
+                    AttemptCount = pair.Value.AttemptCount + 1,
+                    LeaseOwner = leaseOwner,
+                    LeaseExpiresAtUtc = now.Add(leaseDuration)
+                };
+                _dispatches[pair.Key] = claimed;
+                _jobs[pair.Key] = _jobs[pair.Key] with { DispatchState = ValidationJobDispatchState.Claimed };
+                results.Add(new(pair.Key, claimed.DispatchId, claimed.ChunkCount, claimed.AttemptCount));
+            }
+            return Task.FromResult<IReadOnlyList<ValidationJobDispatch>>(results);
+        }
+    }
+
+    public Task<bool> CompleteAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (!_dispatches.TryGetValue(jobId, out var dispatch) ||
+                dispatch.DispatchId != dispatchId || dispatch.State != ValidationJobDispatchState.Claimed ||
+                dispatch.LeaseOwner != leaseOwner)
+                return Task.FromResult(false);
+            _dispatches[jobId] = dispatch with
+            {
+                State = ValidationJobDispatchState.Published,
+                LeaseOwner = null,
+                LeaseExpiresAtUtc = null,
+                RetryAtUtc = null,
+                LastError = null
+            };
+            var job = _jobs[jobId];
+            _jobs[jobId] = job with
+            {
+                State = job.State == ValidationJobState.Requested ? ValidationJobState.Queued : job.State,
+                DispatchState = ValidationJobDispatchState.Published,
+                UpdatedAtUtc = timeProvider.GetUtcNow()
+            };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> ReleaseAsync(
+        string jobId,
+        string dispatchId,
+        string leaseOwner,
+        DateTimeOffset retryAtUtc,
+        string failureReason,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (!_dispatches.TryGetValue(jobId, out var dispatch) ||
+                dispatch.DispatchId != dispatchId || dispatch.State != ValidationJobDispatchState.Claimed ||
+                dispatch.LeaseOwner != leaseOwner)
+                return Task.FromResult(false);
+            _dispatches[jobId] = dispatch with
+            {
+                State = ValidationJobDispatchState.Pending,
+                LeaseOwner = null,
+                LeaseExpiresAtUtc = null,
+                RetryAtUtc = retryAtUtc,
+                LastError = failureReason
+            };
+            _jobs[jobId] = _jobs[jobId] with
+            {
+                DispatchState = ValidationJobDispatchState.Pending,
+                UpdatedAtUtc = timeProvider.GetUtcNow()
+            };
+            return Task.FromResult(true);
+        }
+    }
+
     public Task ProjectAsync(
         string jobId,
         string validationId,
@@ -603,6 +894,16 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
         }
         return Task.CompletedTask;
     }
+
+    private sealed record DispatchControl(
+        string DispatchId,
+        int ChunkCount,
+        ValidationJobDispatchState State,
+        int AttemptCount,
+        string? LeaseOwner = null,
+        DateTimeOffset? LeaseExpiresAtUtc = null,
+        DateTimeOffset? RetryAtUtc = null,
+        string? LastError = null);
 }
 
 public sealed class AzureServiceBusValidationJobDispatcher(IOptions<EmailValidationOptions> options) : IValidationJobDispatcher, IAsyncDisposable
@@ -610,16 +911,20 @@ public sealed class AzureServiceBusValidationJobDispatcher(IOptions<EmailValidat
     private readonly ValidationJobsOptions _options = options.Value.Jobs;
     private ServiceBusClient? _client;
     private ServiceBusSender? _sender;
-    public async Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default)
+    public async Task EnqueueAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default)
     {
         _client ??= new ServiceBusClient(_options.ServiceBusConnectionString);
         _sender ??= _client.CreateSender(_options.QueueName);
         for (var offset = 0; offset < chunkCount; offset += 100)
         {
             var count = Math.Min(100, chunkCount - offset);
-            var messages = Enumerable.Range(0, count).Select(_ => new ServiceBusMessage(BinaryData.FromString(jobId))
+            var messages = Enumerable.Range(0, count).Select(index => new ServiceBusMessage(BinaryData.FromString(jobId))
             {
-                MessageId = Guid.NewGuid().ToString("N"),
+                MessageId = $"{dispatchId}:{offset + index}",
                 CorrelationId = jobId,
                 Subject = "email-validation-job-chunk",
                 ContentType = "text/plain"
@@ -636,7 +941,11 @@ public sealed class AzureServiceBusValidationJobDispatcher(IOptions<EmailValidat
 
 public sealed class DisabledValidationJobDispatcher : IValidationJobDispatcher
 {
-    public Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default) =>
+    public Task EnqueueAsync(
+        string jobId,
+        string dispatchId,
+        int chunkCount,
+        CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException("Asynchronous validation jobs are not enabled.");
 }
 

@@ -9,19 +9,29 @@ namespace EmailValidation.Core.Tests;
 public sealed class ValidationJobTests
 {
     [Fact]
-    public async Task Create_PersistsItemsAndQueuesIdentifierOnly()
+    public async Task Create_PersistsItemsAndDurableDispatchBeforePublishing()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var dispatcher = new RecordingDispatcher();
-        var service = new ValidationJobService(store, dispatcher, Options(), TimeProvider.System);
+        var options = Options();
+        var service = new ValidationJobService(store, options, TimeProvider.System);
 
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             ["one@example.com", "two@example.com"], EnableSmtp: false));
 
-        Assert.Equal(ValidationJobState.Queued, job.State);
+        Assert.Equal(ValidationJobState.Requested, job.State);
+        Assert.Equal(ValidationJobDispatchState.Pending, job.DispatchState);
+        Assert.False(string.IsNullOrWhiteSpace(job.DispatchId));
+        Assert.Equal(1, job.DispatchChunkCount);
         Assert.Equal(2, job.TotalItems);
         Assert.False(job.EnableSmtp);
+        Assert.Null(dispatcher.JobId);
+        Assert.Equal(1, await Outbox(store, dispatcher, options, TimeProvider.System).DispatchPendingAsync(20));
+        job = (await service.GetAsync(job.JobId))!;
+        Assert.Equal(ValidationJobState.Queued, job.State);
+        Assert.Equal(ValidationJobDispatchState.Published, job.DispatchState);
         Assert.Equal(job.JobId, dispatcher.JobId);
+        Assert.Equal(job.DispatchId, dispatcher.DispatchId);
         Assert.Equal(1, dispatcher.MessageCount);
         Assert.Equal(["one@example.com", "two@example.com"],
             (await service.GetResultsAsync(job.JobId, 0, 10)).Select(value => value.Email));
@@ -31,7 +41,7 @@ public sealed class ValidationJobTests
     public async Task Create_IgnoresBlankEmailsAndPreservesTheirSourceRowPositions()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
 
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             ["one@example.com", " ", "two@example.com"],
@@ -47,8 +57,7 @@ public sealed class ValidationJobTests
     public async Task Processor_UsesBoundedConcurrencyAndCompletesWithProgress()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var dispatcher = new RecordingDispatcher();
-        var service = new ValidationJobService(store, dispatcher, Options(maximumConcurrency: 2), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(maximumConcurrency: 2), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             Enumerable.Range(0, 7).Select(index => $"person{index}@example.com").ToArray()));
         var validator = new TrackingValidator();
@@ -67,7 +76,7 @@ public sealed class ValidationJobTests
     public async Task Processor_PreservesPartialErrorsAndCompletesWithErrors()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com", "fail@example.com"]));
         var processor = Processor(store, new TrackingValidator("fail@example.com"), Options());
 
@@ -85,7 +94,7 @@ public sealed class ValidationJobTests
     public async Task Create_RejectsSourceFileThatAlreadyCompleted()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
         var request = new CreateValidationJobRequest(
             ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
         var job = await service.CreateAsync(request);
@@ -100,25 +109,31 @@ public sealed class ValidationJobTests
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var dispatcher = new RecordingDispatcher();
-        var service = new ValidationJobService(store, dispatcher, Options(), TimeProvider.System);
+        var options = Options();
+        var service = new ValidationJobService(store, options, TimeProvider.System);
         var request = new CreateValidationJobRequest(
             ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
         var job = await service.CreateAsync(request);
+        var originalDispatchId = job.DispatchId;
         await store.TrySetFailedAsync(job.JobId, "worker failure");
 
         var retried = await service.CreateAsync(request);
 
         Assert.Equal(job.JobId, retried.JobId);
-        Assert.Equal(ValidationJobState.Queued, retried.State);
-        Assert.Equal(2, dispatcher.EnqueueCount);
-        Assert.Equal(2, dispatcher.MessageCount);
+        Assert.Equal(ValidationJobState.Requested, retried.State);
+        Assert.Equal(ValidationJobDispatchState.Pending, retried.DispatchState);
+        Assert.NotEqual(originalDispatchId, retried.DispatchId);
+        Assert.Equal(0, dispatcher.EnqueueCount);
+        Assert.Equal(1, await Outbox(store, dispatcher, options, TimeProvider.System).DispatchPendingAsync(20));
+        Assert.Equal(1, dispatcher.EnqueueCount);
+        Assert.Equal(1, dispatcher.MessageCount);
     }
 
     [Fact]
     public async Task TerminalFailure_DoesNotOverwriteCompletedJob()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
         var processor = Processor(store, new TrackingValidator(), Options());
         await processor.ProcessAsync(job.JobId);
@@ -133,7 +148,7 @@ public sealed class ValidationJobTests
     public async Task TerminalFailure_MarksQueuedJobFailed()
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
 
         var changed = await store.TrySetFailedAsync(job.JobId, "repeated worker failures");
@@ -150,7 +165,7 @@ public sealed class ValidationJobTests
         const string validationId = "validation-shared";
         var now = DateTimeOffset.UtcNow;
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             ["duplicate@example.com", "duplicate@example.com"]));
         var provisional = Result("duplicate@example.com", validationId,
@@ -196,13 +211,43 @@ public sealed class ValidationJobTests
     {
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var dispatcher = new RecordingDispatcher();
-        var service = new ValidationJobService(store, dispatcher, Options(), TimeProvider.System);
+        var options = Options();
+        var service = new ValidationJobService(store, options, TimeProvider.System);
 
         await service.CreateAsync(new CreateValidationJobRequest(
             Enumerable.Range(0, 7).Select(index => $"person{index}@example.com").ToArray()));
 
+        Assert.Equal(0, dispatcher.EnqueueCount);
+        Assert.Equal(1, await Outbox(store, dispatcher, options, TimeProvider.System).DispatchPendingAsync(20));
         Assert.Equal(1, dispatcher.EnqueueCount);
         Assert.Equal(3, dispatcher.MessageCount);
+    }
+
+    [Fact]
+    public async Task Outbox_RetriesFailedPublicationWithoutLosingTheJob()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 11, 12, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryValidationJobStore(clock);
+        var options = Options();
+        var service = new ValidationJobService(store, options, clock);
+        var dispatcher = new RecordingDispatcher(failures: 1);
+        var outbox = Outbox(store, dispatcher, options, clock);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(["one@example.com"]));
+
+        Assert.Equal(0, await outbox.DispatchPendingAsync(20));
+        Assert.Equal(1, dispatcher.EnqueueCount);
+        Assert.Equal(ValidationJobState.Requested, (await service.GetAsync(job.JobId))!.State);
+        Assert.Equal(0, await outbox.DispatchPendingAsync(20));
+        Assert.Equal(1, dispatcher.EnqueueCount);
+
+        clock.Advance(TimeSpan.FromSeconds(3));
+        Assert.Equal(1, await outbox.DispatchPendingAsync(20));
+
+        var published = await service.GetAsync(job.JobId);
+        Assert.Equal(2, dispatcher.EnqueueCount);
+        Assert.Equal(1, dispatcher.MessageCount);
+        Assert.Equal(ValidationJobState.Queued, published!.State);
+        Assert.Equal(ValidationJobDispatchState.Published, published.DispatchState);
     }
 
     [Fact]
@@ -210,7 +255,7 @@ public sealed class ValidationJobTests
     {
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 11, 12, 0, 0, TimeSpan.Zero));
         var store = new InMemoryValidationJobStore(clock);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), clock);
+        var service = new ValidationJobService(store, Options(), clock);
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             ["one@example.com", "two@example.com", "three@example.com"]));
 
@@ -237,7 +282,7 @@ public sealed class ValidationJobTests
     {
         var settings = Options(maximumConcurrency: 2);
         var store = new InMemoryValidationJobStore(TimeProvider.System);
-        var service = new ValidationJobService(store, new RecordingDispatcher(), settings, TimeProvider.System);
+        var service = new ValidationJobService(store, settings, TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             ["first@hot.test", "second@hot.test", "only@ready.test"]));
         var validator = new TrackingValidator();
@@ -277,6 +322,17 @@ public sealed class ValidationJobTests
             NullLogger<ValidationJobProcessor>.Instance);
     }
 
+    private static ValidationJobOutboxDispatcher Outbox(
+        IValidationJobDispatchOutbox outbox,
+        IValidationJobDispatcher dispatcher,
+        IOptions<EmailValidationOptions> options,
+        TimeProvider timeProvider) => new(
+            outbox,
+            dispatcher,
+            options,
+            timeProvider,
+            NullLogger<ValidationJobOutboxDispatcher>.Instance);
+
     private static EmailValidationResult Result(
         string email,
         string validationId,
@@ -296,15 +352,23 @@ public sealed class ValidationJobTests
             RetryScheduled = state == ValidationResultState.Provisional
         };
 
-    private sealed class RecordingDispatcher : IValidationJobDispatcher
+    private sealed class RecordingDispatcher(int failures = 0) : IValidationJobDispatcher
     {
+        private int _remainingFailures = failures;
         public string? JobId { get; private set; }
+        public string? DispatchId { get; private set; }
         public int EnqueueCount { get; private set; }
         public int MessageCount { get; private set; }
-        public Task EnqueueAsync(string jobId, int chunkCount, CancellationToken cancellationToken = default)
+        public Task EnqueueAsync(
+            string jobId,
+            string dispatchId,
+            int chunkCount,
+            CancellationToken cancellationToken = default)
         {
             JobId = jobId;
+            DispatchId = dispatchId;
             EnqueueCount++;
+            if (_remainingFailures-- > 0) throw new InvalidOperationException("simulated broker failure");
             MessageCount += chunkCount;
             return Task.CompletedTask;
         }

@@ -24,6 +24,7 @@ builder.Services.Configure<EmailValidationOptions>(builder.Configuration.GetSect
 builder.Services.AddEmailValidation();
 builder.Services.AddHostedService<ServiceBusRevalidationWorker>();
 builder.Services.AddHostedService<RevalidationOutboxPublisherService>();
+builder.Services.AddHostedService<ValidationJobOutboxPublisherService>();
 builder.Services.AddHostedService<ServiceBusValidationJobWorker>();
 builder.Services.AddHostedService<ProjectionOutboxPublisherWorker>();
 builder.Services.AddHostedService<ElasticsearchProjectionWorker>();
