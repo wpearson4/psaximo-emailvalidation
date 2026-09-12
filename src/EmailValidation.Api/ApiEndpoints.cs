@@ -262,7 +262,8 @@ public static class ApiEndpoints
         ValidationJobSnapshot? sourceJob = null;
         if (!string.IsNullOrWhiteSpace(sourceFileId))
         {
-            sourceJob = await jobs.GetBySourceFileIdAsync(sourceFileId, cancellationToken).ConfigureAwait(false);
+            sourceJob = await jobs.GetBySourceFileIdAsync(
+                sourceFileId, consumer.TenantId, cancellationToken).ConfigureAwait(false);
             if (sourceJob?.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
                 return Problem(StatusCodes.Status409Conflict, "File already validated",
                     "This source file already has a completed validation job.");
@@ -296,7 +297,8 @@ public static class ApiEndpoints
                         sourceFileId,
                         input.SourceFileName?.Trim(),
                         input.EmailColumn?.Trim(),
-                        sourcePositions), CancellationToken.None).ConfigureAwait(false);
+                        sourcePositions,
+                        TenantId: consumer.TenantId), CancellationToken.None).ConfigureAwait(false);
                 }
                 return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
                     ApiContractMapper.Map(existingJob));
@@ -305,7 +307,7 @@ public static class ApiEndpoints
 
         var jobId = string.IsNullOrWhiteSpace(sourceFileId)
             ? Guid.NewGuid().ToString("N")
-            : sourceJob?.JobId ?? ValidationJobIdentity.FromSourceFileId(sourceFileId);
+            : sourceJob?.JobId ?? ValidationJobIdentity.FromSourceFileId(sourceFileId, consumer.TenantId);
         if (!string.IsNullOrEmpty(key))
         {
             var saved = await resources.TrySaveIdempotentOperationAsync(new IdempotentOperation(
@@ -326,7 +328,8 @@ public static class ApiEndpoints
                     sourceFileId,
                     input.SourceFileName?.Trim(),
                     input.EmailColumn?.Trim(),
-                    sourcePositions),
+                    sourcePositions,
+                    TenantId: consumer.TenantId),
                 CancellationToken.None)
                 .ConfigureAwait(false);
             await resources.GrantAsync(new ResourceOwnership(

@@ -39,6 +39,13 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             new CreateIndexOptions { Name = "ix_job_source_file_state_created", Sparse = true }),
             cancellationToken: cancellationToken).ConfigureAwait(false);
         await _jobs.Indexes.CreateOneAsync(new CreateIndexModel<JobDocument>(
+            Builders<JobDocument>.IndexKeys.Ascending(value => value.TenantId)
+                .Ascending(value => value.SourceFileId)
+                .Ascending(value => value.State)
+                .Descending(value => value.CreatedAtUtc),
+            new CreateIndexOptions { Name = "ix_job_tenant_source_file_state_created", Sparse = true }),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _jobs.Indexes.CreateOneAsync(new CreateIndexModel<JobDocument>(
             Builders<JobDocument>.IndexKeys.Ascending(value => value.ItemsReady)
                 .Ascending(value => value.DispatchState)
                 .Ascending(value => value.DispatchRetryAtUtc)
@@ -87,6 +94,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
 
     public async Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
         string sourceFileId,
+        string? tenantId = null,
         CancellationToken cancellationToken = default)
     {
         var successfulStates = new[]
@@ -95,11 +103,13 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             ValidationJobState.CompletedWithErrors
         };
         var successfulFilter = Builders<JobDocument>.Filter.Eq(value => value.SourceFileId, sourceFileId)
+            & Builders<JobDocument>.Filter.Eq(value => value.TenantId, tenantId)
             & Builders<JobDocument>.Filter.In(value => value.State, successfulStates);
         var successful = await _jobs.Find(successfulFilter)
             .SortByDescending(value => value.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        var latest = successful ?? await _jobs.Find(value => value.SourceFileId == sourceFileId)
+        var latest = successful ?? await _jobs.Find(value => value.SourceFileId == sourceFileId &&
+                value.TenantId == tenantId)
             .SortByDescending(value => value.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         return latest?.ToModel();
@@ -468,6 +478,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public string? SourceFileId { get; set; }
         public string? SourceFileName { get; set; }
         public string? EmailColumn { get; set; }
+        public string? TenantId { get; set; }
         public bool ItemsReady { get; set; }
         public ValidationJobDispatchState DispatchState { get; set; }
         public string? DispatchId { get; set; }
@@ -485,14 +496,15 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             FailedItems = value.FailedItems, UpdatedAtUtc = value.UpdatedAtUtc,
             FailureReason = value.FailureReason, EnableSmtp = value.EnableSmtp,
             SourceFileId = value.SourceFileId, SourceFileName = value.SourceFileName,
-            EmailColumn = value.EmailColumn,
+            EmailColumn = value.EmailColumn, TenantId = value.TenantId,
             DispatchState = value.DispatchState,
             DispatchId = value.DispatchId,
             DispatchChunkCount = value.DispatchChunkCount
         };
         public ValidationJobSnapshot ToModel() => new(Id, CreatedAtUtc, State, TotalItems, ProcessedItems,
             FinalItems, ProvisionalItems, FailedItems, UpdatedAtUtc, FailureReason, EnableSmtp,
-            SourceFileId, SourceFileName, EmailColumn, DispatchState, DispatchId, DispatchChunkCount);
+            SourceFileId, SourceFileName, EmailColumn, DispatchState, DispatchId, DispatchChunkCount,
+            TenantId);
     }
 
     [BsonIgnoreExtraElements]
@@ -549,9 +561,11 @@ public sealed class InMemoryValidationJobStore(TimeProvider timeProvider) : IVal
         Task.FromResult(_jobs.GetValueOrDefault(jobId));
     public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
         string sourceFileId,
+        string? tenantId = null,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(_jobs.Values
-            .Where(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal))
+            .Where(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal) &&
+                string.Equals(job.TenantId, tenantId, StringComparison.Ordinal))
             .OrderByDescending(job => job.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
             .ThenByDescending(job => job.CreatedAtUtc)
             .FirstOrDefault());

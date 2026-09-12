@@ -209,6 +209,7 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal(firstJob!.JobId, secondJob!.JobId);
         Assert.Equal("search-42", firstJob.SourceFileId);
         Assert.Equal("customers.csv", firstJob.SourceFileName);
+        Assert.Equal("tenant-a", _factory.JobService.LastRequest!.TenantId);
 
         var history = await writer.GetFromJsonAsync<ValidationJobPageV1Response>(
             "/v1/email-validation-jobs?skip=0&take=25");
@@ -585,9 +586,11 @@ public sealed class ApiStatusService : IValidationStatusQueryService
 public sealed class ApiJobService : IValidationJobService
 {
     private readonly Dictionary<string, (ValidationJobSnapshot Job, ValidationJobItem[] Items)> _jobs = [];
+    public CreateValidationJobRequest? LastRequest { get; private set; }
 
     public Task<ValidationJobSnapshot> CreateAsync(CreateValidationJobRequest request, CancellationToken cancellationToken = default)
     {
+        LastRequest = request;
         var now = DateTimeOffset.UtcNow;
         var id = request.JobId ?? Guid.NewGuid().ToString("N");
         var job = new ValidationJobSnapshot(
@@ -602,7 +605,8 @@ public sealed class ApiJobService : IValidationJobService
             now,
             SourceFileId: request.SourceFileId,
             SourceFileName: request.SourceFileName,
-            EmailColumn: request.EmailColumn);
+            EmailColumn: request.EmailColumn,
+            TenantId: request.TenantId);
         _jobs[id] = (job, request.Emails.Select((email, index) =>
             new ValidationJobItem(id, request.SourcePositions?[index] ?? index, email,
                 ValidationJobItemState.Pending)).ToArray());
@@ -614,11 +618,13 @@ public sealed class ApiJobService : IValidationJobService
 
     public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
         string sourceFileId,
+        string? tenantId = null,
         CancellationToken cancellationToken = default) =>
         Task.FromResult<ValidationJobSnapshot?>(_jobs.Values
             .Select(value => value.Job)
             .OrderByDescending(job => job.CreatedAtUtc)
-            .FirstOrDefault(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal)));
+            .FirstOrDefault(job => string.Equals(job.SourceFileId, sourceFileId, StringComparison.Ordinal) &&
+                string.Equals(job.TenantId, tenantId, StringComparison.Ordinal)));
 
     public void CompleteSourceFile(string sourceFileId)
     {

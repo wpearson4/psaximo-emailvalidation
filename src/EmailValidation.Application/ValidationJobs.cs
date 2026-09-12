@@ -23,10 +23,13 @@ public sealed class ValidationJobSourceFileActiveException()
 
 public static class ValidationJobIdentity
 {
-    public static string FromSourceFileId(string sourceFileId)
+    public static string FromSourceFileId(string sourceFileId, string? tenantId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceFileId);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFileId.Trim()));
+        var sourceIdentity = string.IsNullOrWhiteSpace(tenantId)
+            ? sourceFileId.Trim()
+            : $"{tenantId.Trim()}\n{sourceFileId.Trim()}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceIdentity));
         return $"file_{Convert.ToHexStringLower(hash)}";
     }
 }
@@ -38,7 +41,8 @@ public sealed record CreateValidationJobRequest(
     string? SourceFileId = null,
     string? SourceFileName = null,
     string? EmailColumn = null,
-    IReadOnlyList<int>? SourcePositions = null);
+    IReadOnlyList<int>? SourcePositions = null,
+    string? TenantId = null);
 
 public sealed record ValidationJobSnapshot(
     string JobId,
@@ -57,7 +61,8 @@ public sealed record ValidationJobSnapshot(
     string? EmailColumn = null,
     ValidationJobDispatchState DispatchState = ValidationJobDispatchState.Pending,
     string? DispatchId = null,
-    int DispatchChunkCount = 0);
+    int DispatchChunkCount = 0,
+    string? TenantId = null);
 
 public sealed record ValidationJobItem(
     string JobId,
@@ -73,7 +78,10 @@ public interface IValidationJobStore
 {
     Task CreateAsync(ValidationJobSnapshot job, IReadOnlyList<ValidationJobItem> items, CancellationToken cancellationToken = default);
     Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default);
-    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(string sourceFileId, CancellationToken cancellationToken = default);
+    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        string? tenantId = null,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> ClaimPendingAsync(
         string jobId,
@@ -182,7 +190,10 @@ public interface IValidationJobService
 {
     Task<ValidationJobSnapshot> CreateAsync(CreateValidationJobRequest request, CancellationToken cancellationToken = default);
     Task<ValidationJobSnapshot?> GetAsync(string jobId, CancellationToken cancellationToken = default);
-    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(string sourceFileId, CancellationToken cancellationToken = default);
+    Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
+        string sourceFileId,
+        string? tenantId = null,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(string jobId, int skip, int take, CancellationToken cancellationToken = default);
 }
 
@@ -258,14 +269,15 @@ public sealed class ValidationJobService(
 
         var now = timeProvider.GetUtcNow();
         var sourceFileId = request.SourceFileId?.Trim();
+        var tenantId = string.IsNullOrWhiteSpace(request.TenantId) ? null : request.TenantId.Trim();
         var existing = string.IsNullOrWhiteSpace(sourceFileId)
             ? null
-            : await store.GetBySourceFileIdAsync(sourceFileId, cancellationToken).ConfigureAwait(false);
+            : await store.GetBySourceFileIdAsync(sourceFileId, tenantId, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
             return await ResolveExistingSourceFileAsync(existing, cancellationToken).ConfigureAwait(false);
 
         var jobId = !string.IsNullOrWhiteSpace(sourceFileId)
-            ? ValidationJobIdentity.FromSourceFileId(sourceFileId)
+            ? ValidationJobIdentity.FromSourceFileId(sourceFileId, tenantId)
             : string.IsNullOrWhiteSpace(request.JobId)
                 ? Guid.NewGuid().ToString("N")
                 : request.JobId.Trim();
@@ -280,7 +292,8 @@ public sealed class ValidationJobService(
             EmailColumn: request.EmailColumn,
             DispatchState: ValidationJobDispatchState.Pending,
             DispatchId: Guid.NewGuid().ToString("N"),
-            DispatchChunkCount: ChunkCount(inputs.Length));
+            DispatchChunkCount: ChunkCount(inputs.Length),
+            TenantId: tenantId);
         var items = inputs.Select(input =>
             new ValidationJobItem(jobId, input.Position, input.Email!, ValidationJobItemState.Pending)).ToArray();
         try
@@ -303,8 +316,9 @@ public sealed class ValidationJobService(
 
     public Task<ValidationJobSnapshot?> GetBySourceFileIdAsync(
         string sourceFileId,
+        string? tenantId = null,
         CancellationToken cancellationToken = default) =>
-        store.GetBySourceFileIdAsync(sourceFileId.Trim(), cancellationToken);
+        store.GetBySourceFileIdAsync(sourceFileId.Trim(), tenantId?.Trim(), cancellationToken);
 
     public Task<IReadOnlyList<ValidationJobItem>> GetResultsAsync(
         string jobId, int skip, int take, CancellationToken cancellationToken = default) =>
@@ -414,7 +428,8 @@ public sealed class ValidationJobProcessor(
             {
                 leaseRenewal = RenewClaimsAsync(
                     jobId, leaseOwner, leaseDuration, leaseRenewalCancellation.Token);
-                var request = new EmailValidationRequest(job.EnableSmtp, JobId: job.JobId);
+                var request = new EmailValidationRequest(
+                    job.EnableSmtp, TenantId: job.TenantId, JobId: job.JobId);
                 var work = items.Select(item => new ValidationWorkItem(
                     item.Position, item.Email, request)).ToArray();
                 await foreach (var scheduled in scheduler.ScheduleStreamingAsync(work, cancellationToken))

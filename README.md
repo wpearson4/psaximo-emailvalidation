@@ -84,7 +84,9 @@ bound execution; original positions are retained for ordered result retrieval. T
 through the existing App Configuration/Key Vault path.
 Results with cooldown-driven retry work remain downloadable as provisional rows. The revalidation worker replaces
 those rows with the latest canonical lifecycle result and updates the job's final/provisional counters before settling
-each retry message, so clients can poll the job and generate progressively updated downloads.
+each retry message, so clients can poll the job and generate progressively updated downloads. Authenticated tenant
+context is persisted on each bulk job, scopes source-file identity, and follows every validation into lifecycle and
+projection records.
 
 Unicode domains are normalized with the platform IDNA implementation. Unicode local parts remain valid and are
 marked `RequiresSmtpUtf8`. SMTP probes parse EHLO capabilities and do not send an internationalized recipient when

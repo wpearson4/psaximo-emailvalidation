@@ -293,6 +293,42 @@ public sealed class ValidationJobTests
             validator.StartOrder.IndexOf("second@hot.test"));
     }
 
+    [Fact]
+    public async Task Processor_PropagatesPersistedTenantContextToEveryValidation()
+    {
+        var settings = Options();
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, settings, TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["one@example.com", "two@example.com"], TenantId: " tenant-a "));
+        var validator = new TrackingValidator();
+
+        await Processor(store, validator, settings).ProcessAsync(job.JobId);
+
+        Assert.Equal("tenant-a", job.TenantId);
+        Assert.Equal(2, validator.Requests.Count);
+        Assert.All(validator.Requests, request =>
+        {
+            Assert.Equal("tenant-a", request.TenantId);
+            Assert.Equal(job.JobId, request.JobId);
+        });
+    }
+
+    [Fact]
+    public async Task SourceFileIdentityAndLookup_AreScopedByTenant()
+    {
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, Options(), TimeProvider.System);
+        var first = await service.CreateAsync(new CreateValidationJobRequest(
+            ["one@example.com"], SourceFileId: "shared-file", TenantId: "tenant-a"));
+        var second = await service.CreateAsync(new CreateValidationJobRequest(
+            ["two@example.com"], SourceFileId: "shared-file", TenantId: "tenant-b"));
+
+        Assert.NotEqual(first.JobId, second.JobId);
+        Assert.Equal(first.JobId, (await service.GetBySourceFileIdAsync("shared-file", "tenant-a"))!.JobId);
+        Assert.Equal(second.JobId, (await service.GetBySourceFileIdAsync("shared-file", "tenant-b"))!.JobId);
+    }
+
     private static IOptions<EmailValidationOptions> Options(int maximumConcurrency = 2) =>
         Microsoft.Extensions.Options.Options.Create(new EmailValidationOptions
         {
@@ -388,12 +424,17 @@ public sealed class ValidationJobTests
         private int _maximumActive;
         public int MaximumActive => _maximumActive;
         public List<string> StartOrder { get; } = [];
+        public List<EmailValidationRequest> Requests { get; } = [];
 
         public async Task<EmailValidationResult> ValidateAsync(
             string email, EmailValidationRequest request, CancellationToken cancellationToken = default)
         {
             if (email == failureEmail) throw new InvalidOperationException("simulated item failure");
-            lock (_sync) StartOrder.Add(email);
+            lock (_sync)
+            {
+                StartOrder.Add(email);
+                Requests.Add(request);
+            }
             var active = Interlocked.Increment(ref _active);
             int observed;
             while (active > (observed = _maximumActive))
