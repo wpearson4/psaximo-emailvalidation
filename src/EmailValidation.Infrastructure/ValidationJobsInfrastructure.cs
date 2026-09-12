@@ -327,19 +327,20 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         for (var index = 0; index < take; index++)
         {
             var now = _timeProvider.GetUtcNow();
+            var nowUtc = now.UtcDateTime;
             var available = Builders<JobDocument>.Filter.Eq(value => value.ItemsReady, true) &
                 (Builders<JobDocument>.Filter.Eq(value => value.DispatchState, ValidationJobDispatchState.Pending) &
                  (Builders<JobDocument>.Filter.Eq(value => value.DispatchRetryAtUtc, null) |
-                  Builders<JobDocument>.Filter.Lte(value => value.DispatchRetryAtUtc, now)) |
+                  Builders<JobDocument>.Filter.Lte(value => value.DispatchRetryAtUtc, nowUtc)) |
                  Builders<JobDocument>.Filter.Eq(value => value.DispatchState, ValidationJobDispatchState.Claimed) &
                  (Builders<JobDocument>.Filter.Eq(value => value.DispatchLeaseExpiresAtUtc, null) |
-                  Builders<JobDocument>.Filter.Lte(value => value.DispatchLeaseExpiresAtUtc, now)));
+                  Builders<JobDocument>.Filter.Lte(value => value.DispatchLeaseExpiresAtUtc, nowUtc)));
             var document = await _jobs.FindOneAndUpdateAsync(
                 available,
                 Builders<JobDocument>.Update
                     .Set(value => value.DispatchState, ValidationJobDispatchState.Claimed)
                     .Set(value => value.DispatchLeaseOwner, leaseOwner)
-                    .Set(value => value.DispatchLeaseExpiresAtUtc, now.Add(leaseDuration))
+                    .Set(value => value.DispatchLeaseExpiresAtUtc, now.Add(leaseDuration).UtcDateTime)
                     .Inc(value => value.DispatchAttemptCount, 1),
                 new FindOneAndUpdateOptions<JobDocument>
                 {
@@ -397,7 +398,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
                 value.DispatchLeaseOwner == leaseOwner,
             Builders<JobDocument>.Update
                 .Set(value => value.DispatchState, ValidationJobDispatchState.Pending)
-                .Set(value => value.DispatchRetryAtUtc, retryAtUtc)
+                .Set(value => value.DispatchRetryAtUtc, retryAtUtc.UtcDateTime)
                 .Set(value => value.DispatchLastError, failureReason)
                 .Unset(value => value.DispatchLeaseOwner)
                 .Unset(value => value.DispatchLeaseExpiresAtUtc)
@@ -485,8 +486,13 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public int DispatchChunkCount { get; set; }
         public int DispatchAttemptCount { get; set; }
         public string? DispatchLeaseOwner { get; set; }
-        public DateTimeOffset? DispatchLeaseExpiresAtUtc { get; set; }
-        public DateTimeOffset? DispatchRetryAtUtc { get; set; }
+        // MongoDB.Driver serializes DateTimeOffset as a two-element array. These fields share a
+        // compound index with CreatedAtUtc (also DateTimeOffset), so they must remain scalar UTC
+        // BSON dates to avoid MongoDB's parallel-array index restriction during lease updates.
+        [BsonDateTimeOptions(Kind = DateTimeKind.Utc)]
+        public DateTime? DispatchLeaseExpiresAtUtc { get; set; }
+        [BsonDateTimeOptions(Kind = DateTimeKind.Utc)]
+        public DateTime? DispatchRetryAtUtc { get; set; }
         public string? DispatchLastError { get; set; }
         public static JobDocument FromModel(ValidationJobSnapshot value) => new()
         {

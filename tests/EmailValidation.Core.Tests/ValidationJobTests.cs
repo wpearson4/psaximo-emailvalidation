@@ -3,11 +3,28 @@ using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
 
 namespace EmailValidation.Core.Tests;
 
 public sealed class ValidationJobTests
 {
+    [Fact]
+    public void MongoOutbox_UsesScalarUtcDatesForIndexedLeaseFields()
+    {
+        var now = new DateTimeOffset(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
+        var document = MongoValidationJobStore.JobDocument.FromModel(new ValidationJobSnapshot(
+            "job-1", now, ValidationJobState.Requested, 1, 0, 0, 0, 0, now,
+            DispatchId: "dispatch-1", DispatchChunkCount: 1));
+        document.DispatchLeaseExpiresAtUtc = now.AddMinutes(1).UtcDateTime;
+        document.DispatchRetryAtUtc = now.AddMinutes(2).UtcDateTime;
+
+        var bson = document.ToBsonDocument();
+
+        Assert.Equal(BsonType.DateTime, bson[nameof(document.DispatchLeaseExpiresAtUtc)].BsonType);
+        Assert.Equal(BsonType.DateTime, bson[nameof(document.DispatchRetryAtUtc)].BsonType);
+    }
+
     [Fact]
     public async Task Create_PersistsItemsAndDurableDispatchBeforePublishing()
     {
