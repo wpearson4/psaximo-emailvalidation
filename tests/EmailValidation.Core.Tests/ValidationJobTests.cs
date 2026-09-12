@@ -4,6 +4,8 @@ using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Driver;
 
 namespace EmailValidation.Core.Tests;
 
@@ -23,6 +25,21 @@ public sealed class ValidationJobTests
 
         Assert.Equal(BsonType.DateTime, bson[nameof(document.DispatchLeaseExpiresAtUtc)].BsonType);
         Assert.Equal(BsonType.DateTime, bson[nameof(document.DispatchRetryAtUtc)].BsonType);
+    }
+
+    [Fact]
+    public void MongoFinalization_UsesAnExplicitInFilterForActiveStates()
+    {
+        var serializer = BsonSerializer.LookupSerializer<MongoValidationJobStore.JobDocument>();
+
+        var filter = MongoValidationJobStore.ActiveJobFilter("job-1")
+            .Render(new RenderArgs<MongoValidationJobStore.JobDocument>(
+                serializer, BsonSerializer.SerializerRegistry));
+
+        Assert.Equal("job-1", filter["_id"].AsString);
+        var states = filter[nameof(MongoValidationJobStore.JobDocument.State)]
+            .AsBsonDocument["$in"].AsBsonArray;
+        Assert.Equal(3, states.Count);
     }
 
     [Fact]

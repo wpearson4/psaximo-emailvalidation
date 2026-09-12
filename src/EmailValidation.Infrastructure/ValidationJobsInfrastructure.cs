@@ -270,9 +270,8 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         var finalState = failedItems == 0
             ? ValidationJobState.Completed
             : ValidationJobState.CompletedWithErrors;
-        var activeStates = new[] { ValidationJobState.Requested, ValidationJobState.Queued, ValidationJobState.Processing };
         var updated = await _jobs.UpdateOneAsync(
-            value => value.Id == jobId && activeStates.Contains(value.State),
+            ActiveJobFilter(jobId),
             Builders<JobDocument>.Update.Set(value => value.State, finalState)
                 .Set(value => value.FailureReason, null)
                 .Set(value => value.ProcessedItems, job.TotalItems)
@@ -283,6 +282,15 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return updated.ModifiedCount > 0 ? finalState : null;
     }
+
+    internal static FilterDefinition<JobDocument> ActiveJobFilter(string jobId) =>
+        Builders<JobDocument>.Filter.Eq(value => value.Id, jobId) &
+        Builders<JobDocument>.Filter.In(value => value.State, new[]
+        {
+            ValidationJobState.Requested,
+            ValidationJobState.Queued,
+            ValidationJobState.Processing
+        });
 
     public async Task QueueDispatchAsync(
         string jobId,
