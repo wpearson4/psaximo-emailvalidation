@@ -24,7 +24,6 @@ catch (EmailValidationConfigurationException exception)
 builder.Configuration.AddEnvironmentVariables();
 builder.Services.Configure<EmailValidationOptions>(builder.Configuration.GetSection("EmailValidation"));
 builder.Services.AddEmailValidation();
-builder.Services.AddSingleton<IDomainValidationScheduler, DomainValidationScheduler>();
 builder.Services.AddSingleton<CsvFileProcessor>();
 builder.Services.AddSingleton<ConsoleApplication>();
 builder.Logging.ClearProviders();

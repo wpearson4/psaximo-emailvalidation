@@ -297,7 +297,7 @@ public sealed class ValidationJobService(
 
 public sealed class ValidationJobProcessor(
     IValidationJobStore store,
-    IEmailValidator validator,
+    IDomainValidationScheduler scheduler,
     IOptions<EmailValidationOptions> options,
     TimeProvider timeProvider,
     ILogger<ValidationJobProcessor> logger,
@@ -327,29 +327,30 @@ public sealed class ValidationJobProcessor(
             {
                 leaseRenewal = RenewClaimsAsync(
                     jobId, leaseOwner, leaseDuration, leaseRenewalCancellation.Token);
-                await Parallel.ForEachAsync(items, new ParallelOptions
+                var request = new EmailValidationRequest(job.EnableSmtp, JobId: job.JobId);
+                var work = items.Select(item => new ValidationWorkItem(
+                    item.Position, item.Email, request)).ToArray();
+                await foreach (var scheduled in scheduler.ScheduleStreamingAsync(work, cancellationToken))
                 {
-                    MaxDegreeOfParallelism = _options.MaximumConcurrency,
-                    CancellationToken = cancellationToken
-                }, async (item, token) =>
-                {
-                    try
+                    if (scheduled.FailureReason is null)
                     {
-                        var result = await validator.ValidateAsync(item.Email,
-                            new EmailValidationRequest(job.EnableSmtp, JobId: job.JobId), token).ConfigureAwait(false);
                         if (!await store.CompleteClaimAsync(
-                                jobId, item.Position, leaseOwner, result, null, token).ConfigureAwait(false))
+                                jobId, checked((int)scheduled.Sequence), leaseOwner, scheduled.Result, null,
+                                cancellationToken).ConfigureAwait(false))
                             logger.LogWarning(
                                 "Validation job {JobId} item {Position} completed after its lease was lost",
-                                jobId, item.Position);
+                                jobId, scheduled.Sequence);
                     }
-                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    else
                     {
-                        logger.LogWarning(exception, "Validation job {JobId} item {Position} failed", jobId, item.Position);
+                        logger.LogWarning(
+                            "Validation job {JobId} item {Position} failed: {FailureReason}",
+                            jobId, scheduled.Sequence, scheduled.FailureReason);
                         await store.CompleteClaimAsync(
-                            jobId, item.Position, leaseOwner, null, exception.Message, token).ConfigureAwait(false);
+                            jobId, checked((int)scheduled.Sequence), leaseOwner, null,
+                            scheduled.FailureReason, cancellationToken).ConfigureAwait(false);
                     }
-                }).ConfigureAwait(false);
+                }
             }
 
             var finalState = await store.TryFinalizeAsync(jobId, cancellationToken).ConfigureAwait(false);

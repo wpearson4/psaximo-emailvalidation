@@ -235,7 +235,8 @@ public sealed record ValidationWorkItem(long Sequence, string Email, EmailValida
 public sealed record ValidationWorkResult(
     long Sequence,
     EmailValidationResult Result,
-    DateTimeOffset CompletedAt);
+    DateTimeOffset CompletedAt,
+    string? FailureReason = null);
 
 public sealed record DomainSchedulerSnapshot(
     long RowsScheduled,

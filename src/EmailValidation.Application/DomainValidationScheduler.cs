@@ -145,18 +145,20 @@ public sealed class DomainValidationScheduler(
                 ValidationWorkItem item;
                 lock (sync) item = queues[domain].Dequeue();
                 EmailValidationResult result;
+                string? failureReason = null;
                 try
                 {
                     result = await validator.ValidateAsync(item.Email, item.Request, cancellationToken);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception exception) when (exception is IOException or TimeoutException)
+                catch (Exception exception)
                 {
                     logger.LogWarning(exception, "Validation work item {Sequence} failed; continuing with Unknown", item.Sequence);
                     result = FailedValidation(item.Email);
+                    failureReason = exception.Message;
                 }
                 await completed.WriteAsync(
-                    new(item.Sequence, result, DateTimeOffset.UtcNow), cancellationToken);
+                    new(item.Sequence, result, DateTimeOffset.UtcNow, failureReason), cancellationToken);
                 Interlocked.Increment(ref _completed);
 
                 var shouldContinue = false;

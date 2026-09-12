@@ -52,8 +52,7 @@ public sealed class ValidationJobTests
         var job = await service.CreateAsync(new CreateValidationJobRequest(
             Enumerable.Range(0, 7).Select(index => $"person{index}@example.com").ToArray()));
         var validator = new TrackingValidator();
-        var processor = new ValidationJobProcessor(store, validator, Options(maximumConcurrency: 2), TimeProvider.System,
-            NullLogger<ValidationJobProcessor>.Instance);
+        var processor = Processor(store, validator, Options(maximumConcurrency: 2));
 
         for (var chunk = 0; chunk < 3; chunk++) await processor.ProcessAsync(job.JobId);
 
@@ -70,8 +69,7 @@ public sealed class ValidationJobTests
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com", "fail@example.com"]));
-        var processor = new ValidationJobProcessor(store, new TrackingValidator("fail@example.com"), Options(), TimeProvider.System,
-            NullLogger<ValidationJobProcessor>.Instance);
+        var processor = Processor(store, new TrackingValidator("fail@example.com"), Options());
 
         await processor.ProcessAsync(job.JobId);
 
@@ -91,8 +89,7 @@ public sealed class ValidationJobTests
         var request = new CreateValidationJobRequest(
             ["ok@example.com"], SourceFileId: "source-file-1", SourceFileName: "source.csv");
         var job = await service.CreateAsync(request);
-        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(), TimeProvider.System,
-            NullLogger<ValidationJobProcessor>.Instance);
+        var processor = Processor(store, new TrackingValidator(), Options());
         await processor.ProcessAsync(job.JobId);
 
         await Assert.ThrowsAsync<ValidationJobSourceFileCompletedException>(() => service.CreateAsync(request));
@@ -123,8 +120,7 @@ public sealed class ValidationJobTests
         var store = new InMemoryValidationJobStore(TimeProvider.System);
         var service = new ValidationJobService(store, new RecordingDispatcher(), Options(), TimeProvider.System);
         var job = await service.CreateAsync(new CreateValidationJobRequest(["ok@example.com"]));
-        var processor = new ValidationJobProcessor(store, new TrackingValidator(), Options(), TimeProvider.System,
-            NullLogger<ValidationJobProcessor>.Instance);
+        var processor = Processor(store, new TrackingValidator(), Options());
         await processor.ProcessAsync(job.JobId);
 
         var changed = await store.TrySetFailedAsync(job.JobId, "late broker failure");
@@ -236,6 +232,22 @@ public sealed class ValidationJobTests
             "one@example.com", "validation-current", EmailValidationStatus.Valid, ValidationResultState.Final, 1), null));
     }
 
+    [Fact]
+    public async Task Processor_SchedulesAReadyDomainBeforeContinuingAHotDomain()
+    {
+        var settings = Options(maximumConcurrency: 2);
+        var store = new InMemoryValidationJobStore(TimeProvider.System);
+        var service = new ValidationJobService(store, new RecordingDispatcher(), settings, TimeProvider.System);
+        var job = await service.CreateAsync(new CreateValidationJobRequest(
+            ["first@hot.test", "second@hot.test", "only@ready.test"]));
+        var validator = new TrackingValidator();
+
+        await Processor(store, validator, settings).ProcessAsync(job.JobId);
+
+        Assert.True(validator.StartOrder.IndexOf("only@ready.test") <
+            validator.StartOrder.IndexOf("second@hot.test"));
+    }
+
     private static IOptions<EmailValidationOptions> Options(int maximumConcurrency = 2) =>
         Microsoft.Extensions.Options.Options.Create(new EmailValidationOptions
         {
@@ -245,8 +257,25 @@ public sealed class ValidationJobTests
                 ChunkSize = 3,
                 MaximumConcurrency = maximumConcurrency,
                 MaximumResultPageSize = 100
+            },
+            Scheduling = new SchedulingOptions
+            {
+                GlobalConcurrency = maximumConcurrency,
+                PerDomainConcurrency = 1,
+                MaxActiveDomains = 100
             }
         });
+
+    private static ValidationJobProcessor Processor(
+        IValidationJobStore store,
+        IEmailValidator validator,
+        IOptions<EmailValidationOptions> options)
+    {
+        var scheduler = new DomainValidationScheduler(
+            validator, new EmailNormalizer(), options, NullLogger<DomainValidationScheduler>.Instance);
+        return new(store, scheduler, options, TimeProvider.System,
+            NullLogger<ValidationJobProcessor>.Instance);
+    }
 
     private static EmailValidationResult Result(
         string email,
@@ -290,14 +319,17 @@ public sealed class ValidationJobTests
 
     private sealed class TrackingValidator(string? failureEmail = null) : IEmailValidator
     {
+        private readonly object _sync = new();
         private int _active;
         private int _maximumActive;
         public int MaximumActive => _maximumActive;
+        public List<string> StartOrder { get; } = [];
 
         public async Task<EmailValidationResult> ValidateAsync(
             string email, EmailValidationRequest request, CancellationToken cancellationToken = default)
         {
             if (email == failureEmail) throw new InvalidOperationException("simulated item failure");
+            lock (_sync) StartOrder.Add(email);
             var active = Interlocked.Increment(ref _active);
             int observed;
             while (active > (observed = _maximumActive))

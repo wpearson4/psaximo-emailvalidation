@@ -195,6 +195,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IValidationJobDispatcher>(provider => provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Jobs.Enabled
             ? provider.GetRequiredService<AzureServiceBusValidationJobDispatcher>()
             : provider.GetRequiredService<DisabledValidationJobDispatcher>());
+        services.AddSingleton<IDomainValidationScheduler, DomainValidationScheduler>();
         services.AddSingleton<IValidationJobService, ValidationJobService>();
         services.AddSingleton<IValidationJobProcessor, ValidationJobProcessor>();
         services.AddSingleton<ValidationJobMetrics>();
