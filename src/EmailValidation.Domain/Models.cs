@@ -423,6 +423,7 @@ public sealed record EmailValidationResult
     public SmtpEvidence? SmtpEvidence { get; init; }
     public SmtpSessionEvidence? SmtpSessionEvidence { get; init; }
     public MxValidationEvidence? MxValidation { get; init; }
+    public RecipientEvidenceSummary? RecipientEvidence { get; init; }
     public ProbeSenderHealth? ProbeSenderHealth { get; init; }
     public ProviderValidationResult? ProviderValidation { get; init; }
     public MailboxValidationDetails? Mailbox { get; init; }

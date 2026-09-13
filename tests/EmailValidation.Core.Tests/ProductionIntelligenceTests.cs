@@ -537,7 +537,7 @@ public sealed class ProductionIntelligenceTests
         DetailedStatus = DetailedStatus.MailboxAccepted,
         DetailedStatuses = [DetailedStatus.MailboxAccepted],
         Metadata = new ValidationResultMetadata(
-            new ValidationPolicyVersions("1.1.0", "2.3.0", "3.1.0", "1.2.0"),
+            new ValidationPolicyVersions("1.1.0", "2.4.0", "3.1.0", "1.2.0"),
             DateTimeOffset.UtcNow,
             MxTopologyFingerprint: "topology-1")
     };

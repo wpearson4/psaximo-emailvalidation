@@ -1231,7 +1231,9 @@ public sealed class IntelligenceEmailValidator(
         Email = result.NormalizedEmail ?? result.Email,
         SmtpEvidence = null,
         SmtpSessionEvidence = null,
-        MxValidation = null,
+        MxValidation = result.MxValidation is null
+            ? null
+            : result.MxValidation with { Attempts = [] },
         CatchAllEvidence = result.CatchAllEvidence is null
             ? null
             : result.CatchAllEvidence with { ProbeResults = [] },

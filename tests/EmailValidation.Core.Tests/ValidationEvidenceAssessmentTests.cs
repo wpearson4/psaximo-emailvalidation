@@ -32,6 +32,33 @@ public sealed class ValidationEvidenceAssessmentTests
                 EmailValidationStatus.Unknown, domain, provider, HistoricalSignalSummary.Empty));
     }
 
+    [Fact]
+    public void AcceptedTargetWithOnlyAmbiguousControls_IsPartialEvidence()
+    {
+        var domain = Domain(CatchAllStatus.Unknown) with
+        {
+            CatchAll = new CatchAllDetectionResult(
+                CatchAllStatus.Unknown, 2, 0, 0, 2, Confidence: 0.20)
+            {
+                ReasonCode = CatchAllReasonCode.MixedOrInconclusive,
+                RefreshInconclusive = true
+            }
+        };
+        var probe = new SmtpProbeResult(
+            SmtpMailboxStatus.Accepted, 250, null, TimeSpan.Zero,
+            Evidence: new SmtpEvidence(
+                SmtpCommand.RcptTo, 250, "2.1.5", SmtpResponseCategory.Accepted,
+                SmtpResponseTextClassification.Success, 1, MailProvider.GenericSmtp,
+                "mx.example.test", 1, DateTimeOffset.UtcNow));
+
+        Assert.Equal(EvidenceQuality.Partial,
+            ValidationEvidenceAssessment.Quality(
+                EmailValidationStatus.Unknown,
+                domain,
+                probe,
+                Provider(SmtpResponseCategory.Accepted)));
+    }
+
     private static DomainIntelligence Domain(CatchAllStatus catchAll) => new()
     {
         Domain = "example.test",

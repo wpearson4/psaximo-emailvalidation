@@ -190,6 +190,7 @@ public sealed class ServiceBusValidationJobWorker(
 public sealed class RevalidationOutboxPublisherService(
     IOptions<EmailValidationOptions> options,
     IRevalidationOutboxDispatcher dispatcher,
+    IRevalidationRecoveryStore recovery,
     ILogger<RevalidationOutboxPublisherService> logger) : BackgroundService
 {
     private readonly RevalidationOptions _options = options.Value.Revalidation;
@@ -202,6 +203,16 @@ public sealed class RevalidationOutboxPublisherService(
         {
             try
             {
+                var duplicateWindow = _options.ServiceBus.EnableDuplicateDetection
+                    ? _options.ServiceBus.DuplicateDetectionMinutes + 1
+                    : 0;
+                var recoveryGrace = TimeSpan.FromMinutes(Math.Max(
+                    _options.RetryRecoveryGraceMinutes,
+                    duplicateWindow));
+                var recovered = await recovery.RecoverOverdueAsync(
+                    _options.OutboxBatchSize, recoveryGrace, stoppingToken).ConfigureAwait(false);
+                if (recovered > 0)
+                    logger.LogWarning("Recovered {Count} overdue email revalidations", recovered);
                 var count = await dispatcher.DispatchPendingAsync(
                     _options.OutboxBatchSize, stoppingToken).ConfigureAwait(false);
                 if (count > 0) logger.LogInformation("Dispatched {Count} pending email revalidations", count);

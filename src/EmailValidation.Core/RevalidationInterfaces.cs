@@ -60,6 +60,14 @@ public interface IRevalidationOutbox
         CancellationToken cancellationToken = default);
 }
 
+public interface IRevalidationRecoveryStore
+{
+    Task<int> RecoverOverdueAsync(
+        int maximumCount,
+        TimeSpan minimumOverdue,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IRevalidationOutboxDispatcher
 {
     Task<RevalidationScheduleResult?> DispatchAsync(

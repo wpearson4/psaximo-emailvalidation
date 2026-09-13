@@ -240,6 +240,23 @@ public sealed class EmailValidatorTests
     }
 
     [Fact]
+    public async Task AcceptedTargetWithOnlyAmbiguousControls_IsUnknownAndRetryable()
+    {
+        var validator = CreateValidator(
+            new FakeDns(), LiveSettings(), catchAll: new InconclusiveCatchAll(), smtp: new CountingSmtp());
+
+        var result = await validator.ValidateAsync(
+            "person@example.com", new EmailValidationRequest(EnableSmtp: true));
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Equal(EvidenceQuality.Partial, result.EvidenceQuality);
+        Assert.Equal(UnknownCause.InsufficientEvidence, result.UnknownContext?.Cause);
+        Assert.True(result.UnknownContext?.Retryable);
+        Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, result.ReasonCodes);
+    }
+
+    [Fact]
     public async Task ContradictoryRandomRejections_ReplaceOldCatchAllClassification()
     {
         var stale = CachedCatchAllDomain() with
@@ -589,6 +606,10 @@ public sealed class EmailValidatorTests
         Assert.Equal(EmailValidationStatus.Unknown, result.Status);
         Assert.Equal(MxConsensus.Conflicting, result.MxValidation?.Consensus);
         Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
+        Assert.True(result.RecipientEvidence?.Qualified);
+        Assert.True(result.RecipientEvidence?.Contested);
+        Assert.Equal(SmtpResponseCategory.RecipientRejected, result.RecipientEvidence?.Category);
+        Assert.Equal(SmtpCommand.RcptTo, result.RecipientEvidence?.Stage);
     }
 
     [Fact]

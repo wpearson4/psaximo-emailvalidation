@@ -42,6 +42,12 @@ public static class ValidationEvidenceAssessment
                 DomainRecipientBehavior.CatchAll or DomainRecipientBehavior.AcceptAll ||
             domain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate)
             return EvidenceQuality.Partial;
+        if (domain.CatchAll.Status == CatchAllStatus.Unknown &&
+            domain.CatchAll.Probes > 0 &&
+            domain.CatchAll.Accepted == 0 &&
+            domain.CatchAll.Rejected == 0 &&
+            domain.CatchAll.Ambiguous == domain.CatchAll.Probes)
+            return EvidenceQuality.Partial;
         return EvidenceQuality.Conclusive;
     }
 

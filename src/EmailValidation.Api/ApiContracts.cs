@@ -35,6 +35,19 @@ public sealed record ValidationChecksV1(
     string CatchAll,
     string RecipientBehavior);
 
+public sealed record MxValidationV1Response(
+    string Consensus,
+    IReadOnlyList<string> HostsAttempted);
+
+public sealed record RecipientEvidenceV1Response(
+    bool Qualified,
+    bool Contested,
+    string Category,
+    string? Stage,
+    int? ResponseCode,
+    string? EnhancedStatusCode,
+    string? MxHost);
+
 public sealed record UnknownValidationContextV1(
     string Cause,
     string Summary,
@@ -65,7 +78,9 @@ public sealed record EmailValidationV1Response(
     int AttemptNumber,
     int MaxAttempts,
     DateTimeOffset? FinalizedAtUtc,
-    ValidationChecksV1 Checks);
+    ValidationChecksV1 Checks,
+    MxValidationV1Response? MxValidation = null,
+    RecipientEvidenceV1Response? RecipientEvidence = null);
 
 public sealed record ValidationStatusV1Response(
     string ValidationId,
@@ -151,7 +166,20 @@ public static class ApiContractMapper
             result.Checks.RoleAccount,
             result.Checks.CatchAll.ToString(),
             result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior.ToString() ??
-                DomainRecipientBehavior.Unknown.ToString()));
+                DomainRecipientBehavior.Unknown.ToString()),
+        result.MxValidation is null
+            ? null
+            : new(result.MxValidation.Consensus.ToString(), result.MxValidation.HostsAttempted),
+        result.RecipientEvidence is null
+            ? null
+            : new(
+                result.RecipientEvidence.Qualified,
+                result.RecipientEvidence.Contested,
+                result.RecipientEvidence.Category.ToString(),
+                result.RecipientEvidence.Stage?.ToString(),
+                result.RecipientEvidence.ResponseCode,
+                result.RecipientEvidence.EnhancedStatusCode,
+                result.RecipientEvidence.MxHost));
 
     public static ValidationStatusV1Response Map(ValidationStatusSnapshot snapshot) => new(
         snapshot.ValidationId,
@@ -177,7 +205,9 @@ public static class ApiContractMapper
     public static ValidationJobV1Response Map(ValidationJobSnapshot job) => new(
         job.JobId,
         job.CreatedAtUtc,
-        job.State.ToString(),
+        job.State == ValidationJobState.Completed && job.ProvisionalItems > 0
+            ? "CompletedWithPendingRechecks"
+            : job.State.ToString(),
         job.TotalItems,
         job.ProcessedItems,
         job.FinalItems,

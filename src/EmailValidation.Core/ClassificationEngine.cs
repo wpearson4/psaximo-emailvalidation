@@ -270,6 +270,27 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 contributions);
         }
 
+        var allControlResponsesAmbiguous =
+            recipientBehavior == DomainRecipientBehavior.Unknown &&
+            catchAll.Status == CatchAllStatus.Unknown &&
+            catchAll.Probes > 0 &&
+            catchAll.Accepted == 0 &&
+            catchAll.Rejected == 0 &&
+            catchAll.Ambiguous == catchAll.Probes;
+        if (allControlResponsesAmbiguous)
+        {
+            // A target RCPT acceptance is not recipient-specific evidence when every
+            // randomized control was uninterpretable. Abstain until a later session
+            // distinguishes the target from arbitrary recipients.
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
+            reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
+            return FinalizeResult(
+                EmailValidationStatus.Unknown,
+                Math.Max(score, 0.80),
+                reasons,
+                contributions);
+        }
+
         // Mailing reputation and suppression answer whether an address should be mailed,
         // not whether its mailbox appears technically deliverable. Keep those signals in
         // the independent risk result. Catch-all acceptance has already been classified

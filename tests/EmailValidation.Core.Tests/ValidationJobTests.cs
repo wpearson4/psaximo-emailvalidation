@@ -208,6 +208,7 @@ public sealed class ValidationJobTests
         Assert.Equal(2, claims.Count);
         await store.CompleteClaimAsync(job.JobId, 0, "worker-1", provisional, null);
         await store.CompleteClaimAsync(job.JobId, 1, "worker-1", provisional, null);
+        Assert.Equal(ValidationJobState.Completed, await store.TryFinalizeAsync(job.JobId));
         var final = Result("duplicate@example.com", validationId,
             EmailValidationStatus.Valid, ValidationResultState.Final, 2);
         var lifecycles = new InMemoryValidationLifecycleStore();
@@ -230,6 +231,7 @@ public sealed class ValidationJobTests
         var updated = await service.GetAsync(job.JobId);
         var results = await service.GetResultsAsync(job.JobId, 0, 10);
         Assert.Equal(2, updated!.ProcessedItems);
+        Assert.Equal(ValidationJobState.Completed, updated.State);
         Assert.Equal(2, updated.FinalItems);
         Assert.Equal(0, updated.ProvisionalItems);
         Assert.All(results, item =>

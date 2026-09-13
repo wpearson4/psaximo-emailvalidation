@@ -137,6 +137,14 @@ public sealed class MongoDocumentMappingTests
                 SmtpCommand.RcptTo, 250, "2.1.5", SmtpResponseCategory.Accepted,
                 SmtpResponseTextClassification.Success, 1, MailProvider.GenericSmtp,
                 "mx.example.test", 1, DateTimeOffset.UtcNow, "raw response"),
+            MxValidation = new MxValidationEvidence(
+                [new SmtpProbeResult(
+                    SmtpMailboxStatus.Accepted, 250, "raw mx response", TimeSpan.Zero)],
+                ["mx.example.test"],
+                MxConsensus.ConclusivePositive),
+            RecipientEvidence = new RecipientEvidenceSummary(
+                true, false, SmtpResponseCategory.Accepted,
+                SmtpCommand.RcptTo, 250, "2.1.5", "mx.example.test"),
             Diagnostics = new ValidationDiagnostics { Detail = "raw diagnostic" }
         };
         var mailbox = Mailbox(result);
@@ -150,8 +158,12 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(EmailValidationStatus.LikelyValid, document.LastStatus);
         Assert.NotNull(restored);
         Assert.Null(restored!.LastResult.SmtpEvidence);
+        Assert.Empty(restored.LastResult.MxValidation!.Attempts);
+        Assert.Equal(MxConsensus.ConclusivePositive, restored.LastResult.MxValidation.Consensus);
+        Assert.True(restored.LastResult.RecipientEvidence?.Qualified);
         Assert.Null(restored.LastResult.Diagnostics!.Detail);
         Assert.DoesNotContain("raw response", document.PayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("raw mx response", document.PayloadJson, StringComparison.Ordinal);
         Assert.DoesNotContain("raw diagnostic", document.PayloadJson, StringComparison.Ordinal);
     }
 
@@ -179,6 +191,14 @@ public sealed class MongoDocumentMappingTests
                 SmtpCommand.RcptTo, 451, "4.7.0", SmtpResponseCategory.TemporaryFailure,
                 SmtpResponseTextClassification.TemporaryCondition, 1, MailProvider.GenericSmtp,
                 "mx.example.test", 1, now, "raw lifecycle response"),
+            MxValidation = new MxValidationEvidence(
+                [new SmtpProbeResult(
+                    SmtpMailboxStatus.TemporaryFailure, 451, "raw mx response", TimeSpan.Zero)],
+                ["mx.example.test"],
+                MxConsensus.ConsistentAmbiguous),
+            RecipientEvidence = new RecipientEvidenceSummary(
+                false, false, SmtpResponseCategory.TemporaryFailure,
+                SmtpCommand.RcptTo, 451, "4.7.0", "mx.example.test"),
             DomainIntelligence = Domain() with
             {
                 CatchAll = Domain().CatchAll with
@@ -234,10 +254,17 @@ public sealed class MongoDocumentMappingTests
         Assert.Equal(ForwardConfirmedReverseDnsState.Valid, restored.Attempts[0].FcrDnsState);
         Assert.Equal("test-v1", restored.Attempts[0].FcrDnsPolicyVersion);
         Assert.Null(restored.CurrentResult.SmtpEvidence);
+        Assert.NotNull(restored.CurrentResult.MxValidation);
+        Assert.Empty(restored.CurrentResult.MxValidation!.Attempts);
+        Assert.Equal(["mx.example.test"], restored.CurrentResult.MxValidation.HostsAttempted);
+        Assert.Equal(MxConsensus.ConsistentAmbiguous, restored.CurrentResult.MxValidation.Consensus);
+        Assert.Equal(SmtpCommand.RcptTo, restored.CurrentResult.RecipientEvidence?.Stage);
+        Assert.False(restored.CurrentResult.RecipientEvidence?.Qualified);
         Assert.Equal(UnknownCause.TemporarySmtpFailure, restored.CurrentResult.UnknownContext?.Cause);
         Assert.Equal(now.AddMinutes(5), restored.CurrentResult.UnknownContext?.RetryAfter);
         Assert.Empty(restored.CurrentResult.DomainIntelligence!.CatchAll.ProbeResults);
         Assert.DoesNotContain("raw lifecycle response", document.PayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("raw mx response", document.PayloadJson, StringComparison.Ordinal);
         Assert.DoesNotContain("raw catch-all response", document.PayloadJson, StringComparison.Ordinal);
     }
 

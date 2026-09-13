@@ -159,6 +159,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRevalidationOutbox>(provider => IsRevalidationEnabled(provider)
             ? provider.GetRequiredService<ProjectionValidationLifecycleStore>()
             : provider.GetRequiredService<NoOpValidationLifecycleStore>());
+        services.AddSingleton<IRevalidationRecoveryStore>(provider => IsRevalidationEnabled(provider)
+            ? provider.GetRequiredService<MongoValidationLifecycleStore>()
+            : provider.GetRequiredService<NoOpValidationLifecycleStore>());
         services.AddSingleton<IRevalidationPersistenceInitializer>(provider => IsMongo(provider)
             ? provider.GetRequiredService<MongoValidationLifecycleStore>()
             : provider.GetRequiredService<NoOpValidationLifecycleStore>());

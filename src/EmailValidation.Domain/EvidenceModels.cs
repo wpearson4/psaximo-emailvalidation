@@ -262,6 +262,19 @@ public sealed record MxValidationEvidence(
     IReadOnlyList<string> HostsAttempted,
     MxConsensus Consensus);
 
+/// <summary>
+/// Compact, transcript-free recipient evidence retained for auditing persisted results.
+/// Qualified means the selected outcome reached RCPT TO after a successful MAIL FROM.
+/// </summary>
+public sealed record RecipientEvidenceSummary(
+    bool Qualified,
+    bool Contested,
+    SmtpResponseCategory Category,
+    SmtpCommand? Stage,
+    int? ResponseCode,
+    string? EnhancedStatusCode,
+    string? MxHost);
+
 public sealed record DomainIntelligence
 {
     public required string Domain { get; init; }

@@ -124,6 +124,11 @@ public static class UnknownValidationContextBuilder
                 "One correlated SMTP session accepted the target and randomized controls, so the endpoint may accept arbitrary recipients.", true,
                 "Retry at or after the indicated confirmation time; a second independent session can confirm endpoint behavior, not mailbox existence.", category);
 
+        if (reasons.Contains(ReasonCode.MailboxAcceptanceAmbiguous))
+            return Create(result, UnknownCause.InsufficientEvidence,
+                "The target recipient was accepted, but every randomized control response was ambiguous, so the acceptance is not yet recipient-specific.", true,
+                "Retry later and require discriminating randomized-recipient evidence before inferring mailbox existence.", category);
+
         if (reasons.Contains(ReasonCode.SmtpDisabled) || category == SmtpResponseCategory.NotAttempted)
             return Create(result, UnknownCause.LiveVerificationDisabled,
                 "Live SMTP mailbox verification was disabled by the request or application configuration.", false,

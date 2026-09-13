@@ -10,7 +10,7 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class ValidationReuseAndSingleFlightTests
 {
-    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.3.0", "3.1.0", "1.2.0");
+    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.4.0", "3.1.0", "1.2.0");
     private static readonly string[] DistinctEmails =
         ["one@example.test", "two@example.test", "three@example.test"];
 

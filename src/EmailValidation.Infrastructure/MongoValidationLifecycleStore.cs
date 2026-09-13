@@ -15,6 +15,7 @@ public interface IRevalidationPersistenceInitializer
 public sealed class MongoValidationLifecycleStore :
     IValidationLifecycleStore,
     IRevalidationOutbox,
+    IRevalidationRecoveryStore,
     IRevalidationPersistenceInitializer
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -158,6 +159,81 @@ public sealed class MongoValidationLifecycleStore :
             .ToListAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<int> RecoverOverdueAsync(
+        int maximumCount,
+        TimeSpan minimumOverdue,
+        CancellationToken cancellationToken = default)
+    {
+        var take = Math.Max(1, maximumCount);
+        var scanLimit = take > int.MaxValue / 4 ? int.MaxValue : take * 4;
+        var candidates = await _collection.Find(document =>
+                document.ResultState == ValidationResultState.Provisional &&
+                document.PendingMessageId == null)
+            .SortBy(document => document.UpdatedAt)
+            .Limit(scanLimit)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var recovered = 0;
+        var now = _timeProvider.GetUtcNow();
+        foreach (var candidate in candidates)
+        {
+            if (recovered >= take) break;
+            var current = candidate.ToModel();
+            var replacement = TryCreateRecovery(current, now, minimumOverdue);
+            if (replacement is null) continue;
+            var saved = await TrySaveAsync(replacement, current.Version, cancellationToken).ConfigureAwait(false);
+            if (saved.Applied) recovered++;
+        }
+        return recovered;
+    }
+
+    internal static ValidationLifecycle? TryCreateRecovery(
+        ValidationLifecycle lifecycle,
+        DateTimeOffset now,
+        TimeSpan minimumOverdue)
+    {
+        if (lifecycle.ResultState != ValidationResultState.Provisional ||
+            lifecycle.LifecycleState != ValidationLifecycleState.RetryWaiting ||
+            !lifecycle.RetryScheduled ||
+            lifecycle.PendingRevalidation is not null ||
+            lifecycle.NextRetryAt is not { } scheduledAt ||
+            scheduledAt > now || now - scheduledAt < minimumOverdue ||
+            lifecycle.AttemptNumber >= lifecycle.MaximumAttempts ||
+            lifecycle.FirstValidatedAt == default || lifecycle.LastValidatedAt == default)
+            return null;
+
+        var message = new EmailRevalidationMessageV1(
+            lifecycle.ValidationId,
+            lifecycle.AttemptNumber + 1,
+            lifecycle.MaximumAttempts,
+            lifecycle.FirstValidatedAt,
+            lifecycle.LastValidatedAt,
+            now,
+            lifecycle.CurrentResult.MailProvider.ToString(),
+            lifecycle.CurrentResult.Status,
+            lifecycle.CurrentResult.SubStatus,
+            lifecycle.CurrentResult.Metadata?.Policy.ClassificationPolicyVersion);
+        return lifecycle with
+        {
+            NextRetryAt = now,
+            PendingRevalidation = new(message, now, now),
+            RetryScheduled = false,
+            CurrentResult = lifecycle.CurrentResult with
+            {
+                RetryAfter = now,
+                RetryScheduled = false,
+                UnknownContext = lifecycle.CurrentResult.UnknownContext is null
+                    ? null
+                    : lifecycle.CurrentResult.UnknownContext with { RetryAfter = now }
+            },
+            LifecycleState = ValidationLifecycleState.Provisional,
+            CurrentStage = ValidationProgressStage.Provisional,
+            StatusMessage = "An overdue automatic revalidation was recovered for durable rescheduling.",
+            LastUpdatedAt = now,
+            Sequence = lifecycle.Sequence + 1,
+            Version = lifecycle.Version + 1
+        };
+    }
+
     public async Task<bool> MarkScheduledAsync(
         string validationId,
         string messageId,
@@ -259,7 +335,9 @@ public sealed class MongoValidationLifecycleStore :
         {
             SmtpEvidence = null,
             SmtpSessionEvidence = null,
-            MxValidation = null,
+            MxValidation = result.MxValidation is null
+                ? null
+                : result.MxValidation with { Attempts = [] },
             CatchAllEvidence = null,
             ProbeSenderHealth = null,
             Diagnostics = null,
@@ -276,6 +354,7 @@ public sealed class MongoValidationLifecycleStore :
 public sealed class NoOpValidationLifecycleStore :
     IValidationLifecycleStore,
     IRevalidationOutbox,
+    IRevalidationRecoveryStore,
     IRevalidationPersistenceInitializer
 {
     public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -293,4 +372,6 @@ public sealed class NoOpValidationLifecycleStore :
         Task.FromResult(false);
     public Task ReleaseAsync(string validationId, string messageId, string? errorCode, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+    public Task<int> RecoverOverdueAsync(int maximumCount, TimeSpan minimumOverdue, CancellationToken cancellationToken = default) =>
+        Task.FromResult(0);
 }

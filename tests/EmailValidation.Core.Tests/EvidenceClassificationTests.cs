@@ -205,6 +205,35 @@ public sealed class EvidenceClassificationTests
     }
 
     [Fact]
+    public void AcceptedTargetWithOnlyAmbiguousControls_RemainsUnknown()
+    {
+        var evidence = Evidence(
+            SmtpResponseCategory.Accepted,
+            AcceptanceStrength.Medium,
+            CatchAllStatus.Unknown);
+        evidence = evidence with
+        {
+            Domain = evidence.Domain! with
+            {
+                CatchAll = new CatchAllDetectionResult(
+                    CatchAllStatus.Unknown, 2, 0, 0, 2,
+                    "Every randomized control response was ambiguous.", 0.20)
+                {
+                    ReasonCode = CatchAllReasonCode.MixedOrInconclusive,
+                    RecipientBehavior = DomainRecipientBehavior.Unknown,
+                    RefreshInconclusive = true
+                }
+            }
+        };
+
+        var result = _classifier.Classify(evidence);
+
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.MailboxAcceptanceAmbiguous, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxAccepted, result.ReasonCodes);
+    }
+
+    [Fact]
     public void ExplicitAcceptAllBehavior_OverridesLegacyCatchAllStatus()
     {
         var result = _classifier.Classify(Evidence(

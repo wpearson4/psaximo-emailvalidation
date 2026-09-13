@@ -238,6 +238,7 @@ public sealed class RevalidationOptions
     public int OutboxDispatchIntervalSeconds { get; set; } = 30;
     public int OutboxBatchSize { get; set; } = 100;
     public int OutboxLeaseSeconds { get; set; } = 60;
+    public int RetryRecoveryGraceMinutes { get; set; } = 15;
     public ServiceBusRevalidationOptions ServiceBus { get; set; } = new();
 }
 
@@ -287,7 +288,7 @@ public sealed class ResultReuseOptions
 public sealed class ValidationPolicyOptions
 {
     public string ValidationEngineVersion { get; set; } = "1.1.0";
-    public string ClassificationPolicyVersion { get; set; } = "2.3.0";
+    public string ClassificationPolicyVersion { get; set; } = "2.4.0";
     public string ConfidenceModelVersion { get; set; } = "3.1.0";
     public string ProviderStrategyVersion { get; set; } = "1.2.0";
 

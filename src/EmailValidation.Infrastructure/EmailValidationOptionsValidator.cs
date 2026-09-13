@@ -111,8 +111,8 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
             if (revalidation.DefaultMaxAttempts < 1)
                 failures.Add("EmailValidation:Revalidation:DefaultMaxAttempts must be at least 1.");
             if (revalidation.OutboxDispatchIntervalSeconds <= 0 || revalidation.OutboxBatchSize <= 0 ||
-                revalidation.OutboxLeaseSeconds <= 0)
-                failures.Add("EmailValidation revalidation outbox intervals, batch size, and lease must be positive.");
+                revalidation.OutboxLeaseSeconds <= 0 || revalidation.RetryRecoveryGraceMinutes <= 0)
+                failures.Add("EmailValidation revalidation outbox intervals, batch size, lease, and recovery grace must be positive.");
             if (string.IsNullOrWhiteSpace(revalidation.ServiceBus.ConnectionString))
                 failures.Add("EmailValidation:Revalidation:ServiceBus:ConnectionString is required when revalidation is enabled.");
             if (string.IsNullOrWhiteSpace(revalidation.ServiceBus.QueueName))

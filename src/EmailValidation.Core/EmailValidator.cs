@@ -292,6 +292,16 @@ public sealed class EmailValidator(
             SmtpEvidence = mailbox.Evidence,
             SmtpSessionEvidence = mailbox.SessionEvidence,
             MxValidation = mxValidation,
+            RecipientEvidence = new RecipientEvidenceSummary(
+                SmtpRecipientEvidencePolicy.HasRecipientAcceptance(mailbox) ||
+                SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(mailbox) ||
+                SmtpRecipientEvidencePolicy.HasRecipientMailboxFull(mailbox),
+                mxValidation.Consensus == MxConsensus.Conflicting,
+                mailbox.Evidence?.Category ?? SmtpResponseCategory.NotAttempted,
+                mailbox.Evidence?.Command,
+                mailbox.Evidence?.ResponseCode,
+                mailbox.Evidence?.EnhancedStatusCode,
+                SmtpRecipientEvidencePolicy.MxHost(mailbox)),
             ProbeSenderHealth = probeSenderHealth,
             ProviderValidation = providerValidation,
             Mailbox = new MailboxValidationDetails(

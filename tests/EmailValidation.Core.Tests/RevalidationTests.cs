@@ -603,6 +603,48 @@ public sealed class RevalidationTests
         Assert.Equal([4L, 5L], publisher.Events.Select(value => value.Sequence));
     }
 
+    [Fact]
+    public void OverdueRetryWaitingLifecycle_IsRecoveredForDurableRescheduling()
+    {
+        var waiting = Lifecycle(ValidationResultState.Provisional, 1) with
+        {
+            LifecycleState = ValidationLifecycleState.RetryWaiting,
+            CurrentStage = ValidationProgressStage.RetryWaiting,
+            RetryScheduled = true,
+            NextRetryAt = Now.AddMinutes(-20),
+            PendingRevalidation = null,
+            Sequence = 5,
+            Version = 5
+        };
+
+        var recovered = MongoValidationLifecycleStore.TryCreateRecovery(
+            waiting, Now, TimeSpan.FromMinutes(15));
+
+        Assert.NotNull(recovered);
+        Assert.Equal(ValidationLifecycleState.Provisional, recovered.LifecycleState);
+        Assert.False(recovered.RetryScheduled);
+        Assert.Equal(2, recovered.PendingRevalidation?.Message.AttemptNumber);
+        Assert.Equal(Now, recovered.NextRetryAt);
+        Assert.Equal(Now, recovered.PendingRevalidation?.ScheduledAt);
+        Assert.Equal(Now, recovered.CurrentResult.RetryAfter);
+        Assert.Equal(6, recovered.Sequence);
+        Assert.Equal(6, recovered.Version);
+    }
+
+    [Fact]
+    public void RetryWaitingWithinRecoveryGrace_IsNotDuplicated()
+    {
+        var waiting = Lifecycle(ValidationResultState.Provisional, 1) with
+        {
+            LifecycleState = ValidationLifecycleState.RetryWaiting,
+            RetryScheduled = true,
+            NextRetryAt = Now.AddMinutes(-10)
+        };
+
+        Assert.Null(MongoValidationLifecycleStore.TryCreateRecovery(
+            waiting, Now, TimeSpan.FromMinutes(15)));
+    }
+
     private static ValidationLifecycleCoordinator Coordinator(
         IValidationLifecycleStore store,
         IRevalidationOutboxDispatcher dispatcher,

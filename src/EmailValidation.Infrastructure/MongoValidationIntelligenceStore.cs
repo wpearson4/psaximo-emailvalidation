@@ -672,7 +672,9 @@ public sealed class MongoValidationIntelligenceStore :
                 NormalizedEmail = email,
                 SmtpEvidence = null,
                 SmtpSessionEvidence = null,
-                MxValidation = null,
+                MxValidation = model.LastResult.MxValidation is null
+                    ? null
+                    : model.LastResult.MxValidation with { Attempts = [] },
                 CatchAllEvidence = model.LastResult.CatchAllEvidence is null
                     ? null
                     : model.LastResult.CatchAllEvidence with { ProbeResults = [] },

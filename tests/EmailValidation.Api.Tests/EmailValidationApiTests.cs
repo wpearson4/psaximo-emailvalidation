@@ -153,6 +153,54 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
     }
 
     [Fact]
+    public void ContractMapper_ExposesCompactMxAndQualifiedRecipientEvidence()
+    {
+        var result = new EmailValidationResult
+        {
+            Email = "person@example.test",
+            Status = EmailValidationStatus.Valid,
+            Confidence = .95,
+            Checks = new EmailValidationChecks
+            {
+                SyntaxValid = true,
+                DomainExists = true,
+                MxPresent = true,
+                Mailbox = SmtpMailboxStatus.Accepted
+            },
+            MxValidation = new MxValidationEvidence(
+                [], ["mx1.example.test", "mx2.example.test"], MxConsensus.ConclusivePositive),
+            RecipientEvidence = new RecipientEvidenceSummary(
+                true, false, SmtpResponseCategory.Accepted,
+                SmtpCommand.RcptTo, 250, "2.1.5", "mx1.example.test"),
+            ValidationId = "validation-audit",
+            ResultState = ValidationResultState.Final
+        };
+
+        var response = ApiContractMapper.Map(result);
+
+        Assert.Equal("ConclusivePositive", response.MxValidation?.Consensus);
+        Assert.Equal(["mx1.example.test", "mx2.example.test"], response.MxValidation?.HostsAttempted);
+        Assert.True(response.RecipientEvidence?.Qualified);
+        Assert.False(response.RecipientEvidence?.Contested);
+        Assert.Equal("RcptTo", response.RecipientEvidence?.Stage);
+        Assert.Equal(250, response.RecipientEvidence?.ResponseCode);
+    }
+
+    [Fact]
+    public void ContractMapper_DistinguishesCompletedJobsWithPendingRechecks()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var job = new ValidationJobSnapshot(
+            "job-pending-rechecks", now, ValidationJobState.Completed,
+            10, 10, 8, 2, 0, now);
+
+        var response = ApiContractMapper.Map(job);
+
+        Assert.Equal("CompletedWithPendingRechecks", response.State);
+        Assert.Equal(2, response.ProvisionalItems);
+    }
+
+    [Fact]
     public async Task InvalidShape_ReturnsTraceableProblemDetails()
     {
         using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.Validate]);
