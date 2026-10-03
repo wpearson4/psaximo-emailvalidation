@@ -923,6 +923,7 @@ public sealed class EvidenceBackedEmailValidationService(
     IEmailValidationFeatureSnapshotFactory snapshotFactory,
     IEmailValidationFeatureSnapshotStore snapshotStore,
     IClassificationPredictionOrchestrator scoring,
+    IConfidenceLevelPolicy confidenceLevelPolicy,
     IClassificationFoundationMetrics metrics,
     ILogger<EvidenceBackedEmailValidationService> logger) : IEmailValidationService
 {
@@ -947,9 +948,10 @@ public sealed class EvidenceBackedEmailValidationService(
             var staged = result with { Prediction = prediction };
             // Shadow and Advisory cannot alter canonical behavior. Enforced still passes
             // through the decision policy, which protects deterministic Valid/Invalid evidence.
-            return prediction.Model?.RolloutMode == ModelRolloutMode.Enforced
+            var projected = prediction.Model?.RolloutMode == ModelRolloutMode.Enforced
                 ? EnforcedValidationResultProjection.Apply(staged, prediction)
                 : staged;
+            return projected with { ConfidenceLevel = confidenceLevelPolicy.Evaluate(projected) };
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

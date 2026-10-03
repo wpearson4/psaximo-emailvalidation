@@ -68,6 +68,7 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal("Final", result.ResultState);
         Assert.Equal("Final", result.LifecycleState);
         Assert.Equal("Valid", result.Status);
+        Assert.Equal("HIGH", result.ConfidenceLevel);
     }
 
     [Fact]
@@ -573,6 +574,7 @@ public sealed class ApiValidator : IEmailValidator
             Status = provisional ? EmailValidationStatus.Unknown : EmailValidationStatus.Valid,
             SubStatus = provisional ? DetailedStatus.TemporaryFailure : DetailedStatus.MailboxAccepted,
             Confidence = provisional ? .8 : 1,
+            ConfidenceLevel = provisional ? ConfidenceLevel.Low : ConfidenceLevel.High,
             Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true },
             ValidationId = request.ValidationId ?? (provisional ? "validation-provisional" : "validation-final"),
             ResultState = provisional ? ValidationResultState.Provisional : ValidationResultState.Final,
@@ -615,6 +617,9 @@ public sealed class ApiStatusService : IValidationStatusQueryService
                 Status = validationId == "validation-provisional"
                     ? EmailValidationStatus.Unknown
                     : EmailValidationStatus.Valid,
+                ConfidenceLevel = validationId == "validation-provisional"
+                    ? ConfidenceLevel.Low
+                    : ConfidenceLevel.High,
                 RetryScheduled = validationId == "validation-provisional",
                 RetryAt = validationId == "validation-provisional" ? DateTimeOffset.UtcNow.AddMinutes(15) : null,
                 UnknownContext = validationId == "validation-provisional"

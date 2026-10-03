@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added an evidence-aware `HIGH` / `MEDIUM` / `LOW` confidence level to canonical results, REST, unary/status gRPC,
+  and lifecycle events while retaining the existing numeric heuristic for compatibility. Inconclusive `Unknown`
+  results remain `LOW` even when the legacy score expresses high confidence that validation was inconclusive.
+- Added the current architecture map and incremental intelligence plan, including strict Single Responsibility and
+  interface-segregation gates for the Mongo persistence refactor and freshness-driven revalidation work.
 - Moved the probe-sender catch-all to direct Google Workspace delivery and retired the Postfix/PostSRSd forwarding
   service. Production rollout now removes the legacy container and inbound TCP/25 firewalld exception while
   preserving its detached volumes temporarily for rollback and keeping all validation identities outbound-only.

@@ -101,6 +101,7 @@ public sealed class EmailValidationGrpcService(
             Status = result.Status.ToString(),
             SubStatus = result.SubStatus.ToString(),
             Confidence = result.Confidence,
+            ConfidenceLevel = result.ConfidenceLevel.ToString().ToUpperInvariant(),
             Provider = result.MailProvider.ToString(),
             RetryScheduled = result.RetryScheduled,
             AttemptNumber = result.AttemptNumber,
@@ -134,6 +135,7 @@ public sealed class EmailValidationGrpcService(
         if (snapshot.Status is { } status) response.Status = status.ToString();
         if (snapshot.SubStatus is { } subStatus) response.SubStatus = subStatus.ToString();
         if (snapshot.Confidence is { } confidence) response.Confidence = confidence;
+        response.ConfidenceLevel = snapshot.ConfidenceLevel.ToString().ToUpperInvariant();
         if (!string.IsNullOrWhiteSpace(snapshot.ConfidenceReason)) response.ConfidenceReason = snapshot.ConfidenceReason;
         if (snapshot.UnknownContext is { } unknownContext)
             response.UnknownContext = MapUnknownContext(unknownContext);

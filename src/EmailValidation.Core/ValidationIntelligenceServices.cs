@@ -843,7 +843,8 @@ public sealed class IntelligenceEmailValidator(
     IValidationPersistenceMetrics persistenceMetrics,
     IOptions<EmailValidationOptions> options,
     TimeProvider timeProvider,
-    ILogger<IntelligenceEmailValidator> logger) : IEmailValidator, IEmailValidationService
+    ILogger<IntelligenceEmailValidator> logger,
+    IConfidenceLevelPolicy confidenceLevelPolicy) : IEmailValidator, IEmailValidationService
 {
     private readonly ValidationPolicyVersions _policy = options.Value.Policy.ToVersions();
     private readonly ResultReuseOptions _reuseOptions = options.Value.ResultReuse;
@@ -997,6 +998,7 @@ public sealed class IntelligenceEmailValidator(
         var subStatus = ValidationSubStatusMapper.Map(staged);
         var enriched = staged with
         {
+            ConfidenceLevel = confidenceLevelPolicy.Evaluate(staged),
             SubStatus = subStatus,
             SubStatuses = staged.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };

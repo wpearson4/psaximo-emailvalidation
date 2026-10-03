@@ -5,6 +5,7 @@ namespace EmailValidation.Core;
 // Append new values to preserve numeric compatibility with persisted intelligence.
 public enum EmailValidationStatus { Valid, LikelyValid, Risky, Invalid, Unknown, LikelyInvalid, CatchAll }
 public enum ConfidenceType { Heuristic, CalibratedProbability }
+public enum ConfidenceLevel { Low, Medium, High }
 public enum ValidationResultState { Final, Provisional }
 // Evidence quality describes how much direct validation evidence was obtained; it is independent of label confidence.
 public enum EvidenceQuality { Unknown, Conclusive, Partial, Blocked, NotAttempted }
@@ -392,6 +393,11 @@ public sealed record EmailValidationResult
     public string? NormalizedEmail { get; init; }
     public EmailValidationStatus Status { get; init; }
     public double Confidence { get; init; }
+    /// <summary>
+    /// Evidence-aware qualitative confidence in the public conclusion. This is not
+    /// a calibrated probability and intentionally remains Low for inconclusive results.
+    /// </summary>
+    public ConfidenceLevel ConfidenceLevel { get; init; } = ConfidenceLevel.Low;
     /// <summary>Confidence in the assigned classification, not a probability of delivery.</summary>
     public double ClassificationConfidence => Confidence;
     /// <summary>The existing deterministic/heuristic score. It is not a probability.</summary>

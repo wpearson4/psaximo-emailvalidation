@@ -52,4 +52,5 @@ message EmailValidationResponse {
   optional string source = 15;
   int64 sequence = 16;
   UnknownValidationContext unknown_context = 17;
+  optional string confidence_level = 18;
 }

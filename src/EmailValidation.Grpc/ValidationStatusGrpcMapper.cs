@@ -31,6 +31,7 @@ public static class ValidationStatusGrpcMapper
         if (status.Status is { } validationStatus) response.Status = validationStatus.ToString();
         if (status.SubStatus is { } subStatus) response.SubStatus = subStatus.ToString();
         if (status.Confidence is { } confidence) response.Confidence = confidence;
+        response.ConfidenceLevel = status.ConfidenceLevel.ToString().ToUpperInvariant();
         if (status.ConfidenceReason is not null) response.ConfidenceReason = status.ConfidenceReason;
         if (status.UnknownContext is { } unknownContext)
             response.UnknownContext = MapUnknownContext(unknownContext);

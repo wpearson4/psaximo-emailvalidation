@@ -95,4 +95,5 @@ message ValidationStatusResponse {
   google.protobuf.Timestamp finalized_at = 25;
   ValidationProgressStage current_stage = 26;
   UnknownValidationContext unknown_context = 27;
+  optional string confidence_level = 28;
 }

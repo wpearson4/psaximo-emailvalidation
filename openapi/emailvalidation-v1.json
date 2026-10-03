@@ -42,6 +42,7 @@
                       "status": "Valid",
                       "subStatus": "MailboxAccepted",
                       "confidence": 0.94,
+                      "confidenceLevel": "HIGH",
                       "provider": "Microsoft365",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -59,6 +60,7 @@
                       "status": "Invalid",
                       "subStatus": "MailboxNotFound",
                       "confidence": 0.99,
+                      "confidenceLevel": "HIGH",
                       "provider": "Unknown",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -76,6 +78,7 @@
                       "status": "Unknown",
                       "subStatus": "TemporaryFailure",
                       "confidence": 0.82,
+                      "confidenceLevel": "LOW",
                       "unknownContext": {
                         "cause": "TemporarySmtpFailure",
                         "summary": "The destination returned a temporary SMTP failure.",
@@ -106,6 +109,7 @@
                       "status": "Unknown",
                       "subStatus": "VerificationBlocked",
                       "confidence": 0.88,
+                      "confidenceLevel": "LOW",
                       "unknownContext": {
                         "cause": "ProviderVerificationBlocked",
                         "summary": "The destination did not provide recipient-specific verification evidence.",
@@ -134,6 +138,7 @@
                       "status": "Risky",
                       "subStatus": "MailboxFull",
                       "confidence": 0.9,
+                      "confidenceLevel": "MEDIUM",
                       "provider": "Unknown",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -794,6 +799,10 @@
             "type": "number",
             "format": "double"
           },
+          "confidenceLevel": {
+            "type": "string",
+            "description": "Evidence-aware qualitative confidence in the public conclusion. This is not a calibrated probability."
+          },
           "confidenceReason": {
             "type": "string",
             "nullable": true
@@ -1088,6 +1097,10 @@
             "type": "number",
             "format": "double",
             "nullable": true
+          },
+          "confidenceLevel": {
+            "type": "string",
+            "description": "Evidence-aware qualitative confidence in the public conclusion. This is not a calibrated probability."
           },
           "confidenceReason": {
             "type": "string",

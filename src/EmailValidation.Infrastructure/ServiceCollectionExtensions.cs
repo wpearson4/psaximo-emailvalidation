@@ -127,6 +127,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDomainIntelligenceFreshnessPolicy, DomainIntelligenceFreshnessPolicy>();
         services.AddSingleton<IDomainIntelligenceService, DomainIntelligenceService>();
         services.AddSingleton<IEmailClassificationEngine, EmailClassificationEngine>();
+        services.AddSingleton<IConfidenceLevelPolicy, ConfidenceLevelPolicy>();
         services.AddSingleton<IResultEvaluator, ResultEvaluator>();
         services.AddSingleton<IMailProviderStrategy, Microsoft365Strategy>();
         services.AddSingleton<IMailProviderStrategy, GoogleWorkspaceStrategy>();

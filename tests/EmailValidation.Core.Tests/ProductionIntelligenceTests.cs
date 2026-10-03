@@ -253,7 +253,8 @@ public sealed class ProductionIntelligenceTests
             new ValidationPersistenceMetrics(),
             options,
             TimeProvider.System,
-            NullLogger<IntelligenceEmailValidator>.Instance);
+            NullLogger<IntelligenceEmailValidator>.Instance,
+            new ConfidenceLevelPolicy());
 
         var first = await validator.ValidateAsync("Person@Example.Test", new EmailValidationRequest(true));
         var second = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
@@ -287,7 +288,8 @@ public sealed class ProductionIntelligenceTests
             metrics,
             options,
             TimeProvider.System,
-            NullLogger<IntelligenceEmailValidator>.Instance);
+            NullLogger<IntelligenceEmailValidator>.Instance,
+            new ConfidenceLevelPolicy());
 
         var result = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
         var snapshot = metrics.GetSnapshot();

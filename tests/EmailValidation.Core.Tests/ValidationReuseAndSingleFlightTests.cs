@@ -620,7 +620,8 @@ public sealed class ValidationReuseAndSingleFlightTests
             metrics,
             options,
             clock,
-            NullLogger<IntelligenceEmailValidator>.Instance);
+            NullLogger<IntelligenceEmailValidator>.Instance,
+            new ConfidenceLevelPolicy());
         return (validator, metrics);
     }
 
