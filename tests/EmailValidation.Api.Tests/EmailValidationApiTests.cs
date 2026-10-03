@@ -278,6 +278,22 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
             "/v1/email-validation-jobs");
         Assert.Empty(otherHistory!.Items);
 
+        _factory.SourceFiles.DeniedSourceFileIds.Add("search-42");
+        try
+        {
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await writer.GetAsync($"/v1/email-validation-jobs/{firstJob.JobId}")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await writer.GetAsync($"/v1/email-validation-jobs/{firstJob.JobId}/results")).StatusCode);
+            var revokedHistory = await writer.GetFromJsonAsync<ValidationJobPageV1Response>(
+                "/v1/email-validation-jobs");
+            Assert.Empty(revokedHistory!.Items);
+        }
+        finally
+        {
+            _factory.SourceFiles.DeniedSourceFileIds.Remove("search-42");
+        }
+
         var conflict = await writer.PostAsJsonAsync("/v1/email-validation-jobs",
             new { emails = DifferentEmail });
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
@@ -699,6 +715,17 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
 public sealed class ApiSourceFileClient : IEmailValidationSourceFileClient
 {
     public List<string> RequestedSourceFileIds { get; } = [];
+    public HashSet<string> DeniedSourceFileIds { get; } = new(StringComparer.Ordinal);
+
+    public Task DemandAccessAsync(
+        string sourceFileId,
+        string? authorization,
+        CancellationToken cancellationToken = default)
+    {
+        if (DeniedSourceFileIds.Contains(sourceFileId))
+            throw new SourceFileAccessException(HttpStatusCode.Forbidden, "Forbidden.");
+        return Task.CompletedTask;
+    }
 
     public Task<EmailValidationSourceFile> OpenAsync(
         string sourceFileId,

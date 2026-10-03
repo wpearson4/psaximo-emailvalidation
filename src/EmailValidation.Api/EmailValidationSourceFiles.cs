@@ -16,6 +16,11 @@ public sealed class SourceFileAccessException(
 
 public interface IEmailValidationSourceFileClient
 {
+    Task DemandAccessAsync(
+        string sourceFileId,
+        string? authorization,
+        CancellationToken cancellationToken = default);
+
     Task<EmailValidationSourceFile> OpenAsync(
         string sourceFileId,
         string? authorization,
@@ -49,21 +54,28 @@ public sealed class OpenMetaEmailValidationSourceFileClient(
     HttpClient httpClient,
     IOptions<ApiHostOptions> options) : IEmailValidationSourceFileClient
 {
+    public async Task DemandAccessAsync(
+        string sourceFileId,
+        string? authorization,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(sourceFileId, authorization, download: false);
+        using var response = await httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new SourceFileAccessException(
+                response.StatusCode,
+                "The selected source file is not available to the current account membership.");
+    }
+
     public async Task<EmailValidationSourceFile> OpenAsync(
         string sourceFileId,
         string? authorization,
         CancellationToken cancellationToken = default)
     {
-        var baseUrl = options.Value.OpenMeta.BaseUrl.TrimEnd('/');
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) ||
-            origin.Scheme is not ("http" or "https"))
-            throw new InvalidOperationException("Api:OpenMeta:BaseUrl must be an absolute HTTP or HTTPS URL.");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get,
-            new Uri(origin, $"/api/search-requests/{Uri.EscapeDataString(sourceFileId)}/download"));
-        if (!string.IsNullOrWhiteSpace(authorization))
-            request.Headers.TryAddWithoutValidation("Authorization", authorization);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
+        using var request = CreateRequest(sourceFileId, authorization, download: true);
 
         var response = await httpClient.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -79,6 +91,29 @@ public sealed class OpenMetaEmailValidationSourceFileClient(
         fileName = fileName.Trim('"');
         var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         return new EmailValidationSourceFile(stream, fileName, response);
+    }
+
+    private HttpRequestMessage CreateRequest(
+        string sourceFileId,
+        string? authorization,
+        bool download)
+    {
+        var baseUrl = options.Value.OpenMeta.BaseUrl.TrimEnd('/');
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) ||
+            origin.Scheme is not ("http" or "https"))
+            throw new InvalidOperationException("Api:OpenMeta:BaseUrl must be an absolute HTTP or HTTPS URL.");
+
+        // The status route accepts either the Mongo request id or execution
+        // search id and applies the same ownership and entitlement checks as
+        // output download without opening the result payload.
+        var suffix = download ? "/download" : "/status";
+        var request = new HttpRequestMessage(HttpMethod.Get,
+            new Uri(origin, $"/api/search-requests/{Uri.EscapeDataString(sourceFileId)}{suffix}"));
+        if (!string.IsNullOrWhiteSpace(authorization))
+            request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(
+            download ? "application/octet-stream" : "application/json"));
+        return request;
     }
 }
 

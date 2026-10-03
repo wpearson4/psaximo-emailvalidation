@@ -586,8 +586,10 @@ public static class ApiEndpoints
     private static async Task<IResult> ListJobsAsync(
         int? skip,
         int? take,
+        HttpContext http,
         IValidationJobService jobs,
         ICommercialResourceStore resources,
+        IEmailValidationSourceFileClient sourceFiles,
         ICurrentConsumerContext consumers,
         CancellationToken cancellationToken)
     {
@@ -605,7 +607,13 @@ public static class ApiEndpoints
         var pageReferences = owned.Take(actualTake).ToArray();
         var snapshots = await Task.WhenAll(pageReferences.Select(reference =>
             jobs.GetAsync(reference.ResourceId, cancellationToken))).ConfigureAwait(false);
-        var items = snapshots.Where(snapshot => snapshot is not null)
+        var visible = await Task.WhenAll(snapshots
+            .Where(snapshot => snapshot is not null)
+            .Select(async snapshot => await HasCurrentSourceAccessAsync(
+                    snapshot!, http, sourceFiles, cancellationToken).ConfigureAwait(false)
+                ? snapshot
+                : null)).ConfigureAwait(false);
+        var items = visible.Where(snapshot => snapshot is not null)
             .Select(snapshot => ApiContractMapper.Map(snapshot!))
             .ToArray();
         var nextSkip = owned.Count > actualTake ? actualSkip + actualTake : (int?)null;
@@ -614,8 +622,10 @@ public static class ApiEndpoints
 
     private static async Task<IResult> GetJobAsync(
         string jobId,
+        HttpContext http,
         IValidationJobService jobs,
         IValidationJobAccessPolicy accessPolicy,
+        IEmailValidationSourceFileClient sourceFiles,
         ICurrentConsumerContext consumers,
         IOptions<ApiHostOptions> hostOptions,
         CancellationToken cancellationToken)
@@ -626,17 +636,21 @@ public static class ApiEndpoints
                 .ConfigureAwait(false))
             return Results.Forbid();
         var job = await jobs.GetAsync(jobId, cancellationToken).ConfigureAwait(false);
-        return job is null
-            ? Problem(StatusCodes.Status404NotFound, "Job not found", "The validation job does not exist.")
-            : Results.Ok(ApiContractMapper.Map(job));
+        if (job is null)
+            return Problem(StatusCodes.Status404NotFound, "Job not found", "The validation job does not exist.");
+        return await HasCurrentSourceAccessAsync(job, http, sourceFiles, cancellationToken).ConfigureAwait(false)
+            ? Results.Ok(ApiContractMapper.Map(job))
+            : Results.Forbid();
     }
 
     private static async Task<IResult> GetJobResultsAsync(
         string jobId,
         int? skip,
         int? take,
+        HttpContext http,
         IValidationJobService jobs,
         IValidationJobAccessPolicy accessPolicy,
+        IEmailValidationSourceFileClient sourceFiles,
         ICurrentConsumerContext consumers,
         IOptions<ApiHostOptions> hostOptions,
         CancellationToken cancellationToken)
@@ -652,12 +666,37 @@ public static class ApiEndpoints
         var job = await jobs.GetAsync(jobId, cancellationToken).ConfigureAwait(false);
         if (job is null)
             return Problem(StatusCodes.Status404NotFound, "Job not found", "The validation job does not exist.");
+        if (!await HasCurrentSourceAccessAsync(job, http, sourceFiles, cancellationToken).ConfigureAwait(false))
+            return Results.Forbid();
         var actualSkip = skip ?? 0;
         var actualTake = take ?? limits.DefaultJobResultPageSize;
         var items = await jobs.GetResultsAsync(jobId, actualSkip, actualTake, cancellationToken).ConfigureAwait(false);
         int? next = actualSkip + items.Count < job.TotalItems ? actualSkip + items.Count : null;
         return Results.Ok(new ValidationJobResultsPageV1Response(
             jobId, actualSkip, actualTake, items.Select(ApiContractMapper.Map).ToArray(), next));
+    }
+
+    private static async Task<bool> HasCurrentSourceAccessAsync(
+        ValidationJobSnapshot job,
+        HttpContext http,
+        IEmailValidationSourceFileClient sourceFiles,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(job.SourceFileId)
+            || ApiSecurityExtensions.IsMachineClient(http.User))
+            return true;
+        try
+        {
+            await sourceFiles.DemandAccessAsync(
+                job.SourceFileId,
+                http.Request.Headers.Authorization.ToString(),
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SourceFileAccessException)
+        {
+            return false;
+        }
     }
 
     private static IResult ValidationError(string key, string message) =>
