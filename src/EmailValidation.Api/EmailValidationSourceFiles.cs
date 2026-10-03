@@ -52,7 +52,8 @@ public sealed class EmailValidationSourceFile(
 
 public sealed class OpenMetaEmailValidationSourceFileClient(
     HttpClient httpClient,
-    IOptions<ApiHostOptions> options) : IEmailValidationSourceFileClient
+    IOptions<ApiHostOptions> options,
+    IHttpContextAccessor contextAccessor) : IEmailValidationSourceFileClient
 {
     public async Task DemandAccessAsync(
         string sourceFileId,
@@ -111,6 +112,7 @@ public sealed class OpenMetaEmailValidationSourceFileClient(
             new Uri(origin, $"/api/search-requests/{Uri.EscapeDataString(sourceFileId)}{suffix}"));
         if (!string.IsNullOrWhiteSpace(authorization))
             request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        ImpersonationHeaderForwarder.Forward(request, contextAccessor);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(
             download ? "application/octet-stream" : "application/json"));
         return request;
@@ -205,6 +207,19 @@ public sealed class PublicApiPurchasedResultClient(
         expected.Port == actual.Port;
 
     private sealed record PublicResultDescriptor(string DownloadUrl, string FileName);
+}
+
+internal static class ImpersonationHeaderForwarder
+{
+    public static void Forward(
+        HttpRequestMessage request,
+        IHttpContextAccessor contextAccessor)
+    {
+        var sessionId = contextAccessor.HttpContext?.Request.Headers[
+            ImpersonationProtocol.SessionHeader].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(sessionId))
+            request.Headers.TryAddWithoutValidation(ImpersonationProtocol.SessionHeader, sessionId);
+    }
 }
 
 internal sealed class MaximumLengthReadStream(Stream inner, long maximumBytes) : Stream

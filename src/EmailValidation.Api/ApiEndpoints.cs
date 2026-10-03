@@ -225,7 +225,9 @@ public static class ApiEndpoints
             consumer.PrincipalKey,
             consumer.SubjectId,
             consumer.TenantId,
-            timeProvider.GetUtcNow()), CancellationToken.None).ConfigureAwait(false);
+            timeProvider.GetUtcNow(),
+            consumer.ActorSubjectId,
+            consumer.ImpersonationSessionId), CancellationToken.None).ConfigureAwait(false);
         return Results.Ok(response);
     }
 
@@ -500,7 +502,9 @@ public static class ApiEndpoints
                     input.SourceFileName,
                     input.EmailColumn,
                     input.SourcePositions,
-                    TenantId: jobTenantId),
+                    TenantId: jobTenantId,
+                    ActorUserId: consumer.ActorSubjectId,
+                    ImpersonationSessionId: consumer.ImpersonationSessionId),
                 CancellationToken.None)
                 .ConfigureAwait(false);
             await resources.GrantAsync(new ResourceOwnership(
@@ -509,7 +513,9 @@ public static class ApiEndpoints
                 consumer.PrincipalKey,
                 consumer.SubjectId,
                 consumer.TenantId,
-                timeProvider.GetUtcNow()), CancellationToken.None).ConfigureAwait(false);
+                timeProvider.GetUtcNow(),
+                consumer.ActorSubjectId,
+                consumer.ImpersonationSessionId), CancellationToken.None).ConfigureAwait(false);
             return Results.Accepted($"/v1/email-validation-jobs/{job.JobId}", ApiContractMapper.Map(job));
         }
         catch (ArgumentException exception)
@@ -573,7 +579,9 @@ public static class ApiEndpoints
                 failedRetry.SourceFileName,
                 failedRetry.EmailColumn,
                 failedRetry.SourcePositions,
-                TenantId: jobTenantId), CancellationToken.None).ConfigureAwait(false);
+                TenantId: jobTenantId,
+                ActorUserId: consumer.ActorSubjectId,
+                ImpersonationSessionId: consumer.ImpersonationSessionId), CancellationToken.None).ConfigureAwait(false);
         }
         return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
             ApiContractMapper.Map(existingJob));

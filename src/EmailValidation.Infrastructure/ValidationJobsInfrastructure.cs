@@ -522,6 +522,8 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public string? SourceFileName { get; set; }
         public string? EmailColumn { get; set; }
         public string? TenantId { get; set; }
+        public string? ActorUserId { get; set; }
+        public string? ImpersonationSessionId { get; set; }
         public bool ItemsReady { get; set; }
         public ValidationJobDispatchState DispatchState { get; set; }
         public string? DispatchId { get; set; }
@@ -545,6 +547,8 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             FailureReason = value.FailureReason, EnableSmtp = value.EnableSmtp,
             SourceFileId = value.SourceFileId, SourceFileName = value.SourceFileName,
             EmailColumn = value.EmailColumn, TenantId = value.TenantId,
+            ActorUserId = value.ActorUserId,
+            ImpersonationSessionId = value.ImpersonationSessionId,
             DispatchState = value.DispatchState,
             DispatchId = value.DispatchId,
             DispatchChunkCount = value.DispatchChunkCount
@@ -552,7 +556,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         public ValidationJobSnapshot ToModel() => new(Id, CreatedAtUtc, State, TotalItems, ProcessedItems,
             FinalItems, ProvisionalItems, FailedItems, UpdatedAtUtc, FailureReason, EnableSmtp,
             SourceFileId, SourceFileName, EmailColumn, DispatchState, DispatchId, DispatchChunkCount,
-            TenantId);
+            TenantId, ActorUserId, ImpersonationSessionId);
     }
 
     [BsonIgnoreExtraElements]

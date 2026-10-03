@@ -67,9 +67,11 @@ public static class ApiSecurityExtensions
                 "search:execute",
                 "match:execute",
                 "openmeta.write")
-            .AddScopePolicy(
-                EmailValidationPolicies.PurchasedJobsWrite,
-                EmailValidationScopes.JobsWrite)
+            .AddPolicy(EmailValidationPolicies.PurchasedJobsWrite, options => options
+                .RequireAuthenticatedUser()
+                .RequireAssertion(context => IsMachineClient(context.User) &&
+                    (HasScope(context.User, EmailValidationScopes.JobsWrite) ||
+                        HasScope(context.User, EmailValidationScopes.Admin))))
             .AddScopePolicy(
                 EmailValidationPolicies.JobsRead,
                 EmailValidationScopes.JobsRead,
@@ -155,6 +157,11 @@ public sealed class HttpCurrentConsumerContext(IHttpContextAccessor accessor) : 
         if (string.IsNullOrWhiteSpace(subject))
             throw new InvalidOperationException("The authenticated token does not contain a subject claim.");
         var tenant = principal.FindFirstValue("tenant_id") ?? principal.FindFirstValue("tid");
-        return new CurrentConsumer(subject, tenant, ApiSecurityExtensions.GetScopes(principal));
+        return new CurrentConsumer(
+            subject,
+            tenant,
+            ApiSecurityExtensions.GetScopes(principal),
+            principal.FindFirstValue(ImpersonationProtocol.ActorUserIdClaim),
+            principal.FindFirstValue(ImpersonationProtocol.SessionIdClaim));
     }
 }

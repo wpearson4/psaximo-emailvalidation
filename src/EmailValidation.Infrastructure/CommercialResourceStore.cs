@@ -142,6 +142,8 @@ public sealed class MongoCommercialResourceStore :
         public required string PrincipalKey { get; init; }
         public string? SubjectId { get; init; }
         public string? TenantId { get; init; }
+        public string? ActorSubjectId { get; init; }
+        public string? ImpersonationSessionId { get; init; }
         public string? Operation { get; init; }
         public string? IdempotencyKey { get; init; }
         public string? RequestHash { get; init; }
@@ -155,6 +157,8 @@ public sealed class MongoCommercialResourceStore :
             PrincipalKey = ownership.PrincipalKey,
             SubjectId = ownership.SubjectId,
             TenantId = ownership.TenantId,
+            ActorSubjectId = ownership.ActorSubjectId,
+            ImpersonationSessionId = ownership.ImpersonationSessionId,
             CreatedAtUtc = ownership.CreatedAtUtc
         };
 

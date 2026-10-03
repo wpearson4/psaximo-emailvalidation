@@ -420,6 +420,18 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    [Fact]
+    public async Task PurchasedResult_RejectsInteractiveUsersEvenWithMachineScope()
+    {
+        using var client = _factory.CreateAuthenticatedClient([EmailValidationScopes.JobsWrite]);
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/purchased-results/txn_search_purchase/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Theory]
     [InlineData("txn_not_found", HttpStatusCode.NotFound, "PURCHASED_RESULT_NOT_FOUND")]
     [InlineData("txn_other_account", HttpStatusCode.NotFound, "PURCHASED_RESULT_NOT_FOUND")]

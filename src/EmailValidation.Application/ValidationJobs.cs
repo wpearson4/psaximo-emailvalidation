@@ -42,7 +42,9 @@ public sealed record CreateValidationJobRequest(
     string? SourceFileName = null,
     string? EmailColumn = null,
     IReadOnlyList<int>? SourcePositions = null,
-    string? TenantId = null);
+    string? TenantId = null,
+    string? ActorUserId = null,
+    string? ImpersonationSessionId = null);
 
 public sealed record ValidationJobSnapshot(
     string JobId,
@@ -62,7 +64,9 @@ public sealed record ValidationJobSnapshot(
     ValidationJobDispatchState DispatchState = ValidationJobDispatchState.Pending,
     string? DispatchId = null,
     int DispatchChunkCount = 0,
-    string? TenantId = null);
+    string? TenantId = null,
+    string? ActorUserId = null,
+    string? ImpersonationSessionId = null);
 
 public sealed record ValidationJobItem(
     string JobId,
@@ -419,7 +423,9 @@ public sealed class ValidationJobService(
             DispatchState: ValidationJobDispatchState.Pending,
             DispatchId: Guid.NewGuid().ToString("N"),
             DispatchChunkCount: ChunkCount(inputs.Length),
-            TenantId: tenantId);
+            TenantId: tenantId,
+            ActorUserId: request.ActorUserId,
+            ImpersonationSessionId: request.ImpersonationSessionId);
         var items = inputs.Select(input =>
             new ValidationJobItem(jobId, input.Position, input.Email!, ValidationJobItemState.Pending)).ToArray();
         try

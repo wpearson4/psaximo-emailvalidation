@@ -80,6 +80,7 @@ public static class ApiPlatformExtensions
         });
 
         services.AddCors();
+        services.AddHttpClient<ImpersonationContextClient>();
         services.AddHttpClient<IEmailValidationSourceFileClient, OpenMetaEmailValidationSourceFileClient>();
         services.AddHttpClient<IPurchasedResultClient, PublicApiPurchasedResultClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -123,8 +124,10 @@ public static class ApiPlatformExtensions
                     "Content-Type",
                     "Idempotency-Key",
                     "X-Correlation-ID",
+                    ImpersonationProtocol.SessionHeader,
                     "traceparent"));
         app.UseAuthentication();
+        app.UseMiddleware<ImpersonationContextMiddleware>();
         app.UseMiddleware<ApiRequestTelemetryMiddleware>();
         app.UseRateLimiter();
         app.UseAuthorization();

@@ -32,7 +32,9 @@ public static class EmailValidationPolicies
 public sealed record CurrentConsumer(
     string SubjectId,
     string? TenantId,
-    IReadOnlySet<string> Scopes)
+    IReadOnlySet<string> Scopes,
+    string? ActorSubjectId = null,
+    string? ImpersonationSessionId = null)
 {
     public string PrincipalKey => string.IsNullOrWhiteSpace(TenantId)
         ? $"subject:{SubjectId}"
@@ -56,7 +58,9 @@ public sealed record ResourceOwnership(
     string PrincipalKey,
     string SubjectId,
     string? TenantId,
-    DateTimeOffset CreatedAtUtc);
+    DateTimeOffset CreatedAtUtc,
+    string? ActorSubjectId = null,
+    string? ImpersonationSessionId = null);
 
 public sealed record OwnedResourceReference(
     string ResourceId,
