@@ -9,9 +9,23 @@ REST resources and scopes:
 - `POST /v1/email-validations` — `emailvalidation.validate`
 - `GET /v1/email-validations/{validationId}` — `emailvalidation.read`
 - `POST /v1/email-validation-jobs` — `emailvalidation.jobs.write`
+- `POST /v1/purchased-results/{transactionId}/email-validation` — `emailvalidation.jobs.write`
 - `GET /v1/email-validation-jobs?skip=0&take=25` — `emailvalidation.jobs.read`
 - `GET /v1/email-validation-jobs/{jobId}` — `emailvalidation.jobs.read`
 - `GET /v1/email-validation-jobs/{jobId}/results?skip=0&take=100` — `emailvalidation.jobs.read`
+
+Standard machine clients must use the purchased-result route. The service forwards their bearer token to the
+customer API, which resolves the active API client/account and returns a completed result only when it belongs to
+that exact client. Email Validation then extracts the requested column from that purchased output; it never accepts
+client-submitted addresses or trusts a transaction identifier as proof. This supports completed Search and Match &
+Append results. Cross-account and unknown results both return the same non-enumerating `404` response, incomplete
+transactions return `409`, and a field absent from the purchased output returns `422` with
+`EMAIL_NOT_INCLUDED_IN_PURCHASE`.
+
+`POST /v1/email-validations` and `POST /v1/email-validation-jobs` remain the existing interactive/admin adapters.
+Machine-to-machine tokens cannot use those arbitrary-address routes unless they carry the explicit
+`emailvalidation.admin` scope. This preserves the existing web application while preventing the customer API from
+becoming a general-purpose arbitrary-address validator.
 
 Batch job creation ignores blank email values. Result positions retain the corresponding source-row indexes, allowing
 download clients to leave skipped rows empty without shifting later validation results.
@@ -23,13 +37,13 @@ gRPC methods and scopes:
 - `emailvalidation.status.v1.EmailValidationStatus/GetValidationStatus` — `emailvalidation.read`
 - `emailvalidation.status.v1.EmailValidationStatus/WatchValidationStatus` — `emailvalidation.stream`
 
-All business operations deny unauthenticated callers. Tokens must be issued by `Authentication:Authority`, target `Authentication:Audience`, and pass standard issuer, audience, signature, expiration, and not-before validation. OAuth client credentials is the normal server-to-server flow. Tokens may carry space-delimited `scope`/`scp` claims or Auth0's standard `permissions` claim. During the shared OpenMeta audience migration, Search or Match read/execute permissions (and the legacy `openmeta.read`/`openmeta.write` scopes) authorize the corresponding job read/write operation. The dedicated Email Validation permissions remain canonical. Persisted tenant/subject grants protect validation and job identifiers.
+All business operations deny unauthenticated callers. Tokens must be issued by `Authentication:Authority`, target `Authentication:Audience` or an explicitly configured `Authentication:AdditionalAudiences` entry, and pass standard issuer, audience, signature, expiration, and not-before validation. Customer API client-credentials tokens target `https://services.digitalwarehouse.io`; production configures that value as an additional accepted audience so the same bearer can be forwarded for authoritative result authorization. Tokens may carry space-delimited `scope`/`scp` claims or Auth0's standard `permissions` claim. Purchased-result submission requires the canonical `emailvalidation.jobs.write` permission; Search/Match compatibility permissions do not substitute for that entitlement. The caller also needs `search:read` or `match:read` for the corresponding result. Persisted tenant/subject grants protect validation and job identifiers.
 
 `Idempotency-Key` is optional on job creation. A key is scoped to the authenticated tenant, or subject when there is no tenant. The same body returns the original job; a different body returns `409`.
 
 Job creation may include `sourceFileId`, `sourceFileName`, and `emailColumn`. These non-secret display fields are stored with the durable job so the owner-scoped history endpoint can support cross-browser status and validated-file downloads. History is ordered newest first and never relies on browser storage for authorization or discovery.
 
-Set `Api:OpenMeta:BaseUrl` to the OpenMeta API origin. Production Compose maps `OPENMETA_API_ORIGIN` to this setting and defaults it to `https://api.digitalwarehouse.io`; production startup rejects loopback origins so the API cannot silently use the local-development fallback. Before job creation, the email-column endpoint forwards the caller's bearer token to the existing purchased-file download route and profiles a bounded stream identified only by `sourceFileId`. It returns detected column metadata without returning, persisting, or logging sampled values. Sampling limits and confidence policy are configured under `EmailValidation:ColumnDetection`.
+Set `Api:OpenMeta:BaseUrl` to the interactive OpenMeta API origin and `Api:OpenMeta:PublicApiBaseUrl` to the customer API origin. Production Compose maps `OPENMETA_API_ORIGIN` and `OPENMETA_PUBLIC_API_ORIGIN`; their defaults are `https://api.digitalwarehouse.io` and `https://services.digitalwarehouse.io`. Production startup rejects loopback origins. The purchased-result client accepts a download descriptor only from the configured customer API origin, disables redirects, forwards the bearer on both authorization and download requests, and streams at most `Api:Limits:MaximumPurchasedResultBytes`. It does not log raw email data.
 
 ## Development and contracts
 
@@ -102,7 +116,7 @@ Swagger is anonymous only in Development. Business operations still require thei
 
 ## Configuration and secrets
 
-Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Api__OpenMeta__BaseUrl`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
+Non-secret settings include `Azure__AppConfigurationEndpoint`, `Azure__AppConfigurationLabel`, `Authentication__Authority`, `Authentication__Audience`, `Authentication__AdditionalAudiences__*`, `Api__OpenMeta__BaseUrl`, `Api__OpenMeta__PublicApiBaseUrl`, `Api__OpenApi__ExposeInProduction`, `Api__Cors__AllowedOrigins__0`, `Api__Limits__*`, `Api__RateLimiting__*`, and `Kestrel__Endpoints__*`.
 
 Existing App Configuration/Key Vault keys remain authoritative for MongoDB, Service Bus, Elasticsearch, and validation behavior. Compose mounts the App Configuration and MongoDB connection strings as Docker secrets at `/run/secrets/azure_app_configuration_connection_string` and `/run/secrets/mongo_connection_string`. Set `AZURE_MONGO_SECRET_URI` to the matching Key Vault reference URI so the application substitutes the mounted value when it loads App Configuration. A service-principal certificate remains available at `/run/secrets/azure_client_certificate.pem` for any other Key Vault references. This avoids production `az login` and keeps credentials out of environment variables. Keep source secret files outside the repository.
 

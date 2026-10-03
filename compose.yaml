@@ -41,9 +41,11 @@ services:
       AZURE_CLIENT_CERTIFICATE_PATH: /run/secrets/azure_client_certificate.pem
       Authentication__Authority: ${AUTHORITY:?set AUTHORITY}
       Authentication__Audience: ${AUDIENCE:-emailvalidation-api}
+      Authentication__AdditionalAudiences__0: ${PUBLIC_API_AUDIENCE:-https://services.digitalwarehouse.io}
       Authentication__RequireHttpsMetadata: "true"
       Api__Cors__AllowedOrigins__0: https://app.digitalwarehouse.io
       Api__OpenMeta__BaseUrl: ${OPENMETA_API_ORIGIN:-https://api.digitalwarehouse.io}
+      Api__OpenMeta__PublicApiBaseUrl: ${OPENMETA_PUBLIC_API_ORIGIN:-https://services.digitalwarehouse.io}
       Api__OpenApi__ExposeInProduction: ${OPENAPI_EXPOSE_IN_PRODUCTION:-false}
       Api__OpenApi__AuthorizationUrl: ${OPENAPI_AUTHORIZATION_URL:-}
       Api__OpenApi__TokenUrl: ${OPENAPI_TOKEN_URL:-}

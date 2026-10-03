@@ -28,6 +28,12 @@ public static class ApiSecurityExtensions
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
+                var validAudiences = new[] { authentication.Audience }
+                    .Concat(authentication.AdditionalAudiences ?? [])
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
                 options.Authority = authentication.Authority;
                 options.Audience = authentication.Audience;
                 options.RequireHttpsMetadata = authentication.RequireHttpsMetadata;
@@ -36,6 +42,7 @@ public static class ApiSecurityExtensions
                 {
                     ValidateIssuer = true,
                     ValidateAudience = true,
+                    ValidAudiences = validAudiences,
                     ValidateIssuerSigningKey = true,
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromMinutes(1),
@@ -48,6 +55,11 @@ public static class ApiSecurityExtensions
                 .RequireAuthenticatedUser()
                 .Build())
             .AddScopePolicy(EmailValidationPolicies.Validate, EmailValidationScopes.Validate)
+            .AddPolicy(EmailValidationPolicies.ArbitraryValidation, options => options
+                .RequireAuthenticatedUser()
+                .RequireAssertion(context =>
+                    HasScope(context.User, EmailValidationScopes.Admin) ||
+                    !IsMachineClient(context.User)))
             .AddScopePolicy(EmailValidationPolicies.Read, EmailValidationScopes.Read)
             .AddScopePolicy(
                 EmailValidationPolicies.JobsWrite,
@@ -55,6 +67,9 @@ public static class ApiSecurityExtensions
                 "search:execute",
                 "match:execute",
                 "openmeta.write")
+            .AddScopePolicy(
+                EmailValidationPolicies.PurchasedJobsWrite,
+                EmailValidationScopes.JobsWrite)
             .AddScopePolicy(
                 EmailValidationPolicies.JobsRead,
                 EmailValidationScopes.JobsRead,
@@ -87,6 +102,12 @@ public static class ApiSecurityExtensions
     public static IReadOnlySet<string> GetScopes(ClaimsPrincipal principal) =>
         GetAuthorizationValues(principal)
             .ToHashSet(StringComparer.Ordinal);
+
+    public static bool IsMachineClient(ClaimsPrincipal principal) =>
+        string.Equals(principal.FindFirstValue("gty"), "client-credentials", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(principal.FindFirstValue("grant_type"), "client_credentials", StringComparison.OrdinalIgnoreCase) ||
+        !string.IsNullOrWhiteSpace(principal.FindFirstValue("client_id")) ||
+        principal.FindFirstValue("sub")?.EndsWith("@clients", StringComparison.Ordinal) == true;
 
     private static IEnumerable<string> GetAuthorizationValues(ClaimsPrincipal principal)
     {

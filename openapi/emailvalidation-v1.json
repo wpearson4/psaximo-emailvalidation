@@ -2,7 +2,7 @@
   "openapi": "3.0.4",
   "info": {
     "title": "Email Validation API",
-    "description": "Secure commercial REST boundary for canonical email validation and durable jobs.",
+    "description": "Secure REST boundary for canonical Email Validation. Standard machine clients may validate only email columns in completed Search or Match & Append results purchased by their API client. The service resolves ownership and field inclusion from the authoritative purchased output; knowing a transaction identifier or email address does not grant access. Explicitly authorized administrators may validate arbitrary addresses.",
     "version": "v1"
   },
   "paths": {
@@ -12,7 +12,7 @@
           "Email Validation v1"
         ],
         "summary": "Validate one email address",
-        "description": "Runs the shared validation engine and returns the canonical final or provisional validation resource. Mailbox invalidity is a successful HTTP operation.",
+        "description": "Runs the shared validation engine for an interactive user or explicitly authorized administrator. Standard machine clients must use the purchased-result endpoint. Mailbox invalidity is a successful HTTP operation.",
         "operationId": "CreateEmailValidationV1",
         "requestBody": {
           "content": {
@@ -42,7 +42,6 @@
                       "status": "Valid",
                       "subStatus": "MailboxAccepted",
                       "confidence": 0.94,
-                      "confidenceLevel": "HIGH",
                       "provider": "Microsoft365",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -60,7 +59,6 @@
                       "status": "Invalid",
                       "subStatus": "MailboxNotFound",
                       "confidence": 0.99,
-                      "confidenceLevel": "HIGH",
                       "provider": "Unknown",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -78,7 +76,6 @@
                       "status": "Unknown",
                       "subStatus": "TemporaryFailure",
                       "confidence": 0.82,
-                      "confidenceLevel": "LOW",
                       "unknownContext": {
                         "cause": "TemporarySmtpFailure",
                         "summary": "The destination returned a temporary SMTP failure.",
@@ -109,7 +106,6 @@
                       "status": "Unknown",
                       "subStatus": "VerificationBlocked",
                       "confidence": 0.88,
-                      "confidenceLevel": "LOW",
                       "unknownContext": {
                         "cause": "ProviderVerificationBlocked",
                         "summary": "The destination did not provide recipient-specific verification evidence.",
@@ -138,7 +134,6 @@
                       "status": "Risky",
                       "subStatus": "MailboxFull",
                       "confidence": 0.9,
-                      "confidenceLevel": "MEDIUM",
                       "provider": "Unknown",
                       "source": "LiveValidation",
                       "retryScheduled": false,
@@ -321,7 +316,7 @@
           "Email Validation v1"
         ],
         "summary": "Create a durable bulk validation job",
-        "description": "Persists a bulk job and submits it to the existing Service Bus worker. Idempotency-Key is supported and scoped to the authenticated consumer.",
+        "description": "Creates an arbitrary-address job for an interactive user or explicitly authorized administrator. Standard machine clients must use the purchased-result endpoint. Idempotency-Key is supported and scoped to the authenticated consumer.",
         "operationId": "CreateEmailValidationJobV1",
         "requestBody": {
           "content": {
@@ -443,6 +438,268 @@
           {
             "oauth2": [
               "emailvalidation.jobs.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/purchased-results/{transactionId}/email-validation": {
+      "post": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Validate email data in a purchased Search or Match & Append result",
+        "description": "Authorizes the completed purchased result against the authenticated API client, reads the requested email column from the purchased output, and creates a durable asynchronous validation job. Submitted email addresses and client-asserted ownership are never accepted by this operation.",
+        "operationId": "CreatePurchasedResultEmailValidationV1",
+        "parameters": [
+          {
+            "name": "transactionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailValidation.Api.CreatePurchasedResultValidationV1Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Api.ValidationJobV1Response"
+                },
+                "examples": {
+                  "searchPurchased": {
+                    "summary": "Search-purchased email validation accepted",
+                    "value": {
+                      "jobId": "file_5f4dcc3b5aa765d61d8327deb882cf99",
+                      "createdAtUtc": "2026-10-03T20:00:00Z",
+                      "state": "Queued",
+                      "totalItems": 1250,
+                      "processedItems": 0,
+                      "finalItems": 0,
+                      "provisionalItems": 0,
+                      "failedItems": 0,
+                      "updatedAtUtc": "2026-10-03T20:00:00Z",
+                      "enableSmtp": true,
+                      "sourceFileId": "txn_01JSEARCH",
+                      "sourceFileName": "search-results.csv",
+                      "emailColumn": "Email"
+                    }
+                  },
+                  "matchPurchased": {
+                    "summary": "Match & Append-purchased email validation accepted",
+                    "value": {
+                      "jobId": "file_098f6bcd4621d373cade4e832627b4f6",
+                      "createdAtUtc": "2026-10-03T20:00:00Z",
+                      "state": "Queued",
+                      "totalItems": 640,
+                      "processedItems": 0,
+                      "finalItems": 0,
+                      "provisionalItems": 0,
+                      "failedItems": 0,
+                      "updatedAtUtc": "2026-10-03T20:00:00Z",
+                      "enableSmtp": true,
+                      "sourceFileId": "txn_01JMATCH",
+                      "sourceFileName": "match-results.csv",
+                      "emailColumn": "Appended Email"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "EMAIL_VALIDATION_NOT_AUTHORIZED": {
+                    "summary": "Email validation is not authorized",
+                    "value": {
+                      "type": "https://email.digitalwarehouse.io/problems/email-validation-not-authorized",
+                      "title": "Email validation is not authorized",
+                      "status": 403,
+                      "code": "EMAIL_VALIDATION_NOT_AUTHORIZED",
+                      "detail": "The access token cannot validate this purchased result.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "PURCHASED_RESULT_NOT_FOUND": {
+                    "summary": "Purchased result not found",
+                    "value": {
+                      "type": "https://email.digitalwarehouse.io/problems/purchased-result-not-found",
+                      "title": "Purchased result not found",
+                      "status": 404,
+                      "code": "PURCHASED_RESULT_NOT_FOUND",
+                      "detail": "The purchased result does not exist or is not available to this API client.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "PURCHASE_NOT_COMPLETED": {
+                    "summary": "Purchase is not complete",
+                    "value": {
+                      "type": "https://email.digitalwarehouse.io/problems/purchase-not-completed",
+                      "title": "Purchase is not complete",
+                      "status": 409,
+                      "code": "PURCHASE_NOT_COMPLETED",
+                      "detail": "Wait for the Search or Match & Append transaction to complete, then retry.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Content Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "EMAIL_NOT_INCLUDED_IN_PURCHASE": {
+                    "summary": "Email was not included in the purchase",
+                    "value": {
+                      "type": "https://email.digitalwarehouse.io/problems/email-not-included-in-purchase",
+                      "title": "Email was not included in the purchase",
+                      "status": 422,
+                      "code": "EMAIL_NOT_INCLUDED_IN_PURCHASE",
+                      "detail": "Choose an email column that is present in the purchased output.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "Ratelimitexceeded": {
+                    "summary": "Rate limit exceeded",
+                    "value": {
+                      "type": "https://httpstatuses.com/429",
+                      "title": "Rate limit exceeded",
+                      "status": 429,
+                      "detail": "Retry later.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Microsoft.AspNetCore.Mvc.ProblemDetails"
+                },
+                "examples": {
+                  "Purchased-resultserviceunavailable": {
+                    "summary": "Purchased-result service unavailable",
+                    "value": {
+                      "type": "https://httpstatuses.com/503",
+                      "title": "Purchased-result service unavailable",
+                      "status": 503,
+                      "detail": "Retry later.",
+                      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.jobs.write"
             ]
           }
         ]
@@ -713,6 +970,18 @@
   },
   "components": {
     "schemas": {
+      "EmailValidation.Api.CreatePurchasedResultValidationV1Request": {
+        "type": "object",
+        "properties": {
+          "emailColumn": {
+            "type": "string"
+          },
+          "enableSmtp": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "EmailValidation.Api.CreateValidationJobV1Request": {
         "type": "object",
         "properties": {
@@ -800,8 +1069,7 @@
             "format": "double"
           },
           "confidenceLevel": {
-            "type": "string",
-            "description": "Evidence-aware qualitative confidence in the public conclusion. This is not a calibrated probability."
+            "type": "string"
           },
           "confidenceReason": {
             "type": "string",
@@ -844,6 +1112,59 @@
           },
           "checks": {
             "$ref": "#/components/schemas/EmailValidation.Api.ValidationChecksV1"
+          },
+          "mxValidation": {
+            "$ref": "#/components/schemas/EmailValidation.Api.MxValidationV1Response"
+          },
+          "recipientEvidence": {
+            "$ref": "#/components/schemas/EmailValidation.Api.RecipientEvidenceV1Response"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.MxValidationV1Response": {
+        "type": "object",
+        "properties": {
+          "consensus": {
+            "type": "string"
+          },
+          "hostsAttempted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Api.RecipientEvidenceV1Response": {
+        "type": "object",
+        "properties": {
+          "qualified": {
+            "type": "boolean"
+          },
+          "contested": {
+            "type": "boolean"
+          },
+          "category": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "nullable": true
+          },
+          "responseCode": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "enhancedStatusCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "mxHost": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -929,6 +1250,9 @@
             "type": "boolean"
           },
           "catchAll": {
+            "type": "string"
+          },
+          "recipientBehavior": {
             "type": "string"
           }
         },
@@ -1099,8 +1423,7 @@
             "nullable": true
           },
           "confidenceLevel": {
-            "type": "string",
-            "description": "Evidence-aware qualitative confidence in the public conclusion. This is not a calibrated probability."
+            "type": "string"
           },
           "confidenceReason": {
             "type": "string",
@@ -1187,9 +1510,9 @@
           "clientCredentials": {
             "tokenUrl": "https://identity.example.invalid/connect/token",
             "scopes": {
-              "emailvalidation.validate": "Validate one email address.",
+              "emailvalidation.validate": "Validate arbitrary addresses only when interactive or administratively authorized.",
               "emailvalidation.read": "Read a validation resource.",
-              "emailvalidation.jobs.write": "Create durable validation jobs.",
+              "emailvalidation.jobs.write": "Create durable jobs; standard machine clients are limited to owned purchased results.",
               "emailvalidation.jobs.read": "Read validation jobs and results.",
               "emailvalidation.stream": "Subscribe to validation lifecycle streams.",
               "emailvalidation.admin": "Administrative access; not intended for ordinary consumers."
@@ -1199,9 +1522,9 @@
             "authorizationUrl": "https://identity.example.invalid/authorize",
             "tokenUrl": "https://identity.example.invalid/connect/token",
             "scopes": {
-              "emailvalidation.validate": "Validate one email address.",
+              "emailvalidation.validate": "Validate arbitrary addresses only when interactive or administratively authorized.",
               "emailvalidation.read": "Read a validation resource.",
-              "emailvalidation.jobs.write": "Create durable validation jobs.",
+              "emailvalidation.jobs.write": "Create durable jobs; standard machine clients are limited to owned purchased results.",
               "emailvalidation.jobs.read": "Read validation jobs and results.",
               "emailvalidation.stream": "Subscribe to validation lifecycle streams.",
               "emailvalidation.admin": "Administrative access; not intended for ordinary consumers."

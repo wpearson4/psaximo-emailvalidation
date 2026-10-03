@@ -19,6 +19,7 @@ public sealed class EmailValidationGrpcService(
     EmailValidationService.EmailValidationServiceBase
 {
     [Authorize(Policy = EmailValidationPolicies.Validate)]
+    [Authorize(Policy = EmailValidationPolicies.ArbitraryValidation)]
     public override async Task<EmailValidationResponse> ValidateEmail(
         ValidateEmailRequest request,
         ServerCallContext context)

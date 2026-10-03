@@ -30,11 +30,15 @@ public static class ApiPlatformExtensions
             .Bind(configuration.GetSection("Api"))
             .Validate(options => options.Limits.MaximumRequestBodyBytes is >= 16_384 and <= 100_000_000,
                 "Api:Limits:MaximumRequestBodyBytes must be between 16384 and 100000000.")
+            .Validate(options => options.Limits.MaximumPurchasedResultBytes is >= 16_384 and <= 1_000_000_000,
+                "Api:Limits:MaximumPurchasedResultBytes must be between 16384 and 1000000000.")
             .Validate(options => options.RateLimiting.PermitLimit > 0 &&
                     options.RateLimiting.WindowSeconds > 0 && options.RateLimiting.StreamConcurrencyLimit > 0,
                 "API rate limit values must be positive.")
             .Validate(options => IsUsableOpenMetaOrigin(options.OpenMeta.BaseUrl, environment),
                 "Api:OpenMeta:BaseUrl must be an absolute HTTP or HTTPS URL and cannot use a loopback address in Production.")
+            .Validate(options => IsUsableOpenMetaOrigin(options.OpenMeta.PublicApiBaseUrl, environment),
+                "Api:OpenMeta:PublicApiBaseUrl must be an absolute HTTP or HTTPS URL and cannot use a loopback address in Production.")
             .ValidateOnStart();
 
         var hostOptions = configuration.GetSection("Api").Get<ApiHostOptions>() ?? new();
@@ -77,6 +81,11 @@ public static class ApiPlatformExtensions
 
         services.AddCors();
         services.AddHttpClient<IEmailValidationSourceFileClient, OpenMetaEmailValidationSourceFileClient>();
+        services.AddHttpClient<IPurchasedResultClient, PublicApiPurchasedResultClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false
+            });
 
         services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])

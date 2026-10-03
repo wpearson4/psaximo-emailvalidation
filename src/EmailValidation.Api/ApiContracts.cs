@@ -16,6 +16,10 @@ public sealed record CreateValidationJobV1Request(
     string? SourceFileName = null,
     string? EmailColumn = null);
 
+public sealed record CreatePurchasedResultValidationV1Request(
+    string EmailColumn,
+    bool EnableSmtp = true);
+
 public sealed record DetectedEmailColumnV1Response(
     string Name,
     string DetectedType,

@@ -9,6 +9,7 @@ namespace EmailValidation.Api;
 public static class ApiEndpoints
 {
     private const string CreateJobOperation = "email-validation-jobs.create.v1";
+    private const string CreatePurchasedJobOperation = "purchased-result-email-validation.create.v1";
 
     public static IEndpointRouteBuilder MapEmailValidationV1(this IEndpointRouteBuilder endpoints)
     {
@@ -18,8 +19,10 @@ public static class ApiEndpoints
         group.MapPost("/email-validations", ValidateEmailAsync)
             .WithName("CreateEmailValidationV1")
             .WithSummary("Validate one email address")
-            .WithDescription("Runs the shared validation engine and returns the canonical final or provisional validation resource. Mailbox invalidity is a successful HTTP operation.")
-            .RequireAuthorization(EmailValidationPolicies.Validate)
+            .WithDescription("Runs the shared validation engine for an interactive user or explicitly authorized administrator. Standard machine clients must use the purchased-result endpoint. Mailbox invalidity is a successful HTTP operation.")
+            .RequireAuthorization(
+                EmailValidationPolicies.Validate,
+                EmailValidationPolicies.ArbitraryValidation)
             .RequireRateLimiting(ApiRateLimitPolicies.Requests)
             .Accepts<ValidateEmailV1Request>("application/json")
             .Produces<EmailValidationV1Response>(StatusCodes.Status200OK)
@@ -43,14 +46,35 @@ public static class ApiEndpoints
         group.MapPost("/email-validation-jobs", CreateJobAsync)
             .WithName("CreateEmailValidationJobV1")
             .WithSummary("Create a durable bulk validation job")
-            .WithDescription("Persists a bulk job and submits it to the existing Service Bus worker. Idempotency-Key is supported and scoped to the authenticated consumer.")
-            .RequireAuthorization(EmailValidationPolicies.JobsWrite)
+            .WithDescription("Creates an arbitrary-address job for an interactive user or explicitly authorized administrator. Standard machine clients must use the purchased-result endpoint. Idempotency-Key is supported and scoped to the authenticated consumer.")
+            .RequireAuthorization(
+                EmailValidationPolicies.JobsWrite,
+                EmailValidationPolicies.ArbitraryValidation)
             .RequireRateLimiting(ApiRateLimitPolicies.Requests)
             .Accepts<CreateValidationJobV1Request>("application/json")
             .Produces<ValidationJobV1Response>(StatusCodes.Status202Accepted)
             .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
             .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
             .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests);
+
+        group.MapPost("/purchased-results/{transactionId}/email-validation", CreatePurchasedResultJobAsync)
+            .WithName("CreatePurchasedResultEmailValidationV1")
+            .WithSummary("Validate email data in a purchased Search or Match & Append result")
+            .WithDescription("Authorizes the completed purchased result against the authenticated API client, reads the requested email column from the purchased output, and creates a durable asynchronous validation job. Submitted email addresses and client-asserted ownership are never accepted by this operation.")
+            .RequireAuthorization(EmailValidationPolicies.PurchasedJobsWrite)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests)
+            .Accepts<CreatePurchasedResultValidationV1Request>("application/json")
+            .Produces<ValidationJobV1Response>(StatusCodes.Status202Accepted)
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
+            .Produces<ProblemDetails>(StatusCodes.Status413PayloadTooLarge)
+            .Produces<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)
+            .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status503ServiceUnavailable);
 
         group.MapGet("/email-validation-files/{sourceFileId}/columns", DetectEmailColumnsAsync)
             .WithName("DetectEmailValidationColumnsV1")
@@ -257,61 +281,208 @@ public static class ApiEndpoints
             !ValidOptionalMetadata(input.SourceFileName, 512) ||
             !ValidOptionalMetadata(input.EmailColumn, 256))
             return ValidationError("source", "Source file metadata contains unsupported characters or is too long.");
+
+        return await SubmitJobAsync(
+            http,
+            new PreparedValidationJob(
+                emails,
+                input.EnableSmtp,
+                input.SourceFileId?.Trim(),
+                input.SourceFileName?.Trim(),
+                input.EmailColumn?.Trim(),
+                sourcePositions),
+            CreateJobOperation,
+            jobs,
+            consumers,
+            resources,
+            timeProvider,
+            hostOptions,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<IResult> CreatePurchasedResultJobAsync(
+        string transactionId,
+        HttpContext http,
+        CreatePurchasedResultValidationV1Request? input,
+        IPurchasedResultClient purchasedResults,
+        IPurchasedEmailDataReader emailData,
+        IValidationJobService jobs,
+        ICurrentConsumerContext consumers,
+        ICommercialResourceStore resources,
+        TimeProvider timeProvider,
+        IOptions<ApiHostOptions> hostOptions,
+        IOptions<EmailValidationOptions> engineOptions,
+        CancellationToken cancellationToken)
+    {
+        var limits = hostOptions.Value.Limits;
+        if (!ValidIdentifier(transactionId, limits.MaximumIdentifierLength))
+            return ValidationError("transactionId", "TransactionId is invalid.");
+        if (input is null || string.IsNullOrWhiteSpace(input.EmailColumn) ||
+            !ValidOptionalMetadata(input.EmailColumn, 256))
+            return ValidationError("emailColumn", "EmailColumn is required and must be valid.");
+
+        var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
+        if (!ValidIdempotencyKey(key, limits))
+            return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
         var consumer = consumers.GetRequiredConsumer();
-        var sourceFileId = input.SourceFileId?.Trim();
+        var requestHash = IdempotencyRequestHasher.HashPurchasedResultRequest(
+            transactionId, input.EmailColumn, input.EnableSmtp);
+        var replay = await ReadIdempotentReplayAsync(
+            key,
+            requestHash,
+            CreatePurchasedJobOperation,
+            consumer,
+            jobs,
+            resources,
+            cancellationToken).ConfigureAwait(false);
+        if (replay is not null) return replay;
+
+        try
+        {
+            await using var source = await purchasedResults.OpenAsync(
+                transactionId,
+                http.Request.Headers.Authorization.ToString(),
+                cancellationToken).ConfigureAwait(false);
+            var purchasedEmailData = await emailData.ReadAsync(
+                source.Content,
+                source.FileName,
+                input.EmailColumn,
+                engineOptions.Value.Jobs.MaximumItemsPerJob,
+                cancellationToken).ConfigureAwait(false);
+
+            return await SubmitJobAsync(
+                http,
+                new PreparedValidationJob(
+                    purchasedEmailData.Emails,
+                    input.EnableSmtp,
+                    transactionId,
+                    source.FileName,
+                    input.EmailColumn.Trim(),
+                    purchasedEmailData.SourcePositions,
+                    requestHash),
+                CreatePurchasedJobOperation,
+                jobs,
+                consumers,
+                resources,
+                timeProvider,
+                hostOptions,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return Results.Unauthorized();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            return Problem(StatusCodes.Status403Forbidden, "Email validation is not authorized",
+                "The access token cannot validate this purchased result.", "EMAIL_VALIDATION_NOT_AUTHORIZED");
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Purchased result not found",
+                "The purchased result does not exist or is not available to this API client.",
+                "PURCHASED_RESULT_NOT_FOUND");
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Purchase is not complete",
+                "Email Validation is available only after the Search or Match & Append purchase is complete.",
+                "PURCHASE_NOT_COMPLETED");
+        }
+        catch (SourceFileAccessException exception) when (
+            exception.StatusCode == System.Net.HttpStatusCode.RequestEntityTooLarge)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Purchased result is too large",
+                "The purchased result exceeds the configured Email Validation limit.",
+                "PURCHASED_RESULT_TOO_LARGE");
+        }
+        catch (PurchasedEmailColumnNotFoundException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Email was not included in the purchase",
+                "The selected field is not present in the purchased output.",
+                "EMAIL_NOT_INCLUDED_IN_PURCHASE");
+        }
+        catch (PurchasedEmailColumnEmptyException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Purchased email field is empty",
+                "The selected purchased email field contains no values to validate.",
+                "EMAIL_NOT_INCLUDED_IN_PURCHASE");
+        }
+        catch (PurchasedEmailLimitExceededException exception)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Purchased result is too large",
+                exception.Message, "PURCHASED_RESULT_TOO_LARGE");
+        }
+        catch (InvalidDataException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Purchased result is invalid",
+                "The purchased result could not be read as a supported validation source.",
+                "PURCHASED_RESULT_INVALID");
+        }
+        catch (HttpRequestException)
+        {
+            return Problem(StatusCodes.Status503ServiceUnavailable, "Purchased-result service unavailable",
+                "The purchased-result service is temporarily unavailable.", "SERVICE_UNAVAILABLE");
+        }
+        catch (SourceFileAccessException)
+        {
+            return Problem(StatusCodes.Status502BadGateway, "Purchased result unavailable",
+                "The purchased-result service could not provide the selected result.",
+                "PURCHASED_RESULT_UNAVAILABLE");
+        }
+    }
+
+    private static async Task<IResult> SubmitJobAsync(
+        HttpContext http,
+        PreparedValidationJob input,
+        string operation,
+        IValidationJobService jobs,
+        ICurrentConsumerContext consumers,
+        ICommercialResourceStore resources,
+        TimeProvider timeProvider,
+        IOptions<ApiHostOptions> hostOptions,
+        CancellationToken cancellationToken)
+    {
+        var consumer = consumers.GetRequiredConsumer();
+        var jobTenantId = consumer.TenantId ?? consumer.PrincipalKey;
+        var sourceFileId = input.SourceFileId;
+        var limits = hostOptions.Value.Limits;
+        var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
+        if (!ValidIdempotencyKey(key, limits))
+            return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
+
+        var hash = input.RequestHash ?? IdempotencyRequestHasher.HashJobRequest(
+            input.Emails, input.EnableSmtp, sourceFileId, input.EmailColumn, input.SourcePositions);
+        var replay = await ReadIdempotentReplayAsync(
+            key,
+            hash,
+            operation,
+            consumer,
+            jobs,
+            resources,
+            cancellationToken,
+            input.RequestHash is null ? input : null,
+            jobTenantId).ConfigureAwait(false);
+        if (replay is not null) return replay;
+
         ValidationJobSnapshot? sourceJob = null;
         if (!string.IsNullOrWhiteSpace(sourceFileId))
         {
             sourceJob = await jobs.GetBySourceFileIdAsync(
-                sourceFileId, consumer.TenantId, cancellationToken).ConfigureAwait(false);
+                sourceFileId, jobTenantId, cancellationToken).ConfigureAwait(false);
             if (sourceJob?.State is ValidationJobState.Completed or ValidationJobState.CompletedWithErrors)
                 return Problem(StatusCodes.Status409Conflict, "File already validated",
-                    "This source file already has a completed validation job.");
-        }
-        var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
-        if (!string.IsNullOrEmpty(key) && (key.Length > limits.MaximumIdempotencyKeyLength ||
-                key.Any(character => char.IsControl(character))))
-            return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
-
-        var hash = IdempotencyRequestHasher.HashJobRequest(
-            emails, input.EnableSmtp, sourceFileId, input.EmailColumn, sourcePositions);
-        if (!string.IsNullOrEmpty(key))
-        {
-            var existing = await resources.GetIdempotentOperationAsync(
-                consumer.PrincipalKey, CreateJobOperation, key, cancellationToken).ConfigureAwait(false);
-            if (existing is not null)
-            {
-                if (!string.Equals(existing.RequestHash, hash, StringComparison.Ordinal))
-                    return Problem(StatusCodes.Status409Conflict, "Idempotency conflict",
-                        "The Idempotency-Key was already used with a different request.");
-                var existingJob = await jobs.GetAsync(existing.ResourceId, cancellationToken).ConfigureAwait(false);
-                if (existingJob is null)
-                    return Problem(StatusCodes.Status409Conflict, "Job creation in progress",
-                        "The idempotent operation is still being created. Retry shortly.");
-                if (existingJob.State == ValidationJobState.Failed && !string.IsNullOrWhiteSpace(sourceFileId))
-                {
-                    existingJob = await jobs.CreateAsync(new CreateValidationJobRequest(
-                        emails,
-                        input.EnableSmtp,
-                        existingJob.JobId,
-                        sourceFileId,
-                        input.SourceFileName?.Trim(),
-                        input.EmailColumn?.Trim(),
-                        sourcePositions,
-                        TenantId: consumer.TenantId), CancellationToken.None).ConfigureAwait(false);
-                }
-                return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
-                    ApiContractMapper.Map(existingJob));
-            }
+                    "This source file already has a completed validation job.",
+                    "EMAIL_VALIDATION_ALREADY_COMPLETED");
         }
 
         var jobId = string.IsNullOrWhiteSpace(sourceFileId)
             ? Guid.NewGuid().ToString("N")
-            : sourceJob?.JobId ?? ValidationJobIdentity.FromSourceFileId(sourceFileId, consumer.TenantId);
+            : sourceJob?.JobId ?? ValidationJobIdentity.FromSourceFileId(sourceFileId, jobTenantId);
         if (!string.IsNullOrEmpty(key))
         {
             var saved = await resources.TrySaveIdempotentOperationAsync(new IdempotentOperation(
-                consumer.PrincipalKey, CreateJobOperation, key, hash, jobId, timeProvider.GetUtcNow()), cancellationToken)
+                consumer.PrincipalKey, operation, key, hash, jobId, timeProvider.GetUtcNow()), cancellationToken)
                 .ConfigureAwait(false);
             if (!saved)
                 return Problem(StatusCodes.Status409Conflict, "Job creation in progress",
@@ -322,14 +493,14 @@ public static class ApiEndpoints
         {
             var job = await jobs.CreateAsync(
                 new CreateValidationJobRequest(
-                    emails,
+                    input.Emails,
                     input.EnableSmtp,
                     jobId,
                     sourceFileId,
-                    input.SourceFileName?.Trim(),
-                    input.EmailColumn?.Trim(),
-                    sourcePositions,
-                    TenantId: consumer.TenantId),
+                    input.SourceFileName,
+                    input.EmailColumn,
+                    input.SourcePositions,
+                    TenantId: jobTenantId),
                 CancellationToken.None)
                 .ConfigureAwait(false);
             await resources.GrantAsync(new ResourceOwnership(
@@ -347,13 +518,70 @@ public static class ApiEndpoints
         }
         catch (ValidationJobSourceFileCompletedException exception)
         {
-            return Problem(StatusCodes.Status409Conflict, "File already validated", exception.Message);
+            return Problem(StatusCodes.Status409Conflict, "File already validated", exception.Message,
+                "EMAIL_VALIDATION_ALREADY_COMPLETED");
         }
         catch (ValidationJobSourceFileActiveException exception)
         {
-            return Problem(StatusCodes.Status409Conflict, "File validation already in progress", exception.Message);
+            return Problem(StatusCodes.Status409Conflict, "File validation already in progress", exception.Message,
+                "EMAIL_VALIDATION_ALREADY_RUNNING");
         }
     }
+
+    private sealed record PreparedValidationJob(
+        IReadOnlyList<string> Emails,
+        bool EnableSmtp,
+        string? SourceFileId,
+        string? SourceFileName,
+        string? EmailColumn,
+        IReadOnlyList<int> SourcePositions,
+        string? RequestHash = null);
+
+    private static async Task<IResult?> ReadIdempotentReplayAsync(
+        string key,
+        string requestHash,
+        string operation,
+        CurrentConsumer consumer,
+        IValidationJobService jobs,
+        ICommercialResourceStore resources,
+        CancellationToken cancellationToken,
+        PreparedValidationJob? failedRetry = null,
+        string? jobTenantId = null)
+    {
+        if (string.IsNullOrEmpty(key)) return null;
+        var existing = await resources.GetIdempotentOperationAsync(
+            consumer.PrincipalKey, operation, key, cancellationToken).ConfigureAwait(false);
+        if (existing is null) return null;
+        if (!string.Equals(existing.RequestHash, requestHash, StringComparison.Ordinal))
+            return Problem(StatusCodes.Status409Conflict, "Idempotency conflict",
+                "The Idempotency-Key was already used with a different request.",
+                "IDEMPOTENCY_CONFLICT");
+        var existingJob = await jobs.GetAsync(existing.ResourceId, cancellationToken).ConfigureAwait(false);
+        if (existingJob is null)
+            return Problem(StatusCodes.Status409Conflict, "Job creation in progress",
+                "The idempotent operation is still being created. Retry shortly.",
+                "IDEMPOTENT_OPERATION_PENDING");
+        if (existingJob.State == ValidationJobState.Failed &&
+            failedRetry is not null &&
+            !string.IsNullOrWhiteSpace(failedRetry.SourceFileId))
+        {
+            existingJob = await jobs.CreateAsync(new CreateValidationJobRequest(
+                failedRetry.Emails,
+                failedRetry.EnableSmtp,
+                existingJob.JobId,
+                failedRetry.SourceFileId,
+                failedRetry.SourceFileName,
+                failedRetry.EmailColumn,
+                failedRetry.SourcePositions,
+                TenantId: jobTenantId), CancellationToken.None).ConfigureAwait(false);
+        }
+        return Results.Accepted($"/v1/email-validation-jobs/{existingJob.JobId}",
+            ApiContractMapper.Map(existingJob));
+    }
+
+    private static bool ValidIdempotencyKey(string key, ApiLimitsOptions limits) =>
+        string.IsNullOrEmpty(key) ||
+        key.Length <= limits.MaximumIdempotencyKeyLength && !key.Any(char.IsControl);
 
     private static async Task<IResult> ListJobsAsync(
         int? skip,
@@ -436,8 +664,17 @@ public static class ApiEndpoints
         Results.ValidationProblem(new Dictionary<string, string[]> { [key] = [message] },
             title: "Validation request is invalid.");
 
-    private static IResult Problem(int status, string title, string detail) =>
-        Results.Problem(statusCode: status, title: title, detail: detail);
+    private static IResult Problem(int status, string title, string detail, string? code = null) =>
+        Results.Problem(
+            statusCode: status,
+            title: title,
+            detail: detail,
+            type: code is null
+                ? null
+                : $"https://email.digitalwarehouse.io/problems/{code.ToLowerInvariant().Replace('_', '-')}",
+            extensions: code is null
+                ? null
+                : new Dictionary<string, object?> { ["code"] = code });
 
     private static bool ValidIdentifier(string value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength &&

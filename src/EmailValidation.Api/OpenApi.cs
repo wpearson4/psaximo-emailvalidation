@@ -21,9 +21,9 @@ public static class ApiOpenApiExtensions
         var authorizationUrl = ResolveUrl(api.OpenApi.AuthorizationUrl, authentication.Authority, "authorize");
         var scopes = new Dictionary<string, string>
         {
-            [EmailValidationScopes.Validate] = "Validate one email address.",
+            [EmailValidationScopes.Validate] = "Validate arbitrary addresses only when interactive or administratively authorized.",
             [EmailValidationScopes.Read] = "Read a validation resource.",
-            [EmailValidationScopes.JobsWrite] = "Create durable validation jobs.",
+            [EmailValidationScopes.JobsWrite] = "Create durable jobs; standard machine clients are limited to owned purchased results.",
             [EmailValidationScopes.JobsRead] = "Read validation jobs and results.",
             [EmailValidationScopes.Stream] = "Subscribe to validation lifecycle streams.",
             [EmailValidationScopes.Admin] = "Administrative access; not intended for ordinary consumers."
@@ -36,7 +36,7 @@ public static class ApiOpenApiExtensions
             {
                 Title = "Email Validation API",
                 Version = "v1",
-                Description = "Secure commercial REST boundary for canonical email validation and durable jobs."
+                Description = "Secure REST boundary for canonical Email Validation. Standard machine clients may validate only email columns in completed Search or Match & Append results purchased by their API client. The service resolves ownership and field inclusion from the authoritative purchased output; knowing a transaction identifier or email address does not grant access. Explicitly authorized administrators may validate arbitrary addresses."
             });
             options.SupportNonNullableReferenceTypes();
             options.CustomSchemaIds(type => type.FullName?.Replace('+', '.') ?? type.Name);
@@ -183,11 +183,45 @@ public sealed class ScopeSecurityDocumentFilter : IDocumentFilter
             AddProblemExample(validationOperation, "403", "Forbidden", "The token does not contain the required scope.");
             AddProblemExample(validationOperation, "429", "Rate limit exceeded", "Retry later.");
         }
+
+        if (swaggerDoc.Paths.TryGetValue(
+                "/v1/purchased-results/{transactionId}/email-validation", out var purchasedPath) &&
+            purchasedPath.Operations?.TryGetValue(HttpMethod.Post, out var purchasedOperation) == true)
+        {
+            AddExample(purchasedOperation, "202", "searchPurchased", "Search-purchased email validation accepted", """
+                {"jobId":"file_5f4dcc3b5aa765d61d8327deb882cf99","createdAtUtc":"2026-10-03T20:00:00Z","state":"Queued","totalItems":1250,"processedItems":0,"finalItems":0,"provisionalItems":0,"failedItems":0,"updatedAtUtc":"2026-10-03T20:00:00Z","enableSmtp":true,"sourceFileId":"txn_01JSEARCH","sourceFileName":"search-results.csv","emailColumn":"Email"}
+                """);
+            AddExample(purchasedOperation, "202", "matchPurchased", "Match & Append-purchased email validation accepted", """
+                {"jobId":"file_098f6bcd4621d373cade4e832627b4f6","createdAtUtc":"2026-10-03T20:00:00Z","state":"Queued","totalItems":640,"processedItems":0,"finalItems":0,"provisionalItems":0,"failedItems":0,"updatedAtUtc":"2026-10-03T20:00:00Z","enableSmtp":true,"sourceFileId":"txn_01JMATCH","sourceFileName":"match-results.csv","emailColumn":"Appended Email"}
+                """);
+            AddCodedProblemExample(purchasedOperation, "403", "EMAIL_VALIDATION_NOT_AUTHORIZED",
+                "Email validation is not authorized", "The access token cannot validate this purchased result.");
+            AddCodedProblemExample(purchasedOperation, "404", "PURCHASED_RESULT_NOT_FOUND",
+                "Purchased result not found",
+                "The purchased result does not exist or is not available to this API client.");
+            AddCodedProblemExample(purchasedOperation, "409", "PURCHASE_NOT_COMPLETED",
+                "Purchase is not complete",
+                "Wait for the Search or Match & Append transaction to complete, then retry.");
+            AddCodedProblemExample(purchasedOperation, "422", "EMAIL_NOT_INCLUDED_IN_PURCHASE",
+                "Email was not included in the purchase",
+                "Choose an email column that is present in the purchased output.");
+            AddProblemExample(purchasedOperation, "429", "Rate limit exceeded", "Retry later.");
+            AddProblemExample(purchasedOperation, "503", "Purchased-result service unavailable", "Retry later.");
+        }
     }
 
     private static void AddProblemExample(OpenApiOperation operation, string status, string title, string detail) =>
         AddExample(operation, status, title.Replace(" ", string.Empty), title,
             $$"""{"type":"https://httpstatuses.com/{{status}}","title":"{{title}}","status":{{status}},"detail":"{{detail}}","traceId":"4bf92f3577b34da6a3ce929d0e0e4736"}""");
+
+    private static void AddCodedProblemExample(
+        OpenApiOperation operation,
+        string status,
+        string code,
+        string title,
+        string detail) =>
+        AddExample(operation, status, code, title,
+            $$"""{"type":"https://email.digitalwarehouse.io/problems/{{code.ToLowerInvariant().Replace('_', '-')}}","title":"{{title}}","status":{{status}},"code":"{{code}}","detail":"{{detail}}","traceId":"4bf92f3577b34da6a3ce929d0e0e4736"}""");
 
     private static void AddExample(
         OpenApiOperation operation,
@@ -213,6 +247,7 @@ public sealed class ScopeSecurityDocumentFilter : IDocumentFilter
         EmailValidationPolicies.Validate => [EmailValidationScopes.Validate],
         EmailValidationPolicies.Read => [EmailValidationScopes.Read],
         EmailValidationPolicies.JobsWrite => [EmailValidationScopes.JobsWrite],
+        EmailValidationPolicies.PurchasedJobsWrite => [EmailValidationScopes.JobsWrite],
         EmailValidationPolicies.JobsRead => [EmailValidationScopes.JobsRead],
         EmailValidationPolicies.Stream => [EmailValidationScopes.Stream],
         EmailValidationPolicies.Admin => [EmailValidationScopes.Admin],

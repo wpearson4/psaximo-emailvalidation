@@ -12,11 +12,13 @@ public sealed class ApiHostOptions
 public sealed class OpenMetaSourceOptions
 {
     public string BaseUrl { get; set; } = "http://127.0.0.1:5058";
+    public string PublicApiBaseUrl { get; set; } = "http://127.0.0.1:5080";
 }
 
 public sealed class ApiLimitsOptions
 {
     public long MaximumRequestBodyBytes { get; set; } = 1_048_576;
+    public long MaximumPurchasedResultBytes { get; set; } = 100_000_000;
     public int MaximumEmailLength { get; set; } = 320;
     public int MaximumIdentifierLength { get; set; } = 128;
     public int MaximumIdempotencyKeyLength { get; set; } = 128;
@@ -48,5 +50,6 @@ public sealed class ApiAuthenticationOptions
 {
     public string Authority { get; set; } = string.Empty;
     public string Audience { get; set; } = string.Empty;
+    public string[] AdditionalAudiences { get; set; } = [];
     public bool RequireHttpsMetadata { get; set; } = true;
 }

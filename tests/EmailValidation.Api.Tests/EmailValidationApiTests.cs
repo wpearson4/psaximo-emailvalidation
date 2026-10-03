@@ -330,6 +330,180 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    [Fact]
+    public async Task MachineClient_CannotSubmitArbitraryAddressValidation()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.Validate, EmailValidationScopes.JobsWrite], machine: true);
+
+        var single = await client.PostAsJsonAsync(
+            "/v1/email-validations", new { email = "arbitrary@example.com" });
+        var bulk = await client.PostAsJsonAsync(
+            "/v1/email-validation-jobs", new { emails = OneEmail });
+
+        Assert.Equal(HttpStatusCode.Forbidden, single.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, bulk.StatusCode);
+    }
+
+    [Fact]
+    public async Task AdministrativeMachineClient_CanSubmitArbitraryAddressValidation()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.Admin], machine: true);
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/email-validations", new { email = "admin@example.com" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("txn_search_purchase")]
+    [InlineData("txn_match_purchase")]
+    public async Task PurchasedResult_CreatesDurableJobFromServerResolvedEmailColumn(string transactionId)
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite], machine: true);
+        client.DefaultRequestHeaders.Add("Idempotency-Key", $"purchased-{transactionId}");
+        var initialOpenCount = _factory.PurchasedResults.RequestedTransactionIds.Count(
+            value => string.Equals(value, transactionId, StringComparison.Ordinal));
+
+        var first = await client.PostAsJsonAsync(
+            $"/v1/purchased-results/{transactionId}/email-validation",
+            new { emailColumn = "Contact", enableSmtp = true });
+        var replay = await client.PostAsJsonAsync(
+            $"/v1/purchased-results/{transactionId}/email-validation",
+            new { emailColumn = "Contact", enableSmtp = true });
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        var job = await first.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        var replayedJob = await replay.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        Assert.Equal(job!.JobId, replayedJob!.JobId);
+        Assert.Equal(transactionId, job.SourceFileId);
+        Assert.Equal("Contact", job.EmailColumn);
+        Assert.Equal(3, job.TotalItems);
+        Assert.Equal(
+            ["john@example.com", "jane@example.org", "bob@example.net"],
+            _factory.JobService.LastRequest!.Emails);
+        Assert.Equal([0, 1, 2], _factory.JobService.LastRequest.SourcePositions);
+        Assert.Contains(transactionId, _factory.PurchasedResults.RequestedTransactionIds);
+        Assert.Equal(initialOpenCount + 1, _factory.PurchasedResults.RequestedTransactionIds.Count(
+            value => string.Equals(value, transactionId, StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task PurchasedResult_RequiresDedicatedJobWriteScope()
+    {
+        using var client = _factory.CreateAuthenticatedClient(["search:read"], machine: true);
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/purchased-results/txn_search_purchase/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("txn_not_found", HttpStatusCode.NotFound, "PURCHASED_RESULT_NOT_FOUND")]
+    [InlineData("txn_other_account", HttpStatusCode.NotFound, "PURCHASED_RESULT_NOT_FOUND")]
+    [InlineData("txn_incomplete", HttpStatusCode.Conflict, "PURCHASE_NOT_COMPLETED")]
+    [InlineData("txn_inactive_client", HttpStatusCode.Forbidden, "EMAIL_VALIDATION_NOT_AUTHORIZED")]
+    public async Task PurchasedResult_MapsAuthoritativeAccessFailureWithoutEnumeration(
+        string transactionId,
+        HttpStatusCode expectedStatus,
+        string expectedCode)
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite], machine: true);
+
+        var response = await client.PostAsJsonAsync(
+            $"/v1/purchased-results/{transactionId}/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(expectedCode, problem.RootElement.GetProperty("code").GetString());
+        Assert.Equal(
+            $"https://email.digitalwarehouse.io/problems/{expectedCode.ToLowerInvariant().Replace('_', '-')}",
+            problem.RootElement.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task PurchasedResult_RejectsColumnThatWasNotIncludedInPurchasedOutput()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite], machine: true);
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/purchased-results/txn_search_purchase/email-validation",
+            new { emailColumn = "InternalEmail" });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EMAIL_NOT_INCLUDED_IN_PURCHASE", problem.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task PurchasedResult_RejectsMalformedTransactionIdentifierBeforeSourceLookup()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite], machine: true);
+        var before = _factory.PurchasedResults.RequestedTransactionIds.Count;
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/purchased-results/not%20valid/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(before, _factory.PurchasedResults.RequestedTransactionIds.Count);
+    }
+
+    [Fact]
+    public async Task PurchasedResultClient_ForwardsBearerAndAcceptsOnlyConfiguredOrigin()
+    {
+        var handler = new PurchasedResultHttpHandler("https://services.digitalwarehouse.io");
+        var client = new PublicApiPurchasedResultClient(
+            new HttpClient(handler),
+            Options.Create(new ApiHostOptions
+            {
+                OpenMeta = new OpenMetaSourceOptions
+                {
+                    PublicApiBaseUrl = "https://services.digitalwarehouse.io"
+                }
+            }));
+
+        await using var source = await client.OpenAsync(
+            "txn_owned", "Bearer customer-token", CancellationToken.None);
+        using var reader = new StreamReader(source.Content);
+
+        Assert.Contains("john@example.com", await reader.ReadToEndAsync());
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal("Bearer customer-token", request.Authorization));
+    }
+
+    [Fact]
+    public async Task PurchasedResultClient_RejectsCrossOriginDownloadDescriptor()
+    {
+        var handler = new PurchasedResultHttpHandler("https://attacker.example");
+        var client = new PublicApiPurchasedResultClient(
+            new HttpClient(handler),
+            Options.Create(new ApiHostOptions
+            {
+                OpenMeta = new OpenMetaSourceOptions
+                {
+                    PublicApiBaseUrl = "https://services.digitalwarehouse.io"
+                }
+            }));
+
+        var exception = await Assert.ThrowsAsync<SourceFileAccessException>(() => client.OpenAsync(
+            "txn_owned", "Bearer customer-token", CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Single(handler.Requests);
+    }
+
     [Theory]
     [InlineData("search:execute")]
     [InlineData("match:execute")]
@@ -420,6 +594,16 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.True(schemes.TryGetProperty("oauth2", out _));
         Assert.Equal(EmailValidationScopes.Validate,
             path.GetProperty("post").GetProperty("security")[0].GetProperty("oauth2")[0].GetString());
+        var purchased = document.RootElement.GetProperty("paths")
+            .GetProperty("/v1/purchased-results/{transactionId}/email-validation")
+            .GetProperty("post");
+        Assert.Equal("CreatePurchasedResultEmailValidationV1",
+            purchased.GetProperty("operationId").GetString());
+        Assert.Equal(EmailValidationScopes.JobsWrite,
+            purchased.GetProperty("security")[0].GetProperty("oauth2")[0].GetString());
+        Assert.Contains("completed Search or Match & Append results purchased",
+            document.RootElement.GetProperty("info").GetProperty("description").GetString(),
+            StringComparison.Ordinal);
     }
 
     private static HttpRequestMessage CreatePreflightRequest(string origin)
@@ -439,6 +623,7 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
     public ApiValidator Validator { get; } = new();
     public InMemoryCommercialResourceStore Resources { get; } = new();
     public ApiSourceFileClient SourceFiles { get; } = new();
+    public ApiPurchasedResultClient PurchasedResults { get; } = new();
     private readonly ApiJobService _jobs = new();
     public ApiJobService JobService => _jobs;
 
@@ -463,13 +648,15 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
     public HttpClient CreateAuthenticatedClient(
         IReadOnlyList<string> scopes,
         string tenant = "tenant-a",
-        IReadOnlyList<string>? permissions = null)
+        IReadOnlyList<string>? permissions = null,
+        bool machine = false)
     {
         var client = CreateClient();
         client.DefaultRequestHeaders.Add("X-Test-Auth", "valid");
         client.DefaultRequestHeaders.Add("X-Test-Subject", "consumer-a");
         client.DefaultRequestHeaders.Add("X-Test-Tenant", tenant);
         client.DefaultRequestHeaders.Add("X-Test-Scopes", string.Join(' ', scopes));
+        if (machine) client.DefaultRequestHeaders.Add("X-Test-Machine", "true");
         if (permissions is { Count: > 0 })
             client.DefaultRequestHeaders.Add("X-Test-Permissions", string.Join(',', permissions));
         return client;
@@ -498,11 +685,13 @@ public sealed class EmailValidationApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<IValidationJobService>();
             services.RemoveAll<ICommercialResourceStore>();
             services.RemoveAll<IEmailValidationSourceFileClient>();
+            services.RemoveAll<IPurchasedResultClient>();
             services.AddSingleton<IEmailValidator>(Validator);
             services.AddSingleton<IValidationStatusQueryService, ApiStatusService>();
             services.AddSingleton<IValidationJobService>(_jobs);
             services.AddSingleton<ICommercialResourceStore>(Resources);
             services.AddSingleton<IEmailValidationSourceFileClient>(SourceFiles);
+            services.AddSingleton<IPurchasedResultClient>(PurchasedResults);
         });
     }
 }
@@ -523,6 +712,60 @@ public sealed class ApiSourceFileClient : IEmailValidationSourceFileClient
                            "bob@example.net,ABC123,Bob\n";
         var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv));
         return Task.FromResult(new EmailValidationSourceFile(stream, "customers.csv"));
+    }
+}
+
+public sealed class ApiPurchasedResultClient : IPurchasedResultClient
+{
+    public List<string> RequestedTransactionIds { get; } = [];
+
+    public Task<EmailValidationSourceFile> OpenAsync(
+        string transactionId,
+        string? authorization,
+        CancellationToken cancellationToken = default)
+    {
+        RequestedTransactionIds.Add(transactionId);
+        if (transactionId is "txn_not_found" or "txn_other_account")
+            throw new SourceFileAccessException(HttpStatusCode.NotFound, "Not found.");
+        if (transactionId == "txn_incomplete")
+            throw new SourceFileAccessException(HttpStatusCode.Conflict, "Not complete.");
+        if (transactionId == "txn_inactive_client")
+            throw new SourceFileAccessException(HttpStatusCode.Forbidden, "Forbidden.");
+
+        const string csv = "Contact,Company\n" +
+                           "john@example.com,One\n" +
+                           "jane@example.org,Two\n" +
+                           "bob@example.net,Three\n";
+        var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv));
+        return Task.FromResult(new EmailValidationSourceFile(stream, $"{transactionId}.csv"));
+    }
+}
+
+public sealed class PurchasedResultHttpHandler(string downloadOrigin) : HttpMessageHandler
+{
+    public List<(Uri Uri, string? Authorization)> Requests { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Requests.Add((request.RequestUri!, request.Headers.Authorization?.ToString()));
+        if (request.RequestUri!.AbsolutePath.EndsWith("/results", StringComparison.Ordinal))
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new
+                {
+                    downloadUrl = $"{downloadOrigin}/v1/transactions/txn_owned/results/download?expires=1&token=signed",
+                    fileName = "owned.csv"
+                })
+            });
+        }
+
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("Contact\njohn@example.com\n")
+        });
     }
 }
 
@@ -548,6 +791,11 @@ public sealed class TestAuthenticationHandler(
         claims.AddRange(Request.Headers["X-Test-Permissions"].ToString()
             .Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(permission => new Claim("permissions", permission)));
+        if (string.Equals(Request.Headers["X-Test-Machine"], "true", StringComparison.OrdinalIgnoreCase))
+        {
+            claims.Add(new Claim("gty", "client-credentials"));
+            claims.Add(new Claim("client_id", "test-client"));
+        }
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
             new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationScheme)), AuthenticationScheme)));
     }

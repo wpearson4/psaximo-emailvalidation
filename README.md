@@ -10,6 +10,10 @@ The optional Elasticsearch observation projection is documented in
 [`docs/elasticsearch-observation-projection.md`](docs/elasticsearch-observation-projection.md). Mongo remains authoritative; the projection uses a separate durable outbox, Service Bus topic, strict versioned data stream, tenant-scoped HMAC correlation, reconciliation, and dry-run-first backfill.
 
 See [API operations and deployment](docs/api-deployment.md) for OAuth scopes, REST/gRPC usage, OpenAPI/Swagger, the Azure Container Registry image, Let's Encrypt TLS for `email.digitalwarehouse.io`, health checks, and the 10.10.252.31 deployment. The discovery record is in [production API gap analysis](docs/production-api-gap-analysis.md).
+
+Purchased Search and Match & Append email data uses the resource-authorized flow in
+[purchased-data Email Validation](docs/purchased-data-email-validation.md). Standard machine clients
+cannot submit arbitrary addresses.
 The GitHub-backed Azure DevOps build/release flow and `OMetaSearchPool` agent setup are documented in [Azure DevOps release pipeline](docs/azure-devops-release.md).
 Host-local Ansible deployment verification and the reviewed break-glass build path are documented in [EmailValidation Ansible deployment](deploy/ansible/README.md).
 Direct Google Workspace delivery for the probe-sender catch-all is documented in

@@ -20,8 +20,10 @@ public static class EmailValidationScopes
 public static class EmailValidationPolicies
 {
     public const string Validate = "EmailValidation.Validate";
+    public const string ArbitraryValidation = "EmailValidation.ArbitraryValidation";
     public const string Read = "EmailValidation.Read";
     public const string JobsWrite = "EmailValidation.JobsWrite";
+    public const string PurchasedJobsWrite = "EmailValidation.PurchasedJobsWrite";
     public const string JobsRead = "EmailValidation.JobsRead";
     public const string Stream = "EmailValidation.Stream";
     public const string Admin = "EmailValidation.Admin";
@@ -99,6 +101,18 @@ public interface ICommercialResourceInfrastructureInitializer
 
 public static class IdempotencyRequestHasher
 {
+    public static string HashPurchasedResultRequest(
+        string transactionId,
+        string emailColumn,
+        bool enableSmtp)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
+        Append(hash, $"transaction:{transactionId.Trim()}\n");
+        Append(hash, $"column:{emailColumn.Trim()}\n");
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
     public static string HashJobRequest(
         IReadOnlyList<string> emails,
         bool enableSmtp,
