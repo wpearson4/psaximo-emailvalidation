@@ -390,12 +390,24 @@ public sealed class ValidationLifecycleCoordinator(
         return new(canonical.ValidationId, canonical, true);
     }
 
-    public async Task FailAsync(string validationId, CancellationToken cancellationToken = default)
+    public Task FailAsync(
+        string validationId,
+        CancellationToken cancellationToken = default) =>
+        FailAsync(validationId, "Validation failed.", cancellationToken);
+
+    public async Task FailAsync(
+        string validationId,
+        string statusMessage,
+        CancellationToken cancellationToken = default)
     {
         var existing = await store.GetAsync(validationId, cancellationToken).ConfigureAwait(false);
         if (existing is null || existing.LifecycleState is ValidationLifecycleState.Final or ValidationLifecycleState.Failed)
             return;
         var now = timeProvider.GetUtcNow();
+        var safeStatusMessage = string.IsNullOrWhiteSpace(statusMessage)
+            ? "Validation failed."
+            : statusMessage.Trim();
+        var previousUnknown = existing.CurrentResult.UnknownContext;
         var failed = existing with
         {
             LifecycleState = ValidationLifecycleState.Failed,
@@ -405,13 +417,29 @@ public sealed class ValidationLifecycleCoordinator(
             PendingRevalidation = null,
             FinalizedAt = now,
             LastUpdatedAt = now,
-            StatusMessage = "Validation failed.",
+            StatusMessage = safeStatusMessage,
             Sequence = existing.Sequence + 1,
             Version = existing.Version + 1,
             CurrentResult = existing.CurrentResult with
             {
                 ResultState = ValidationResultState.Final,
                 RetryScheduled = false,
+                RetryAfter = null,
+                ConfidenceReason = existing.CurrentResult.Status == EmailValidationStatus.Unknown
+                    ? safeStatusMessage
+                    : existing.CurrentResult.ConfidenceReason,
+                UnknownContext = existing.CurrentResult.Status == EmailValidationStatus.Unknown
+                    ? new UnknownValidationContext(
+                        UnknownCause.ExecutionFailure,
+                        safeStatusMessage,
+                        false,
+                        "Use the latest available result; automatic retries have stopped.",
+                        previousUnknown?.SmtpCategory ?? SmtpResponseCategory.NotAttempted,
+                        previousUnknown?.FailedStage,
+                        previousUnknown?.ResponseCode,
+                        previousUnknown?.EnhancedStatusCode,
+                        previousUnknown?.MxHost)
+                    : previousUnknown,
                 FinalizedAt = now
             }
         };

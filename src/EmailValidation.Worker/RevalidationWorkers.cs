@@ -10,10 +10,13 @@ public sealed class ServiceBusRevalidationWorker(
     IOptions<EmailValidationOptions> options,
     IRevalidationMessageSerializer serializer,
     IEmailRevalidationProcessor processor,
+    IValidationLifecycleCoordinator coordinator,
     IValidationJobResultProjector jobResultProjector,
     IRevalidationMetrics metrics,
     ILogger<ServiceBusRevalidationWorker> logger) : BackgroundService
 {
+    private const string TerminalRetryFailureMessage =
+        "Automatic revalidation could not be completed. The latest validation result is final and available for download.";
     private readonly RevalidationOptions _options = options.Value.Revalidation;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -74,14 +77,17 @@ public sealed class ServiceBusRevalidationWorker(
                         await args.CompleteMessageAsync(args.Message, args.CancellationToken).ConfigureAwait(false);
                         break;
                     case RevalidationProcessingDisposition.RetryInfrastructureFailure:
-                        await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
-                            .ConfigureAwait(false);
+                        if (args.Message.DeliveryCount >= _options.ServiceBus.MaxDeliveryCount)
+                            await FailAndDeadLetterAsync(args, message, "processing_failed",
+                                TerminalRetryFailureMessage).ConfigureAwait(false);
+                        else
+                            await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
+                                .ConfigureAwait(false);
                         break;
                     case RevalidationProcessingDisposition.DeadLetter:
-                        metrics.RecordDeadLettered();
-                        await args.DeadLetterMessageAsync(args.Message,
+                        await FailAndDeadLetterAsync(args, message,
                             result.DeadLetterReason ?? "invalid_message",
-                            Truncate(result.DeadLetterDescription), args.CancellationToken).ConfigureAwait(false);
+                            Truncate(result.DeadLetterDescription)).ConfigureAwait(false);
                         break;
                 }
             }
@@ -89,13 +95,47 @@ public sealed class ServiceBusRevalidationWorker(
             {
                 metrics.RecordWorkerFailure();
                 logger.LogError(exception, "Email revalidation failed for message {MessageId}", args.Message.MessageId);
-                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
-                    .ConfigureAwait(false);
+                if (args.Message.DeliveryCount >= _options.ServiceBus.MaxDeliveryCount)
+                    await FailAndDeadLetterAsync(args, message!, "processing_failed",
+                        TerminalRetryFailureMessage).ConfigureAwait(false);
+                else
+                    await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
+                        .ConfigureAwait(false);
             }
             finally
             {
                 metrics.RecordProcessingLatency(stopwatch.Elapsed);
             }
+        }
+
+        async Task FailAndDeadLetterAsync(
+            ProcessMessageEventArgs args,
+            EmailRevalidationMessageV1 message,
+            string reason,
+            string description)
+        {
+            try
+            {
+                await coordinator.FailAsync(
+                    message.ValidationId,
+                    TerminalRetryFailureMessage,
+                    CancellationToken.None).ConfigureAwait(false);
+                await jobResultProjector.ProjectAsync(message.ValidationId, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception,
+                    "Terminal email revalidation failure could not be persisted for {ValidationId}",
+                    message.ValidationId);
+                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            metrics.RecordDeadLettered();
+            await args.DeadLetterMessageAsync(
+                args.Message, reason, Truncate(description), args.CancellationToken).ConfigureAwait(false);
         }
 
         Task ProcessErrorAsync(ProcessErrorEventArgs args)

@@ -269,6 +269,54 @@ public sealed class RevalidationTests
     }
 
     [Fact]
+    public async Task TerminalRetryFailure_FinalizesLatestResultWithCustomerFacingMessage()
+    {
+        const string message =
+            "Automatic revalidation could not be completed. The latest validation result is final and available for download.";
+        var store = new MemoryLifecycleStore();
+        var publisher = new RecordingPublisher(store);
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics, publisher);
+        var request = new EmailValidationRequest(true, ValidationId: "validation-retry-failed-123");
+
+        var provisional = await coordinator.ProcessInitialResultAsync(
+            Result(EmailValidationStatus.Unknown, ReasonCode.TemporaryFailure) with
+            {
+                UnknownContext = new(
+                    UnknownCause.TemporarySmtpFailure,
+                    "The destination returned a temporary SMTP failure.",
+                    true,
+                    "Retry later.",
+                    SmtpResponseCategory.TemporaryFailure,
+                    SmtpCommand.RcptTo,
+                    451,
+                    "4.7.1",
+                    "mx.example.test",
+                    Now.AddMinutes(5))
+            },
+            request);
+
+        Assert.Equal(ValidationResultState.Provisional, provisional.Result.ResultState);
+        await coordinator.FailAsync(provisional.Result.ValidationId!, statusMessage: message);
+
+        Assert.Equal(ValidationLifecycleState.Failed, store.Value!.LifecycleState);
+        Assert.Equal(ValidationProgressStage.Failed, store.Value.CurrentStage);
+        Assert.Equal(ValidationResultState.Final, store.Value.ResultState);
+        Assert.False(store.Value.RetryScheduled);
+        Assert.Null(store.Value.PendingRevalidation);
+        Assert.Null(store.Value.CurrentResult.RetryAfter);
+        Assert.Equal(message, store.Value.StatusMessage);
+        Assert.Equal(message, store.Value.CurrentResult.ConfidenceReason);
+        Assert.Equal(UnknownCause.ExecutionFailure, store.Value.CurrentResult.UnknownContext!.Cause);
+        Assert.Equal(message, store.Value.CurrentResult.UnknownContext.Summary);
+        Assert.False(store.Value.CurrentResult.UnknownContext.Retryable);
+        Assert.Equal(SmtpResponseCategory.TemporaryFailure,
+            store.Value.CurrentResult.UnknownContext.SmtpCategory);
+        Assert.Equal(SmtpCommand.RcptTo, store.Value.CurrentResult.UnknownContext.FailedStage);
+        Assert.Equal(message, publisher.Events[^1].StatusMessage);
+    }
+
+    [Fact]
     public async Task Coordinator_PreservesValidationIdAndFinalizesSecondAttempt()
     {
         var store = new MemoryLifecycleStore();

@@ -91,6 +91,11 @@ public interface IValidationLifecycleCoordinator
         string validationId,
         CancellationToken cancellationToken = default) => Task.CompletedTask;
 
+    Task FailAsync(
+        string validationId,
+        string statusMessage,
+        CancellationToken cancellationToken = default) => FailAsync(validationId, cancellationToken);
+
     Task<ValidationLifecycleResult> ProcessInitialResultAsync(
         EmailValidationResult result,
         EmailValidationRequest request,
