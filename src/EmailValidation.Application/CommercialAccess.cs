@@ -105,6 +105,18 @@ public interface ICommercialResourceInfrastructureInitializer
 
 public static class IdempotencyRequestHasher
 {
+    public static string HashSourceFileRequest(
+        string sourceFileId,
+        string emailColumn,
+        bool enableSmtp)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
+        Append(hash, $"source:{sourceFileId.Trim()}\n");
+        Append(hash, $"column:{emailColumn.Trim()}\n");
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
     public static string HashPurchasedResultRequest(
         string transactionId,
         string emailColumn,

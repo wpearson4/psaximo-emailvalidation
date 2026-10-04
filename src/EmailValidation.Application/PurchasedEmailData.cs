@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using CsvHelper;
 using CsvHelper.Configuration;
 
@@ -39,8 +40,11 @@ public sealed class PurchasedEmailDataReader : IPurchasedEmailDataReader
         ArgumentNullException.ThrowIfNull(content);
         ArgumentException.ThrowIfNullOrWhiteSpace(emailColumn);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumItems, 1);
+        if (fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            return await ReadJsonAsync(
+                content, emailColumn.Trim(), maximumItems, cancellationToken).ConfigureAwait(false);
         if (!fileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Purchased Email Validation currently supports CSV results only.");
+            throw new InvalidDataException("Purchased Email Validation supports CSV and JSON results.");
 
         using var textReader = new StreamReader(content, leaveOpen: true);
         using var csv = new CsvReader(textReader, new CsvConfiguration(CultureInfo.InvariantCulture)
@@ -87,4 +91,60 @@ public sealed class PurchasedEmailDataReader : IPurchasedEmailDataReader
             throw new PurchasedEmailColumnEmptyException(requestedColumn);
         return new PurchasedEmailData(emails, sourcePositions);
     }
+
+    private static async Task<PurchasedEmailData> ReadJsonAsync(
+        Stream content,
+        string requestedColumn,
+        int maximumItems,
+        CancellationToken cancellationToken)
+    {
+        var emails = new List<string>();
+        var sourcePositions = new List<int>();
+        var position = 0;
+        var columnFound = false;
+        try
+        {
+            await foreach (var record in JsonSerializer.DeserializeAsyncEnumerable<Dictionary<string, JsonElement>>(
+                               content, cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                if (record is null) continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                var matches = record
+                    .Where(field => string.Equals(field.Key, requestedColumn, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (matches.Length > 1)
+                    throw new PurchasedEmailColumnNotFoundException(requestedColumn);
+                if (matches.Length == 1)
+                {
+                    columnFound = true;
+                    var email = JsonValue(matches[0].Value).Trim();
+                    if (email.Length > 0)
+                    {
+                        if (emails.Count == maximumItems)
+                            throw new PurchasedEmailLimitExceededException(maximumItems);
+                        emails.Add(email);
+                        sourcePositions.Add(position);
+                    }
+                }
+                position++;
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("The purchased JSON result is invalid.", exception);
+        }
+
+        if (!columnFound)
+            throw new PurchasedEmailColumnNotFoundException(requestedColumn);
+        if (emails.Count == 0)
+            throw new PurchasedEmailColumnEmptyException(requestedColumn);
+        return new PurchasedEmailData(emails, sourcePositions);
+    }
+
+    private static string JsonValue(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? string.Empty,
+        JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+        _ => value.ToString()
+    };
 }

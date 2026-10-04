@@ -20,6 +20,10 @@ public sealed record CreatePurchasedResultValidationV1Request(
     string EmailColumn,
     bool EnableSmtp = true);
 
+public sealed record CreateSourceFileValidationV1Request(
+    string EmailColumn,
+    bool EnableSmtp = true);
+
 public sealed record DetectedEmailColumnV1Response(
     string Name,
     string DetectedType,

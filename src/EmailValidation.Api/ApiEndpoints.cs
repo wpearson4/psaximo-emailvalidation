@@ -9,6 +9,7 @@ namespace EmailValidation.Api;
 public static class ApiEndpoints
 {
     private const string CreateJobOperation = "email-validation-jobs.create.v1";
+    private const string CreateSourceFileJobOperation = "source-file-email-validation.create.v1";
     private const string CreatePurchasedJobOperation = "purchased-result-email-validation.create.v1";
 
     public static IEndpointRouteBuilder MapEmailValidationV1(this IEndpointRouteBuilder endpoints)
@@ -92,6 +93,27 @@ public static class ApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
             .Produces<ProblemDetails>(StatusCodes.Status503ServiceUnavailable);
 
+        group.MapPost("/email-validation-files/{sourceFileId}/email-validation", CreateSourceFileJobAsync)
+            .WithName("CreateSourceFileEmailValidationV1")
+            .WithSummary("Validate email data in an authorized web source file")
+            .WithDescription("Authorizes the selected Search or Match & Append output for the interactive user, streams the requested email column on the server, and creates a durable asynchronous validation job. Email addresses are not accepted from the browser.")
+            .RequireAuthorization(
+                EmailValidationPolicies.JobsWrite,
+                EmailValidationPolicies.ArbitraryValidation)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests)
+            .Accepts<CreateSourceFileValidationV1Request>("application/json")
+            .Produces<ValidationJobV1Response>(StatusCodes.Status202Accepted)
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
+            .Produces<ProblemDetails>(StatusCodes.Status413PayloadTooLarge)
+            .Produces<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)
+            .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status503ServiceUnavailable);
+
         group.MapGet("/email-validation-jobs", ListJobsAsync)
             .WithName("ListEmailValidationJobsV1")
             .WithSummary("List validation job history for the authenticated consumer")
@@ -121,6 +143,20 @@ public static class ApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
             .Produces<ProblemDetails>(StatusCodes.Status404NotFound);
+
+        group.MapGet("/email-validation-jobs/{jobId}/file", DownloadValidatedFileAsync)
+            .WithName("DownloadValidatedFileV1")
+            .WithSummary("Download the source file with current validation results")
+            .WithDescription("Reauthorizes the source file and streams a CSV that preserves every original row while appending the current validation result columns.")
+            .RequireAuthorization(EmailValidationPolicies.JobsRead)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests)
+            .Produces(StatusCodes.Status200OK, contentType: "text/csv")
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status409Conflict)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status503ServiceUnavailable);
 
         return endpoints;
     }
@@ -229,6 +265,136 @@ public static class ApiEndpoints
             consumer.ActorSubjectId,
             consumer.ImpersonationSessionId), CancellationToken.None).ConfigureAwait(false);
         return Results.Ok(response);
+    }
+
+    private static async Task<IResult> CreateSourceFileJobAsync(
+        string sourceFileId,
+        HttpContext http,
+        CreateSourceFileValidationV1Request? input,
+        IEmailValidationSourceFileClient sourceFiles,
+        IPurchasedEmailDataReader emailData,
+        IValidationJobService jobs,
+        ICurrentConsumerContext consumers,
+        ICommercialResourceStore resources,
+        TimeProvider timeProvider,
+        IOptions<ApiHostOptions> hostOptions,
+        IOptions<EmailValidationOptions> engineOptions,
+        CancellationToken cancellationToken)
+    {
+        var limits = hostOptions.Value.Limits;
+        if (!ValidIdentifier(sourceFileId, limits.MaximumIdentifierLength))
+            return ValidationError("sourceFileId", "SourceFileId is invalid.");
+        if (input is null || string.IsNullOrWhiteSpace(input.EmailColumn) ||
+            !ValidOptionalMetadata(input.EmailColumn, 256))
+            return ValidationError("emailColumn", "EmailColumn is required and must be valid.");
+
+        var key = http.Request.Headers["Idempotency-Key"].ToString().Trim();
+        if (!ValidIdempotencyKey(key, limits))
+            return ValidationError("Idempotency-Key", "Idempotency-Key is invalid or too long.");
+        var consumer = consumers.GetRequiredConsumer();
+        var requestHash = IdempotencyRequestHasher.HashSourceFileRequest(
+            sourceFileId, input.EmailColumn, input.EnableSmtp);
+        var replay = await ReadIdempotentReplayAsync(
+            key,
+            requestHash,
+            CreateSourceFileJobOperation,
+            consumer,
+            jobs,
+            resources,
+            cancellationToken).ConfigureAwait(false);
+        if (replay is not null) return replay;
+
+        try
+        {
+            await using var source = await sourceFiles.OpenAsync(
+                sourceFileId,
+                http.Request.Headers.Authorization.ToString(),
+                cancellationToken).ConfigureAwait(false);
+            var sourceEmailData = await emailData.ReadAsync(
+                source.Content,
+                source.FileName,
+                input.EmailColumn,
+                engineOptions.Value.Jobs.MaximumItemsPerJob,
+                cancellationToken).ConfigureAwait(false);
+
+            return await SubmitJobAsync(
+                http,
+                new PreparedValidationJob(
+                    sourceEmailData.Emails,
+                    input.EnableSmtp,
+                    sourceFileId,
+                    source.FileName,
+                    input.EmailColumn.Trim(),
+                    sourceEmailData.SourcePositions,
+                    requestHash),
+                CreateSourceFileJobOperation,
+                jobs,
+                consumers,
+                resources,
+                timeProvider,
+                hostOptions,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return Results.Unauthorized();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            return Results.Forbid();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Source file not found",
+                "The selected purchased file is no longer available.");
+        }
+        catch (SourceFileAccessException exception) when (
+            exception.StatusCode == System.Net.HttpStatusCode.RequestEntityTooLarge)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Source file is too large",
+                "The selected file exceeds the configured Email Validation limit.",
+                "SOURCE_FILE_TOO_LARGE");
+        }
+        catch (PurchasedEmailColumnNotFoundException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Email column is unavailable",
+                "The selected email column is no longer present exactly once in the source file.",
+                "EMAIL_COLUMN_NOT_FOUND");
+        }
+        catch (PurchasedEmailColumnEmptyException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Email column is empty",
+                "The selected email column contains no values to validate.",
+                "EMAIL_COLUMN_EMPTY");
+        }
+        catch (PurchasedEmailLimitExceededException exception)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Source file is too large",
+                exception.Message, "SOURCE_FILE_TOO_LARGE");
+        }
+        catch (SourceFileSizeLimitExceededException)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Source file is too large",
+                "The selected file exceeds the configured Email Validation limit.",
+                "SOURCE_FILE_TOO_LARGE");
+        }
+        catch (InvalidDataException)
+        {
+            return Problem(StatusCodes.Status422UnprocessableEntity, "Source file is invalid",
+                "The selected file could not be read as a supported validation source.",
+                "SOURCE_FILE_INVALID");
+        }
+        catch (HttpRequestException)
+        {
+            return Problem(StatusCodes.Status503ServiceUnavailable, "Source file service unavailable",
+                "The purchased-file service is temporarily unavailable.", "SERVICE_UNAVAILABLE");
+        }
+        catch (SourceFileAccessException)
+        {
+            return Problem(StatusCodes.Status502BadGateway, "Source file unavailable",
+                "The purchased-file service could not provide the selected file.",
+                "SOURCE_FILE_UNAVAILABLE");
+        }
     }
 
     private static async Task<IResult> GetValidationAsync(
@@ -414,6 +580,12 @@ public static class ApiEndpoints
         {
             return Problem(StatusCodes.Status413PayloadTooLarge, "Purchased result is too large",
                 exception.Message, "PURCHASED_RESULT_TOO_LARGE");
+        }
+        catch (SourceFileSizeLimitExceededException)
+        {
+            return Problem(StatusCodes.Status413PayloadTooLarge, "Purchased result is too large",
+                "The purchased result exceeds the configured Email Validation limit.",
+                "PURCHASED_RESULT_TOO_LARGE");
         }
         catch (InvalidDataException)
         {
@@ -682,6 +854,84 @@ public static class ApiEndpoints
         int? next = actualSkip + items.Count < job.TotalItems ? actualSkip + items.Count : null;
         return Results.Ok(new ValidationJobResultsPageV1Response(
             jobId, actualSkip, actualTake, items.Select(ApiContractMapper.Map).ToArray(), next));
+    }
+
+    private static async Task<IResult> DownloadValidatedFileAsync(
+        string jobId,
+        HttpContext http,
+        IValidationJobService jobs,
+        IValidationJobAccessPolicy accessPolicy,
+        IEmailValidationSourceFileClient sourceFiles,
+        ICurrentConsumerContext consumers,
+        ValidationJobCsvExporter exporter,
+        IOptions<ApiHostOptions> hostOptions,
+        CancellationToken cancellationToken)
+    {
+        if (!ValidIdentifier(jobId, hostOptions.Value.Limits.MaximumIdentifierLength))
+            return ValidationError("jobId", "JobId is invalid.");
+        if (!await accessPolicy.CanAccessAsync(jobId, consumers.GetRequiredConsumer(), cancellationToken)
+                .ConfigureAwait(false))
+            return Results.Forbid();
+        var job = await jobs.GetAsync(jobId, cancellationToken).ConfigureAwait(false);
+        if (job is null)
+            return Problem(StatusCodes.Status404NotFound, "Job not found", "The validation job does not exist.");
+        if (job.State is not (ValidationJobState.Completed or ValidationJobState.CompletedWithErrors))
+            return Problem(StatusCodes.Status409Conflict, "Validated file is not ready",
+                "Wait for Email Validation to finish before downloading the validated file.",
+                "VALIDATED_FILE_NOT_READY");
+        if (string.IsNullOrWhiteSpace(job.SourceFileId))
+            return Problem(StatusCodes.Status409Conflict, "Source file is unavailable",
+                "This validation job is not associated with a downloadable source file.",
+                "SOURCE_FILE_UNAVAILABLE");
+
+        try
+        {
+            await sourceFiles.DemandAccessAsync(
+                job.SourceFileId,
+                http.Request.Headers.Authorization.ToString(),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return Results.Unauthorized();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            return Results.Forbid();
+        }
+        catch (SourceFileAccessException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Source file not found",
+                "The source file for this validation job is no longer available.");
+        }
+        catch (HttpRequestException)
+        {
+            return Problem(StatusCodes.Status503ServiceUnavailable, "Source file service unavailable",
+                "The purchased-file service is temporarily unavailable.", "SERVICE_UNAVAILABLE");
+        }
+        catch (SourceFileAccessException)
+        {
+            return Problem(StatusCodes.Status502BadGateway, "Source file unavailable",
+                "The purchased-file service could not authorize the source file.",
+                "SOURCE_FILE_UNAVAILABLE");
+        }
+
+        var outputName = Path.GetFileNameWithoutExtension(job.SourceFileName ?? "validated-file") +
+            "-email-validated.csv";
+        var authorization = http.Request.Headers.Authorization.ToString();
+        return Results.Stream(async output =>
+        {
+            await using var source = await sourceFiles.OpenAsync(
+                job.SourceFileId,
+                authorization,
+                http.RequestAborted).ConfigureAwait(false);
+            await exporter.WriteAsync(
+                source.Content,
+                source.FileName,
+                job,
+                output,
+                http.RequestAborted).ConfigureAwait(false);
+        }, "text/csv; charset=utf-8", outputName);
     }
 
     private static async Task<bool> HasCurrentSourceAccessAsync(

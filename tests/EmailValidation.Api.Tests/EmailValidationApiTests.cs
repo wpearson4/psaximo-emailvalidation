@@ -559,7 +559,77 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         var payload = await response.Content.ReadAsStringAsync();
         Assert.DoesNotContain("john@example.com", payload, StringComparison.Ordinal);
         Assert.DoesNotContain("12345", payload, StringComparison.Ordinal);
-        Assert.Equal("search-42", _factory.SourceFiles.RequestedSourceFileIds.Single());
+        Assert.Equal("search-42", _factory.SourceFiles.RequestedSourceFileIds.Last());
+    }
+
+    [Fact]
+    public async Task SourceFileJob_StreamsAuthorizedDataOnServer_AndDownloadsMergedCsv()
+    {
+        var sourceFileId = $"web-source-{Guid.NewGuid():N}";
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead]);
+        client.DefaultRequestHeaders.Add("Idempotency-Key", $"source-{sourceFileId}");
+
+        var created = await client.PostAsJsonAsync(
+            $"/v1/email-validation-files/{sourceFileId}/email-validation",
+            new { emailColumn = "Contact", enableSmtp = true });
+
+        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        var job = await created.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        Assert.NotNull(job);
+        Assert.Equal(sourceFileId, job.SourceFileId);
+        Assert.Equal("customers.csv", job.SourceFileName);
+        Assert.Equal(3, job.TotalItems);
+        Assert.Equal(sourceFileId, _factory.SourceFiles.RequestedSourceFileIds.Last());
+
+        _factory.JobService.CompleteSourceFile(sourceFileId);
+        var download = await client.GetAsync($"/v1/email-validation-jobs/{job.JobId}/file");
+
+        Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+        Assert.Equal("text/csv", download.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("customers-email-validated.csv",
+            download.Content.Headers.ContentDisposition?.FileNameStar);
+        var csv = await download.Content.ReadAsStringAsync();
+        Assert.Contains("Contact,Email,CustomerName,Email Validation Status", csv, StringComparison.Ordinal);
+        Assert.Contains("john@example.com,12345,John,Pending", csv, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MachineClient_CannotUseInteractiveSourceFileJob()
+    {
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite], machine: true);
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/email-validation-files/search-42/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SourceFileJob_PreservesJsonRowsWithoutShiftingBlankEmailResults()
+    {
+        var sourceFileId = $"json-source-{Guid.NewGuid():N}";
+        using var client = _factory.CreateAuthenticatedClient(
+            [EmailValidationScopes.JobsWrite, EmailValidationScopes.JobsRead]);
+        client.DefaultRequestHeaders.Add("Idempotency-Key", $"source-{sourceFileId}");
+
+        var created = await client.PostAsJsonAsync(
+            $"/v1/email-validation-files/{sourceFileId}/email-validation",
+            new { emailColumn = "Contact" });
+
+        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        var job = await created.Content.ReadFromJsonAsync<ValidationJobV1Response>();
+        Assert.NotNull(job);
+        Assert.Equal(2, job.TotalItems);
+        _factory.JobService.CompleteSourceFile(sourceFileId);
+
+        var csv = await client.GetStringAsync($"/v1/email-validation-jobs/{job.JobId}/file");
+        Assert.Contains("Name,Contact,Email Validation Status", csv, StringComparison.Ordinal);
+        Assert.Contains("One,one@example.com,Pending", csv, StringComparison.Ordinal);
+        Assert.Contains("Blank,,,,,,", csv, StringComparison.Ordinal);
+        Assert.Contains("Two,two@example.com,Pending", csv, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -745,6 +815,18 @@ public sealed class ApiSourceFileClient : IEmailValidationSourceFileClient
         CancellationToken cancellationToken = default)
     {
         RequestedSourceFileIds.Add(sourceFileId);
+        if (sourceFileId.StartsWith("json-source-", StringComparison.Ordinal))
+        {
+            const string json = """
+                [
+                  { "Name": "One", "Contact": "one@example.com" },
+                  { "Name": "Blank", "Contact": "" },
+                  { "Name": "Two", "Contact": "two@example.com" }
+                ]
+                """;
+            return Task.FromResult(new EmailValidationSourceFile(
+                new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)), "customers.json"));
+        }
         const string csv = "Contact,Email,CustomerName\n" +
                            "john@example.com,12345,John\n" +
                            "jane@example.org,67890,Jane\n" +

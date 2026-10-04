@@ -87,6 +87,7 @@ public static class ApiPlatformExtensions
             {
                 AllowAutoRedirect = false
             });
+        services.AddScoped<ValidationJobCsvExporter>();
 
         services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])

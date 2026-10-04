@@ -14,6 +14,9 @@ public sealed class SourceFileAccessException(
     public HttpStatusCode StatusCode { get; } = statusCode;
 }
 
+public sealed class SourceFileSizeLimitExceededException()
+    : IOException("The selected result exceeds the validation size limit.");
+
 public interface IEmailValidationSourceFileClient
 {
     Task DemandAccessAsync(
@@ -87,11 +90,22 @@ public sealed class OpenMetaEmailValidationSourceFileClient(
             throw new SourceFileAccessException(status, "The selected source file could not be opened.");
         }
 
+        var maximumBytes = options.Value.Limits.MaximumPurchasedResultBytes;
+        if (response.Content.Headers.ContentLength is > 0 &&
+            response.Content.Headers.ContentLength > maximumBytes)
+        {
+            response.Dispose();
+            throw new SourceFileAccessException(
+                HttpStatusCode.RequestEntityTooLarge,
+                "The selected source file exceeds the validation size limit.");
+        }
+
         var fileName = response.Content.Headers.ContentDisposition?.FileNameStar ??
             response.Content.Headers.ContentDisposition?.FileName ?? "source.csv";
         fileName = fileName.Trim('"');
         var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        return new EmailValidationSourceFile(stream, fileName, response);
+        return new EmailValidationSourceFile(
+            new MaximumLengthReadStream(stream, maximumBytes), fileName, response);
     }
 
     private HttpRequestMessage CreateRequest(
@@ -269,7 +283,7 @@ internal sealed class MaximumLengthReadStream(Stream inner, long maximumBytes) :
     {
         _read += count;
         if (_read > maximumBytes)
-            throw new InvalidDataException("The purchased result exceeds the validation size limit.");
+            throw new SourceFileSizeLimitExceededException();
         return count;
     }
 }

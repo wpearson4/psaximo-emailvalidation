@@ -74,10 +74,18 @@ each API retains its own stable hostname and deployment pipeline.
 
 ## Administrative and existing web behavior
 
-Interactive web users keep the existing single-address and raw bulk adapters. Machine-to-machine
-tokens are denied on those arbitrary-address routes unless explicitly authorized with
-`emailvalidation.admin`. Administrators may therefore perform support/operational validation without
-weakening the purchased-data rule for standard API clients.
+Interactive web users use
+`POST /v1/email-validation-files/{sourceFileId}/email-validation`. The service forwards the user's
+bearer token and impersonation context to the existing OpenMeta source-file authorization boundary,
+streams only the selected email column, and creates the durable job without sending the file or raw
+address list through the browser. `GET /v1/email-validation-jobs/{jobId}/file` reauthorizes that
+source and streams a CSV containing every original row plus the current validation result columns.
+
+The interactive source-file route requires the existing job-write permission and rejects ordinary
+machine clients. Machine-to-machine integrations continue to use the purchased-result route, while
+the existing arbitrary-address adapters remain available only to interactive users or explicitly
+authorized administrators. These separate adapters preserve each caller's authoritative ownership
+model instead of weakening the purchased-data rule.
 
 ## Error contract
 
