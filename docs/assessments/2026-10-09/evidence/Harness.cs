@@ -1,0 +1,50 @@
+using EmailValidation.Core;
+using EmailValidation.Infrastructure;
+using EmailValidation.Application;
+using Microsoft.Extensions.Options;
+using System.Reflection;
+using System.Text;
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+var settings = new EmailValidationOptions(); settings.Revalidation.Enabled = true;
+var options = Options.Create(settings); var now = DateTimeOffset.UtcNow;
+var provider = new ProviderDetectionResult(MailProvider.GenericSmtp,.55,TopologyFingerprint:"synthetic");
+var domain = new DomainIntelligence { Domain="example.test", Dns=new(DnsStatus.Timeout,false,[],false,TimeSpan.Zero), Provider=provider, ObservedAt=now, EvidenceExpiresAt=now.AddHours(1),StrategyVersion=settings.Policy.ProviderStrategyVersion };
+var evaluation = new ResultEvaluator().Evaluate(EmailValidationStatus.Unknown,new(),domain,new(){Email="sample@example.test"},new(MailProvider.GenericSmtp,.55,SmtpResponseCategory.NotAttempted,AcceptanceStrength.None,[],"synthetic"),null,HistoricalSignalSummary.Empty);
+var result = new EmailValidationResult { Email="sample@example.test", Checks=new(), Status=EmailValidationStatus.Unknown,ReasonCodes=new[]{ReasonCode.DnsTimeout}.Concat(evaluation.AdditionalReasonCodes).ToArray() };
+var policy = new RevalidationPolicy(new ProviderPolicyResolver(options),options);
+Console.WriteLine($"DNS timeout composition: details={evaluation.DetailedStatus}; reasons={string.Join(',',result.ReasonCodes)}; retry={policy.Evaluate(result,new(1)).ShouldRetry}");
+var transient = result with { ReasonCodes=[ReasonCode.TemporarySmtpFailure],ProviderValidation=new(MailProvider.GenericSmtp,.55,SmtpResponseCategory.TemporaryFailure,AcceptanceStrength.None,[],"synthetic"),Checks=new(){Mailbox=SmtpMailboxStatus.TemporaryFailure} };
+var routingDomain=domain with { Dns=new(DnsStatus.Success,true,[new(0,"mx.example.test")],false,TimeSpan.Zero) };
+var scheduled=new RevalidationSchedulePolicy(new ProviderPolicyResolver(options),new DomainBackoffPolicy(options)).CreateSchedule(new(transient,ReasonCode.TemporarySmtpFailure,1,now));
+var intelligence=new MailboxIntelligence { NormalizedEmail="sample@example.test",PreviousStatus=EmailValidationStatus.Unknown,PreviousMailboxResult=SmtpMailboxStatus.TemporaryFailure,PreviousConfidence=.85,PreviousConfidenceType=ConfidenceType.Heuristic,LastValidatedAt=now,ProviderAtValidation=MailProvider.GenericSmtp,Policy=settings.Policy.ToVersions(),UsedLiveSmtp=true,MxTopologyFingerprint="synthetic",LastResult=transient,ReasonCodes=transient.ReasonCodes };
+var reuse = new ValidationResultReusePolicy(options).Evaluate(intelligence,routingDomain,new(true,false),settings.Policy.ToVersions(),scheduled.ScheduledAt);
+Console.WriteLine($"Temporary retry: delaySeconds={(scheduled.ScheduledAt-now).TotalSeconds}; cachedResultReusable={reuse.CanReuse}; remainingSeconds={reuse.RemainingLifetime.TotalSeconds}");
+var confirmed=new CatchAllDetectionResult(CatchAllStatus.Unknown,2,2,0,0,Confidence:.90){ RecipientBehavior=DomainRecipientBehavior.AcceptAll,ReasonCode=CatchAllReasonCode.AcceptAllConfirmed,IndependentObservationCount=2,EvidenceContractVersion=CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,ObservedAt=now };
+var plan = new ValidationPlanBuilder(options).Build(routingDomain with {CatchAll=confirmed},true,true,settings.Policy.ToVersions(),now);
+Console.WriteLine($"Confirmed accept-all plan: controls={plan.PerformCatchAllProbe}; mailbox={plan.PerformMailboxProbe}; reusedCatchAll={plan.UsePersistedCatchAll}");
+var normalizer=new EmailNormalizer();
+Console.WriteLine($"65 ASCII local octets accepted={normalizer.Normalize(new string('a',65)+"@example.test").IsValid}; 66 UTF8 local octets accepted={normalizer.Normalize(new string('é',33)+"@example.test").IsValid}");
+var read=typeof(SmtpMailboxProbe).GetMethod("ReadResponseAsync",BindingFlags.Static|BindingFlags.NonPublic)!;
+var reader=new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes("250-first line\r\n550 5.1.1 User unknown\r\n")));
+var readTask=(Task)read.Invoke(null,[reader,CancellationToken.None])!; await readTask;
+Console.WriteLine("Mixed multiline reply parsed="+readTask.GetType().GetProperty("Result")!.GetValue(readTask));
+var lifetimeInstance=RuntimeHelpers.GetUninitializedObject(typeof(DomainIntelligenceService));
+typeof(DomainIntelligenceService).GetField("_options",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(lifetimeInstance,settings);
+var lifetime=typeof(DomainIntelligenceService).GetMethod("DomainLifetime",BindingFlags.Instance|BindingFlags.NonPublic)!;
+Console.WriteLine($"Domain lifetime: absentTTL={lifetime.Invoke(lifetimeInstance,[null])}; zeroTTL={lifetime.Invoke(lifetimeInstance,[TimeSpan.Zero])}; 30secondTTL={lifetime.Invoke(lifetimeInstance,[TimeSpan.FromSeconds(30)])}");
+var store=new FakeStore();var cache=new PersistentDomainValidationCache(store,options);
+var old=now.AddMinutes(1); await cache.StoreAsync(routingDomain with{EvidenceExpiresAt=old},TimeSpan.FromHours(1));
+Console.WriteLine($"Cache store renews evidence expiry bySeconds={(store.Domain!.EvidenceExpiresAt-old)!.Value.TotalSeconds:F0}");
+var flight=new ValidationSingleFlight();var gate=new TaskCompletionSource<EmailValidationResult>();int calls=0;
+var first=flight.ExecuteAsync("User@example.test",_=>{calls++;return gate.Task;});var second=flight.ExecuteAsync("user@example.test",_=>{calls++;return gate.Task;});gate.SetResult(result);await Task.WhenAll(first,second);
+Console.WriteLine($"Case distinct local parts share flight: factoryCalls={calls}");
+// Synthetic malformed Null MX RRset: one ordinary MX and one root MX. No DNS request.
+using var ms=new MemoryStream();using var bw=new BinaryWriter(ms);
+void U16(ushort x){var b=new byte[2];BinaryPrimitives.WriteUInt16BigEndian(b,x);bw.Write(b);}void U32(uint x){var b=new byte[4];BinaryPrimitives.WriteUInt32BigEndian(b,x);bw.Write(b);}
+U16(42);U16(0x8180);U16(0);U16(2);U16(0);U16(0);
+foreach(var ordinary in new[]{true,false}) {bw.Write((byte)0);U16(15);U16(1);U32(60);U16((ushort)(ordinary?7:3));U16((ushort)(ordinary?10:0));if(ordinary){bw.Write((byte)3);bw.Write(Encoding.ASCII.GetBytes("mx1"));}bw.Write((byte)0);}
+var parse=typeof(MxDnsResolver).GetMethod("ParseResponse",BindingFlags.Static|BindingFlags.NonPublic)!;
+var parsed=parse.Invoke(null,[ms.ToArray(),(ushort)42])!;
+Console.WriteLine($"Mixed ordinary and Null MX: explicitNullMx={parsed.GetType().GetField("Item3")!.GetValue(parsed)}");
+sealed class FakeStore:IValidationIntelligenceStore {public DomainIntelligence? Domain;public Task<DomainIntelligence?> GetDomainAsync(string d,CancellationToken c=default)=>Task.FromResult(Domain);public Task<MailboxIntelligence?> GetMailboxAsync(string e,CancellationToken c=default)=>Task.FromResult<MailboxIntelligence?>(null);public Task SaveDomainAsync(DomainIntelligence d,CancellationToken c=default){Domain=d;return Task.CompletedTask;}public Task SaveMailboxAsync(MailboxIntelligence m,CancellationToken c=default)=>Task.CompletedTask;}

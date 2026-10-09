@@ -199,6 +199,9 @@ public sealed class DomainIntelligenceOptions
     public bool Enabled { get; set; } = true;
     public int MemoryCacheMinutes { get; set; } = 30;
     public int PersistentFreshnessHours { get; set; } = 24;
+    public int MissingRoutingTtlSeconds { get; set; } = 60;
+    public int TransientDnsFreshnessSeconds { get; set; } = 5;
+    // Retained for configuration compatibility; an authoritative TTL is never raised to this floor.
     public int MinimumFreshnessMinutes { get; set; } = 5;
     public int MaximumFreshnessHours { get; set; } = 24;
     public int MaximumConcurrentAnalyses { get; set; } = 16;
@@ -235,6 +238,10 @@ public sealed class RevalidationOptions
 {
     public bool Enabled { get; set; }
     public int DefaultMaxAttempts { get; set; } = 2;
+    public int MinimumRetrySeconds { get; set; } = 5;
+    public int GreylistRetrySeconds { get; set; } = 300;
+    public int MailboxFullRetrySeconds { get; set; } = 1800;
+    public int MaximumPositiveJitterMilliseconds { get; set; } = 1000;
     public int OutboxDispatchIntervalSeconds { get; set; } = 30;
     public int OutboxBatchSize { get; set; } = 100;
     public int OutboxLeaseSeconds { get; set; } = 60;

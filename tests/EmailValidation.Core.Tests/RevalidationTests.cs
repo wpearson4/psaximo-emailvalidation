@@ -9,6 +9,146 @@ public sealed class RevalidationTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
 
+    [Theory]
+    [InlineData(ReasonCode.Greylisted, 300)]
+    [InlineData(ReasonCode.MailboxFull, 1800)]
+    [InlineData(ReasonCode.DnsTimeout, 5)]
+    public void RetrySchedule_UsesCauseFloorWithOnlyPositiveJitter(ReasonCode reason, int seconds)
+    {
+        var policy = new RevalidationSchedulePolicy(new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+            new StubBackoff(Now));
+        var result = policy.CreateSchedule(new(Result(EmailValidationStatus.Unknown, reason), reason, 1, Now));
+        Assert.InRange(result.ScheduledAt, Now.AddSeconds(seconds).AddMilliseconds(1), Now.AddSeconds(seconds + 1));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task DurableRetry_ObtainsFreshEvidenceThroughActualValidatorCacheAndCoordinator(bool dnsFailure, bool staysTemporary)
+    {
+        var clock = new RetryClock(Now);
+        var settings = new EmailValidationOptions();
+        settings.Smtp.Enabled = true;
+        settings.CatchAll.Enabled = false;
+        settings.Persistence.Enabled = false;
+        settings.Revalidation.Enabled = true;
+        settings.Revalidation.MaximumPositiveJitterMilliseconds = 0;
+        var options = Microsoft.Extensions.Options.Options.Create(settings);
+        var intelligenceStore = new JsonValidationIntelligenceStore(options);
+        var domainCache = new PersistentDomainValidationCache(intelligenceStore, options, clock);
+        var dns = new RecoveringDns(dnsFailure);
+        var smtp = new RecoveringSmtp(clock, dnsFailure, staysTemporary);
+        var executor = EmailValidatorTests.CreateValidator(dns, settings, smtp: smtp, cache: domainCache, clock: clock);
+        var flight = new ValidationSingleFlight();
+        var validator = new IntelligenceEmailValidator(executor, new EmailNormalizer(), intelligenceStore,
+            new InMemoryValidationResultCache(options, clock), flight, new ValidationResultReusePolicy(options),
+            new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]), new ValidationQualityMetrics(),
+            new ValidationPersistenceMetrics(), options, clock, NullLogger<IntelligenceEmailValidator>.Instance,
+            new ConfidenceLevelPolicy());
+        var lifecycleStore = new MemoryLifecycleStore();
+        using var metrics = new RevalidationMetrics();
+        var dispatcher = new StubDispatcher(true);
+        var providerPolicies = new ProviderPolicyResolver(options);
+        var schedule = new RevalidationSchedulePolicy(providerPolicies, new DomainBackoffPolicy(options), options);
+        var coordinator = new ValidationLifecycleCoordinator(lifecycleStore, new RevalidationPolicy(providerPolicies, options),
+            schedule, dispatcher, metrics, clock, options, NullLogger<ValidationLifecycleCoordinator>.Instance);
+        var request = new EmailValidationRequest(true);
+        var original = await validator.ValidateAsync("person@example.com", request);
+        Assert.Equal(EmailValidationStatus.Unknown, original.Status);
+        var initial = await coordinator.ProcessInitialResultAsync(original, request);
+        Assert.Equal(ValidationResultState.Provisional, initial.Result.ResultState);
+        var message = initial.Lifecycle!.PendingRevalidation!.Message;
+        Assert.Equal(Now.AddSeconds(5), message.ScheduledRetryAt);
+        clock.Now = message.ScheduledRetryAt;
+        var processor = new EmailRevalidationProcessor(lifecycleStore, validator, coordinator, dispatcher,
+            new AvailableThrottle(), schedule, metrics, clock);
+
+        var processed = await processor.ProcessAsync(message);
+
+        Assert.Equal(RevalidationProcessingDisposition.Completed, processed.Disposition);
+        var final = lifecycleStore.Value!;
+        Assert.Equal(staysTemporary ? EmailValidationStatus.Unknown : EmailValidationStatus.Invalid, final.CurrentResult.Status);
+        Assert.Equal(ValidationResultState.Final, final.ResultState);
+        Assert.Equal(2, final.Attempts.Count);
+        Assert.True(final.CurrentResult.MailboxEvidenceObservedAt > original.Metadata!.ValidatedAt);
+        Assert.Equal(dnsFailure ? 2 : 1, dns.Calls);
+        Assert.Equal(dnsFailure ? 1 : 2, smtp.Calls);
+        Assert.Equal(dnsFailure ? clock.GetUtcNow() : Now, final.CurrentResult.DomainIntelligence!.RoutingEvidence!.ObservedAt);
+        Assert.Null(final.PendingRevalidation);
+    }
+
+    private sealed class RetryClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class RecoveringDns(bool failFirst) : IDnsMailResolver
+    {
+        public int Calls { get; private set; }
+        public Task<DnsLookupResult> ResolveAsync(string domain, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(failFirst && Calls == 1
+                ? new DnsLookupResult(DnsStatus.Timeout, false, [], false, TimeSpan.Zero)
+                : new DnsLookupResult(DnsStatus.Success, true, [new MxRecord(10, "mx.example.com")], false,
+                    TimeSpan.Zero, TimeToLive: TimeSpan.FromHours(1)));
+        }
+    }
+
+    private sealed class RecoveringSmtp(TimeProvider clock, bool rejectImmediately, bool staysTemporary) : ISmtpMailboxProbe
+    {
+        public int Calls { get; private set; }
+        public Task<SmtpProbeResult> ProbeAsync(string mxHost, string recipient, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            var reject = !staysTemporary && (rejectImmediately || Calls > 1);
+            var category = reject ? SmtpResponseCategory.RecipientRejected : SmtpResponseCategory.TemporaryFailure;
+            var text = reject ? SmtpResponseTextClassification.RecipientDoesNotExist : SmtpResponseTextClassification.Unknown;
+            var code = reject ? 550 : 451;
+            var enhanced = reject ? "5.1.1" : "4.3.0";
+            return Task.FromResult(new SmtpProbeResult(
+                reject ? SmtpMailboxStatus.Rejected : SmtpMailboxStatus.TemporaryFailure, code, enhanced, TimeSpan.Zero,
+                Evidence: new(SmtpCommand.RcptTo, code, enhanced, category, text, 1, MailProvider.GenericSmtp,
+                    mxHost, 1, clock.GetUtcNow()),
+                SessionEvidence: new(SmtpCommand.RcptTo,
+                [
+                    new(SmtpCommand.MailFrom, 250, "2.1.0", SmtpResponseCategory.Accepted,
+                        SmtpResponseTextClassification.Success, TimeSpan.Zero),
+                    new(SmtpCommand.RcptTo, code, enhanced, category, text, TimeSpan.Zero)
+                ], mxHost, TimeSpan.Zero, "probe@validator.example")));
+        }
+    }
+
+    [Theory]
+    [InlineData(ValidationResultSource.PersistentReuse)]
+    [InlineData(ValidationResultSource.MemoryCache)]
+    [InlineData(ValidationResultSource.LiveValidation)]
+    public async Task Processor_OldEvidenceCannotConsumeAnObservationAttempt(ValidationResultSource source)
+    {
+        var lifecycle = Lifecycle(ValidationResultState.Provisional, 1);
+        var store = new MemoryLifecycleStore(lifecycle);
+        var service = new CountingValidationService(lifecycle.CurrentResult with
+        {
+            Metadata = lifecycle.CurrentResult.Metadata! with { ResultSource = source, ValidatedAt = Now.AddSeconds(5) },
+            ProbeAttempted = true,
+            MailboxEvidenceObservedAt = Now
+        });
+        var coordinator = new StubCoordinator();
+        using var metrics = new RevalidationMetrics();
+        var processor = new EmailRevalidationProcessor(store, service, coordinator, new StubDispatcher(true),
+            new AvailableThrottle(), new RevalidationSchedulePolicy(new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+                new StubBackoff(Now.AddMinutes(5))), metrics, new FixedTimeProvider(Now));
+
+        var result = await processor.ProcessAsync(Message(lifecycle.ValidationId, 2));
+
+        Assert.Equal(RevalidationProcessingDisposition.Rescheduled, result.Disposition);
+        Assert.Equal(Now, service.LastRequest!.EvidenceObservedAfter);
+        Assert.Equal(0, coordinator.RetryCalls);
+        Assert.Equal(1, store.Value!.AttemptNumber);
+    }
+
     [Fact]
     public void Policy_RetriesOnlyTransientUnknownWithinBound()
     {
@@ -191,7 +331,7 @@ public sealed class RevalidationTests
         var localWins = policy.CreateSchedule(new(
             result, ReasonCode.PolicyBlock, 1, Now, Now.AddMinutes(90)));
 
-        Assert.Equal(Now.AddMinutes(60), providerWins.ScheduledAt);
+        Assert.InRange(providerWins.ScheduledAt, Now.AddMinutes(60).AddMilliseconds(1), Now.AddMinutes(60).AddSeconds(1));
         Assert.Equal(Now.AddMinutes(90), localWins.ScheduledAt);
     }
 
@@ -209,7 +349,7 @@ public sealed class RevalidationTests
         var schedule = policy.CreateSchedule(new(
             result, ReasonCode.ProviderVerificationBlocked, 1, Now));
 
-        Assert.Equal(Now.AddMinutes(30), schedule.ScheduledAt);
+        Assert.InRange(schedule.ScheduledAt, Now.AddMinutes(30).AddMilliseconds(1), Now.AddMinutes(30).AddSeconds(1));
     }
 
     [Fact]
@@ -839,10 +979,12 @@ public sealed class RevalidationTests
     private sealed class CountingValidationService(EmailValidationResult result) : IEmailValidationService
     {
         public int Calls { get; private set; }
+        public EmailValidationRequest? LastRequest { get; private set; }
         public Task<EmailValidationResult> ValidateAsync(string email, EmailValidationRequest request,
             CancellationToken cancellationToken = default)
         {
             Calls++;
+            LastRequest = request;
             return Task.FromResult(result);
         }
     }

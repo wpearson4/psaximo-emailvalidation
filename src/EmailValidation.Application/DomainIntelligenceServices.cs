@@ -21,7 +21,7 @@ public sealed class DomainIntelligenceFreshnessPolicy(
     {
         if (!_options.DomainIntelligence.Enabled)
             return new(false, false, "Domain intelligence is disabled.");
-        if (existing.EvidenceExpiresAt is not { } expiresAt || expiresAt <= now)
+        if (DomainEvidenceFreshness.ExpiresAt(existing, _options.DomainIntelligence) <= now)
             return new(false, false, "Domain intelligence is stale.");
         if (!string.Equals(existing.IntelligencePolicyVersion, _options.DomainIntelligence.PolicyVersion,
                 StringComparison.Ordinal))
@@ -48,6 +48,7 @@ public sealed class DomainIntelligenceFreshnessPolicy(
     {
         var observedAt = intelligence.CatchAll.ObservedAt ?? intelligence.ObservedAt;
         return observedAt != default &&
+            (intelligence.CatchAll.EvidenceExpiresAt is null || intelligence.CatchAll.EvidenceExpiresAt > now) &&
             observedAt.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes)) > now;
     }
 }
@@ -137,25 +138,32 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
 
         var updated = current with
         {
-            CatchAll = intelligence.CatchAll,
+            CatchAll = WithBehaviorExpiry(intelligence.CatchAll),
             CatchAllFingerprint = Fingerprints.CreateCatchAll(intelligence.CatchAll),
             LastObservedUtc = _timeProvider.GetUtcNow()
         };
         await _cache.StoreAsync(
             updated,
-            DomainLifetime(updated.MailRouting?.TimeToLive),
+            RemainingRoutingLifetime(updated),
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<DomainIntelligenceAcquisition> AcquireAsync(
+    public Task<DomainIntelligenceAcquisition> AcquireAsync(
         string domain,
         bool allowCatchAllProbe,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => AcquireCoreAsync(domain, allowCatchAllProbe, null, cancellationToken);
+
+    public Task<DomainIntelligenceAcquisition> AcquireAsync(
+        string domain, bool allowCatchAllProbe, DateTimeOffset evidenceObservedAfter,
+        CancellationToken cancellationToken = default) => AcquireCoreAsync(domain, allowCatchAllProbe, evidenceObservedAfter, cancellationToken);
+
+    private async Task<DomainIntelligenceAcquisition> AcquireCoreAsync(
+        string domain, bool allowCatchAllProbe, DateTimeOffset? evidenceObservedAfter, CancellationToken cancellationToken)
     {
         domain = Normalize(domain);
         var now = _timeProvider.GetUtcNow();
         DomainBaseAcquisition baseResult;
-        if (_cache.TryGet(domain, out var hot) && hot is not null && _freshness.Evaluate(hot, null, now).CanReuse)
+        if (_cache.TryGet(domain, out var hot) && hot is not null && CanReuse(hot, now, evidenceObservedAfter))
         {
             MemoryHits.Add(1);
             baseResult = new(hot, DomainIntelligenceSource.MemoryCache, 0, false);
@@ -163,8 +171,8 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         else
         {
             var flight = await _baseFlights.ExecuteAsync(
-                domain,
-                token => LoadOrAnalyzeAsync(domain, token),
+                $"{domain}|after:{evidenceObservedAfter:O}",
+                token => LoadOrAnalyzeAsync(domain, token, evidenceObservedAfter),
                 cancellationToken).ConfigureAwait(false);
             if (flight.Joined)
             {
@@ -211,11 +219,12 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
 
     private async Task<DomainBaseAcquisition> LoadOrAnalyzeAsync(
         string domain,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? evidenceObservedAfter = null)
     {
         var now = _timeProvider.GetUtcNow();
         var existing = await _cache.GetAsync(domain, cancellationToken).ConfigureAwait(false);
-        if (existing is not null && _freshness.Evaluate(existing, null, now).CanReuse)
+        if (existing is not null && CanReuse(existing, now, evidenceObservedAfter))
         {
             PersistentHits.Add(1);
             return new(existing, DomainIntelligenceSource.PersistentStore, 0, false);
@@ -297,7 +306,10 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 string.Equals(Fingerprints.Mx(existing), mxFingerprint, StringComparison.Ordinal) &&
                 ProviderCompatible(existing, provider, providerFingerprint) &&
                 string.Equals(existing.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal);
-            var lifetime = DomainLifetime(routing.TimeToLive);
+            var lifetime = DomainLifetime(routing.Status, routing.TimeToLive);
+            var observedAt = routing.ObservedAtUtc == default ? now : routing.ObservedAtUtc;
+            var routingClock = new EvidenceLifetime(observedAt, observedAt.Add(lifetime));
+            var authenticationAt = authentication.ObservedAtUtc == default ? now : authentication.ObservedAtUtc;
             var intelligence = new DomainIntelligence
             {
                 Domain = domain,
@@ -320,8 +332,11 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                     ? existing!.CatchAll
                     : new CatchAllDetectionResult(CatchAllStatus.NotAttempted, 0, 0, 0, 0),
                 Behavior = catchAllTopologyCompatible ? existing!.Behavior : null,
-                ObservedAt = now,
-                EvidenceExpiresAt = now.Add(lifetime),
+                ObservedAt = observedAt,
+                EvidenceExpiresAt = routingClock.ExpiresAt,
+                RoutingEvidence = routingClock,
+                ProviderEvidence = routingClock,
+                AuthenticationEvidence = new(authenticationAt, authenticationAt.AddMinutes(Math.Max(0, _options.Dns.CacheMinutes))),
                 StrategyVersion = _options.Policy.ProviderStrategyVersion,
                 MxTopologyFingerprint = mxFingerprint,
                 ProviderFingerprint = providerFingerprint,
@@ -401,12 +416,11 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         }
         var updated = current with
         {
-            CatchAll = detection,
+            CatchAll = WithBehaviorExpiry(detection),
             CatchAllFingerprint = Fingerprints.CreateCatchAll(detection),
-            LastObservedUtc = now,
-            ObservedAt = now
+            LastObservedUtc = now
         };
-        await _cache.StoreAsync(updated, DomainLifetime(current.MailRouting?.TimeToLive), cancellationToken).ConfigureAwait(false);
+        await _cache.StoreAsync(updated, RemainingRoutingLifetime(current), cancellationToken).ConfigureAwait(false);
         if (detection.HasIndependentRoutingEvidence &&
             !current.CatchAll.HasIndependentRoutingEvidence)
             _persistenceMetrics.RecordCatchAllDiscovered();
@@ -459,16 +473,31 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
              existing.Provider.GatewayProvider == current.GatewayProvider);
     }
 
-    private TimeSpan DomainLifetime(TimeSpan? routingTtl)
+    private CatchAllDetectionResult WithBehaviorExpiry(CatchAllDetectionResult detection) => detection with
+    {
+        EvidenceExpiresAt = detection.EvidenceExpiresAt ?? detection.ObservedAt?.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes))
+    };
+
+    private bool CanReuse(DomainIntelligence intelligence, DateTimeOffset now, DateTimeOffset? after) =>
+        _freshness.Evaluate(intelligence, null, now).CanReuse &&
+        !(after is { } boundary && intelligence.Dns.IsTransient &&
+          (intelligence.RoutingEvidence?.ObservedAt ?? intelligence.MailRouting?.ObservedAtUtc ?? intelligence.ObservedAt) <= boundary);
+
+    private TimeSpan RemainingRoutingLifetime(DomainIntelligence intelligence) =>
+        (intelligence.EvidenceExpiresAt ?? intelligence.ObservedAt) - _timeProvider.GetUtcNow();
+
+    private TimeSpan DomainLifetime(DnsStatus status, TimeSpan? routingTtl)
     {
         var configured = TimeSpan.FromHours(Math.Max(0, Math.Min(
             _options.DomainIntelligence.PersistentFreshnessHours,
             _options.DomainIntelligence.MaximumFreshnessHours)));
         var legacy = TimeSpan.FromMinutes(Math.Max(0, _options.Dns.CacheMinutes));
         var policyLifetime = configured == TimeSpan.Zero ? legacy : configured;
-        var lower = TimeSpan.FromMinutes(Math.Max(0, _options.DomainIntelligence.MinimumFreshnessMinutes));
-        var ttlLifetime = routingTtl is { } ttl && ttl > TimeSpan.Zero ? ttl : policyLifetime;
-        return ttlLifetime < lower ? lower : ttlLifetime > policyLifetime ? policyLifetime : ttlLifetime;
+        var ttlLifetime = status is DnsStatus.Timeout or DnsStatus.Failure
+            ? TimeSpan.FromSeconds(Math.Max(0, _options.DomainIntelligence.TransientDnsFreshnessSeconds))
+            : routingTtl ?? TimeSpan.FromSeconds(Math.Max(0, _options.DomainIntelligence.MissingRoutingTtlSeconds));
+        if (ttlLifetime < TimeSpan.Zero) ttlLifetime = TimeSpan.Zero;
+        return ttlLifetime > policyLifetime ? policyLifetime : ttlLifetime;
     }
 
     private static string Normalize(string domain) => domain.Trim().TrimEnd('.').ToLowerInvariant();

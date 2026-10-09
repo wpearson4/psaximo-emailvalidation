@@ -24,7 +24,7 @@ public sealed class ValidationPlanBuilder(IOptions<EmailValidationOptions> optio
             intelligence.StrategyVersion,
             currentPolicy.ProviderStrategyVersion,
             StringComparison.Ordinal);
-        var domainFresh = intelligence.EvidenceExpiresAt is { } expiresAt && expiresAt > now;
+        var domainFresh = DomainEvidenceFreshness.ExpiresAt(intelligence, _options.DomainIntelligence) > now;
         if (!domainFresh || !strategyCompatible)
             return new(
                 true,
@@ -38,6 +38,7 @@ public sealed class ValidationPlanBuilder(IOptions<EmailValidationOptions> optio
         var catchAll = intelligence.CatchAll;
         var observedAt = catchAll.ObservedAt ?? intelligence.ObservedAt;
         var catchAllFresh = observedAt != default &&
+            (catchAll.EvidenceExpiresAt is null || catchAll.EvidenceExpiresAt > now) &&
             observedAt.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes)) > now;
         var refreshBackoffActive = catchAll.RefreshInconclusive &&
             catchAll.RefreshAttemptedAt is { } attemptedAt &&

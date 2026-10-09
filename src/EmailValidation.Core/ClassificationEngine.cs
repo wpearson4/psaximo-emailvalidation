@@ -20,11 +20,12 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
             return Result(EmailValidationStatus.Invalid, 0.99, reasons, contributions, "Invalid syntax", 0.99);
         Add(contributions, "Syntax certainty", SyntaxWeight, "The address parsed successfully.");
 
-        if (evidence.DnsStatus == DnsStatus.DomainNotFound)
+        var dnsStatus = evidence.Domain?.Dns.Status ?? evidence.DnsStatus;
+        if (dnsStatus == DnsStatus.DomainNotFound)
             return Result(EmailValidationStatus.Invalid, 0.99, [ReasonCode.DomainNotFound], contributions, "NXDOMAIN", 0.79);
-        if (evidence.DnsStatus == DnsStatus.Timeout)
+        if (dnsStatus == DnsStatus.Timeout)
             return Result(EmailValidationStatus.Unknown, 0.88, [ReasonCode.DnsTimeout], contributions, "DNS timeout", 0.68);
-        if (evidence.DnsStatus == DnsStatus.Failure)
+        if (dnsStatus == DnsStatus.Failure)
             return Result(EmailValidationStatus.Unknown, 0.85, [ReasonCode.DnsFailure], contributions, "DNS failure", 0.65);
 
         var domain = evidence.Domain;

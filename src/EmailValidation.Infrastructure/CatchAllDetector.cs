@@ -6,7 +6,7 @@ namespace EmailValidation.Infrastructure;
 
 public sealed class CatchAllDetector(
     ISmtpMailboxProbe smtpProbe,
-    IOptions<EmailValidationOptions> options) : ICatchAllDetector
+    IOptions<EmailValidationOptions> options, TimeProvider? timeProvider = null) : ICatchAllDetector
 {
     private readonly CatchAllOptions _options = options.Value.CatchAll;
     private readonly string _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
@@ -107,7 +107,7 @@ public sealed class CatchAllDetector(
         CatchAllDetectionResult result,
         IReadOnlyList<SmtpProbeResult> results)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = (timeProvider ?? TimeProvider.System).GetUtcNow();
         return result with
         {
             ProbeResults = results,

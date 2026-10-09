@@ -275,6 +275,8 @@ public sealed record RecipientEvidenceSummary(
     string? EnhancedStatusCode,
     string? MxHost);
 
+public sealed record EvidenceLifetime(DateTimeOffset ObservedAt, DateTimeOffset ExpiresAt);
+
 public sealed record DomainIntelligence
 {
     public required string Domain { get; init; }
@@ -297,6 +299,9 @@ public sealed record DomainIntelligence
     public DomainBehaviorProfile? Behavior { get; init; }
     public DateTimeOffset ObservedAt { get; init; }
     public DateTimeOffset? EvidenceExpiresAt { get; init; }
+    public EvidenceLifetime? RoutingEvidence { get; init; }
+    public EvidenceLifetime? ProviderEvidence { get; init; }
+    public EvidenceLifetime? AuthenticationEvidence { get; init; }
     public string StrategyVersion { get; init; } = "1.0.0";
     public string? MxTopologyFingerprint { get; init; }
     public string? ProviderFingerprint { get; init; }

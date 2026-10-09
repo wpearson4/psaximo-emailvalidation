@@ -87,12 +87,21 @@ public sealed class RevalidationPolicy(
         };
         var hasConflictingMxEvidence = result.MxValidation?.Consensus == MxConsensus.Conflicting ||
             result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting);
+        var transientDns = result.DomainIntelligence?.Dns.IsTransient == true;
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.DomainNotFound ||
+            result.DomainIntelligence?.Dns.HasDefinitiveNoRoute == true)
+            return new(false, null, maximum);
         if (!_options.Enabled || (result.Status != EmailValidationStatus.Unknown && !enforcedIntelligenceRetry) ||
-            (!hasConflictingMxEvidence && result.ReasonCodes.Any(TerminalReasons.Contains)) ||
+            (!hasConflictingMxEvidence && result.ReasonCodes.Any(reason => TerminalReasons.Contains(reason) &&
+                !(transientDns && reason is ReasonCode.DomainNotFound or ReasonCode.NullMailExchanger or
+                    ReasonCode.NoMailExchanger or ReasonCode.NoMailRouting or ReasonCode.UnroutableMailInfrastructure))) ||
             result.MailingRisk?.RiskReasons.Contains(MailingRiskReason.KnownSuppression) == true)
             return new(false, null, maximum);
 
-        var reason = RetryPriority.FirstOrDefault(result.ReasonCodes.Contains);
+        var reason = transientDns
+            ? result.DomainIntelligence!.Dns.Status == DnsStatus.Timeout ? ReasonCode.DnsTimeout : ReasonCode.DnsFailure
+            : RetryPriority.FirstOrDefault(reason => result.ReasonCodes.Contains(reason) &&
+                !(result.DomainIntelligence is not null && reason is ReasonCode.DnsTimeout or ReasonCode.DnsFailure));
         if (!RetryableReasons.Contains(reason))
             return new(false, null, maximum);
 
@@ -102,29 +111,45 @@ public sealed class RevalidationPolicy(
 
 public sealed class RevalidationSchedulePolicy(
     IProviderPolicyResolver providerPolicies,
-    IDomainBackoffPolicy backoffPolicy) : IRevalidationSchedulePolicy
+    IDomainBackoffPolicy backoffPolicy,
+    IOptions<EmailValidationOptions>? options = null) : IRevalidationSchedulePolicy
 {
+    private readonly EmailValidationOptions _options = options?.Value ?? new EmailValidationOptions();
+
     public RevalidationSchedule CreateSchedule(RevalidationScheduleContext context)
     {
         var category = Category(context.Result, context.Reason);
+        var minimumSeconds = category switch
+        {
+            SmtpResponseCategory.Greylisted => _options.Revalidation.GreylistRetrySeconds,
+            SmtpResponseCategory.MailboxFull => _options.Revalidation.MailboxFullRetrySeconds,
+            _ => _options.Revalidation.MinimumRetrySeconds
+        };
+        var causeFloor = context.Now.AddSeconds(Math.Max(1, minimumSeconds));
         var backoff = backoffPolicy.Evaluate(
             context.Result.MailProvider,
             category,
             Math.Max(1, context.AttemptNumber),
             context.Now).NextAllowedAttemptAt;
-        var scheduledAt = Max(context.Now, backoff, context.Result.RetryAfter, context.CurrentCooldownUntil);
         if (category == SmtpResponseCategory.VerificationBlocked)
         {
             var providerCooldown = context.Now.AddMinutes(
                 Math.Max(0, providerPolicies.Resolve(context.Result.MailProvider).PolicyBlockCooldownMinutes));
-            scheduledAt = Max(scheduledAt, providerCooldown);
+            causeFloor = Max(causeFloor, providerCooldown);
         }
-
+        if (context.Reason == ReasonCode.AcceptAllCandidate)
+            causeFloor = Max(causeFloor, (context.Result.CatchAllEvidence?.ObservedAt ?? context.Now)
+                .AddMinutes(Math.Max(1, _options.CatchAll.AcceptAllMinimumObservationSeparationMinutes)));
+        var jitterMaximum = Math.Max(0, _options.Revalidation.MaximumPositiveJitterMilliseconds);
+        if (jitterMaximum > 0) causeFloor = causeFloor.AddMilliseconds(1 + Random.Shared.NextInt64(jitterMaximum));
+        var scheduledAt = Max(causeFloor, backoff, context.Result.RetryAfter, context.CurrentCooldownUntil);
         return new(scheduledAt, context.Reason.ToString());
     }
 
     private static SmtpResponseCategory Category(EmailValidationResult result, ReasonCode reason)
     {
+        if (result.DomainIntelligence?.Dns.IsTransient == true || reason is ReasonCode.DnsTimeout or ReasonCode.DnsFailure)
+            return reason == ReasonCode.DnsTimeout ? SmtpResponseCategory.Timeout : SmtpResponseCategory.TemporaryFailure;
         if (result.ProviderValidation is { } provider &&
             provider.EffectiveCategory is not (SmtpResponseCategory.Unknown or SmtpResponseCategory.NotAttempted))
             return provider.EffectiveCategory;
@@ -879,8 +904,10 @@ public sealed class EmailRevalidationProcessor(
             }
         }
 
+        var evidenceAfter = RetryEvidencePolicy.LatestObservation(lifecycle.CurrentResult, message.PreviousAttemptAt);
         var result = await validationService.ValidateAsync(
-            lifecycle.NormalizedEmail, lifecycle.Request, cancellationToken).ConfigureAwait(false);
+            lifecycle.NormalizedEmail, lifecycle.Request with { EvidenceObservedAfter = evidenceAfter },
+            cancellationToken).ConfigureAwait(false);
         var reused = result.Metadata?.ResultSource is ValidationResultSource.MemoryCache or
             ValidationResultSource.PersistentReuse or ValidationResultSource.JoinedInFlightValidation;
         metrics.RecordExecuted(lifecycle.CurrentResult.MailProvider, reused);
@@ -906,6 +933,15 @@ public sealed class EmailRevalidationProcessor(
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (!RetryEvidencePolicy.HasNewObservation(canonical.CurrentResult, result, evidenceAfter))
+        {
+            return await RescheduleWithoutAttemptAsync(
+                canonical, message,
+                Enum.TryParse<ReasonCode>(canonical.RetryReason, out var retryReason) ? retryReason : ReasonCode.RetryRecommended,
+                evidenceAfter > now ? evidenceAfter.AddSeconds(5) : now.AddSeconds(5), message.AttemptNumber - 1,
+                cancellationToken, noNewEvidence: true).ConfigureAwait(false);
+        }
+
         var coordinated = await coordinator.ProcessRetryResultAsync(
             canonical.ValidationId, canonical.Version, message.AttemptNumber, result, cancellationToken)
             .ConfigureAwait(false);
@@ -922,7 +958,8 @@ public sealed class EmailRevalidationProcessor(
         ReasonCode reason,
         DateTimeOffset deferredUntil,
         int retainedAttemptNumber,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool noNewEvidence = false)
     {
         var now = timeProvider.GetUtcNow();
         var schedule = schedulePolicy.CreateSchedule(new(
@@ -954,7 +991,9 @@ public sealed class EmailRevalidationProcessor(
             LifecycleState = ValidationLifecycleState.Provisional,
             CurrentStage = ValidationProgressStage.Provisional,
             RetryReason = reason.ToString(),
-            StatusMessage = reason == ReasonCode.ReputationPolicyDeferred
+            StatusMessage = noNewEvidence
+                ? "No newer observation was obtained; automatic revalidation will be rescheduled without consuming an observation attempt."
+                : reason == ReasonCode.ReputationPolicyDeferred
                 ? "SMTP reputation protection remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt."
                 : "Provider or domain cooldown remains active; automatic revalidation will be rescheduled without consuming an SMTP attempt.",
             LastUpdatedAt = now,

@@ -334,12 +334,15 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
     private readonly IValidationIntelligenceStore _store;
     private readonly TimeSpan? _configuredMemoryLifetime;
     private readonly CatchAllOptions _catchAllOptions;
+    private readonly TimeProvider _clock;
 
     public PersistentDomainValidationCache(
         IValidationIntelligenceStore store,
-        IOptions<EmailValidationOptions>? options = null)
+        IOptions<EmailValidationOptions>? options = null,
+        TimeProvider? timeProvider = null)
     {
         _store = store;
+        _clock = timeProvider ?? TimeProvider.System;
         _catchAllOptions = options?.Value.CatchAll ?? new CatchAllOptions();
         _configuredMemoryLifetime = options is null
             ? null
@@ -350,7 +353,7 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
 
     public bool TryGet(string domain, out DomainIntelligence? data)
     {
-        if (_cache.TryGetValue(domain, out var entry) && entry.ExpiresAt > DateTimeOffset.UtcNow)
+        if (_cache.TryGetValue(domain, out var entry) && entry.ExpiresAt > _clock.GetUtcNow())
         {
             data = entry.Value;
             return true;
@@ -363,7 +366,10 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
     public void Store(DomainIntelligence data, TimeSpan lifetime)
     {
         var normalized = Normalize(data);
-        _cache[normalized.Domain] = new(normalized, DateTimeOffset.UtcNow.Add(lifetime));
+        var expiration = _clock.GetUtcNow().Add(lifetime);
+        if (normalized.EvidenceExpiresAt is { } evidenceExpiration && evidenceExpiration < expiration)
+            expiration = evidenceExpiration;
+        _cache[normalized.Domain] = new(normalized, MemoryExpiration(expiration));
     }
 
     public async Task<DomainIntelligence?> GetAsync(string domain, CancellationToken cancellationToken = default)
@@ -371,7 +377,7 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
         if (TryGet(domain, out var cached)) return cached;
         var stored = await _store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
         if (stored is null) return null;
-        if (stored.EvidenceExpiresAt is { } expiresAt && expiresAt > DateTimeOffset.UtcNow)
+        if (stored.EvidenceExpiresAt is { } expiresAt && expiresAt > _clock.GetUtcNow())
             _cache[domain] = new(stored, MemoryExpiration(expiresAt));
         // Return stale durable evidence to the planner as historical context. The
         // planner must refresh it before allowing it to suppress live SMTP work.
@@ -380,7 +386,12 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
 
     public async Task StoreAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
     {
-        var durable = Normalize(data) with { EvidenceExpiresAt = DateTimeOffset.UtcNow.Add(lifetime) };
+        var durable = Normalize(data) with
+        {
+            // Storage does not constitute a new observation. Legacy records with
+            // no observation timestamp remain stale until they are reanalyzed.
+            EvidenceExpiresAt = data.EvidenceExpiresAt ?? data.ObservedAt.Add(lifetime)
+        };
         Store(durable, MemoryLifetime(lifetime));
         await _store.SaveDomainAsync(durable, cancellationToken).ConfigureAwait(false);
     }
@@ -403,7 +414,7 @@ public sealed class PersistentDomainValidationCache : IDomainValidationCache
     {
         var configured = _configuredMemoryLifetime;
         if (configured is null) return durableExpiration;
-        var memoryExpiration = DateTimeOffset.UtcNow.Add(configured.Value);
+        var memoryExpiration = _clock.GetUtcNow().Add(configured.Value);
         return memoryExpiration <= durableExpiration ? memoryExpiration : durableExpiration;
     }
 

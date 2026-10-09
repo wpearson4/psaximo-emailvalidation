@@ -21,9 +21,11 @@ public sealed class EmailValidator(
     ISmtpProviderDetector smtpProviderDetector,
     IOptions<EmailValidationOptions> options,
     ILogger<EmailValidator> logger,
-    IValidationProgressReporter? progressReporter = null) : IEmailValidator, IEmailValidationExecutor
+    IValidationProgressReporter? progressReporter = null,
+    TimeProvider? timeProvider = null) : IEmailValidator, IEmailValidationExecutor
 {
     private readonly EmailValidationOptions _options = options.Value;
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
 
     public async Task<EmailValidationResult> ValidateAsync(
         string email,
@@ -31,7 +33,7 @@ public sealed class EmailValidator(
         CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
-        var validatedAt = DateTimeOffset.UtcNow;
+        var validatedAt = _clock.GetUtcNow();
         var observationSessionId = Guid.NewGuid().ToString("N");
         using var smtpBudget = smtpSessionBudget.Begin(_options.Smtp.MaxSmtpSessionsPerAddress);
         logger.LogInformation("Validation started");
@@ -61,7 +63,9 @@ public sealed class EmailValidator(
         var addressTask = EvaluateAddressIntelligenceAsync(
             normalized.NormalizedEmail!, localPart, domain, cancellationToken);
         var (domainData, cacheHit, catchAllProbes, domainIntelligenceDurationMs, validationPlan) =
-            await GetDomainDataAsync(domain, smtpEnabled, cancellationToken);
+            await GetDomainDataAsync(domain, smtpEnabled, request.EvidenceObservedAfter, cancellationToken);
+        if (request.EvidenceObservedAfter is not null && smtpEnabled)
+            validationPlan = validationPlan with { PerformMailboxProbe = true, UsePersistedCatchAll = false };
         await ReportProgressAsync(request.ValidationId, ValidationProgressStage.DomainChecks,
             "Domain and MX validation completed.", cancellationToken).ConfigureAwait(false);
         var (addressIntelligence, addressIntelligenceDurationMs) = await addressTask;
@@ -102,12 +106,14 @@ public sealed class EmailValidator(
             Disposition = SmtpProbeDisposition.NotAttempted
         };
         var mxValidation = new MxValidationEvidence([], [], MxConsensus.Unknown);
+        DateTimeOffset? mailboxObservedAt = null;
         if (validationPlan.PerformMailboxProbe && domainData.Dns.Status == DnsStatus.Success && selectedMx is not null)
         {
             await ReportProgressAsync(request.ValidationId, ValidationProgressStage.SmtpValidation,
                 "Mailbox SMTP validation started.", cancellationToken).ConfigureAwait(false);
             (mailbox, mxValidation) = await ProbeMailboxAcrossMxAsync(
                 domainData, normalized.NormalizedEmail!, cancellationToken);
+            if (mailbox.ProbeAttempted) mailboxObservedAt = _clock.GetUtcNow();
             selectedMx = mailbox.SessionEvidence?.MxHost ?? mailbox.Evidence?.MxHost ?? selectedMx;
             logger.LogInformation("SMTP probe for {Domain} returned {Outcome}", domain, mailbox.Status);
         }
@@ -290,6 +296,7 @@ public sealed class EmailValidator(
             DomainIntelligence = activeDomainData,
             CatchAllEvidence = activeDomainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
+            MailboxEvidenceObservedAt = mailboxObservedAt,
             SmtpSessionEvidence = mailbox.SessionEvidence,
             MxValidation = mxValidation,
             RecipientEvidence = new RecipientEvidenceSummary(
@@ -566,9 +573,12 @@ public sealed class EmailValidator(
     private async Task<(DomainIntelligence Data, bool CacheHit, int CatchAllProbes, long IntelligenceDurationMs, ValidationPlan Plan)> GetDomainDataAsync(
         string domain,
         bool smtpEnabled,
+        DateTimeOffset? evidenceObservedAfter,
         CancellationToken cancellationToken)
     {
-        var acquisition = await domainIntelligenceService.AcquireAsync(domain, smtpEnabled, cancellationToken)
+        var acquisition = await (evidenceObservedAfter is { } after
+            ? domainIntelligenceService.AcquireAsync(domain, smtpEnabled, after, cancellationToken)
+            : domainIntelligenceService.AcquireAsync(domain, smtpEnabled, cancellationToken))
             .ConfigureAwait(false);
         return (
             acquisition.Intelligence,
@@ -624,7 +634,7 @@ public sealed class EmailValidator(
                 .Select(SmtpRecipientEvidencePolicy.RecipientObservedAt)
                 .Where(timestamp => timestamp is not null)
                 .Cast<DateTimeOffset>()
-                .DefaultIfEmpty(domain.CatchAll.ObservedAt ?? DateTimeOffset.UtcNow)
+                .DefaultIfEmpty(domain.CatchAll.ObservedAt ?? _clock.GetUtcNow())
                 .Max();
             await observationStore.RecordAsync(new ValidationObservation(
                 domain.Domain,
@@ -660,7 +670,7 @@ public sealed class EmailValidator(
                 domain.CatchAll.Status,
                 domain.CatchAll.Confidence,
                 observedRecipientCategory,
-                mailbox.Evidence?.Timestamp ?? DateTimeOffset.UtcNow,
+                mailbox.Evidence?.Timestamp ?? _clock.GetUtcNow(),
                 mailbox.Evidence?.ElapsedMilliseconds ?? (long)mailbox.ConnectionDuration.TotalMilliseconds,
                 GatewayProvider: domain.Provider.GatewayProvider,
                 TopologyFingerprint: domain.Provider.TopologyFingerprint,

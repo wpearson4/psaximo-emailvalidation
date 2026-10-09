@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Infrastructure;
 
-public sealed class MailRoutingAnalyzer(IDnsMailResolver resolver) : IMailRoutingAnalyzer
+public sealed class MailRoutingAnalyzer(IDnsMailResolver resolver, TimeProvider? timeProvider = null) : IMailRoutingAnalyzer
 {
     public async Task<MailRoutingIntelligence> AnalyzeAsync(
         string domain,
@@ -29,7 +29,7 @@ public sealed class MailRoutingAnalyzer(IDnsMailResolver resolver) : IMailRoutin
             dns.Ipv4Addresses ?? [],
             dns.Ipv6Addresses ?? [],
             dns.TimeToLive,
-            DateTimeOffset.UtcNow,
+            (timeProvider ?? TimeProvider.System).GetUtcNow(),
             dns.Error,
             dns.Duration);
     }
@@ -38,7 +38,7 @@ public sealed class MailRoutingAnalyzer(IDnsMailResolver resolver) : IMailRoutin
 internal sealed class DnsSecurityAnalyzer(
     IDnsWireQueryClient dns,
     IOptions<EmailValidationOptions> options,
-    ILogger<DnsSecurityAnalyzer> logger) : IDnsSecurityAnalyzer
+    ILogger<DnsSecurityAnalyzer> logger, TimeProvider? timeProvider = null) : IDnsSecurityAnalyzer
 {
     private static readonly Meter Meter = new("EmailValidation.DnsSecurity", "1.0.0");
     private static readonly Counter<long> SecureCount = Meter.CreateCounter<long>("dnssec_secure");
@@ -51,7 +51,7 @@ internal sealed class DnsSecurityAnalyzer(
     {
         if (!_options.Enabled)
             return new(DnsSecurityState.Unknown, IntelligenceAvailability.NotAvailable,
-                DateTimeOffset.UtcNow, "DNSSEC analysis is disabled.");
+                (timeProvider ?? TimeProvider.System).GetUtcNow(), "DNSSEC analysis is disabled.");
         try
         {
             var validated = await dns.QueryAsync(domain, DnsRecordType.DnsKey, dnssec: true,
@@ -60,7 +60,7 @@ internal sealed class DnsSecurityAnalyzer(
             {
                 SecureCount.Add(1);
                 return new(DnsSecurityState.Secure, IntelligenceAvailability.Available,
-                    DateTimeOffset.UtcNow, "The configured recursive resolver returned authenticated data.");
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), "The configured recursive resolver returned authenticated data.");
             }
             if (validated.ResponseCode == 2)
             {
@@ -68,15 +68,15 @@ internal sealed class DnsSecurityAnalyzer(
                     checkingDisabled: true, cancellationToken).ConfigureAwait(false);
                 if (uncheckedResponse.ResponseCode == 0 && uncheckedResponse.HasAnswer(DnsRecordType.DnsKey))
                     return new(DnsSecurityState.Bogus, IntelligenceAvailability.Degraded,
-                        DateTimeOffset.UtcNow, "Validation failed while unchecked DNSKEY data remained available.");
+                        (timeProvider ?? TimeProvider.System).GetUtcNow(), "Validation failed while unchecked DNSKEY data remained available.");
                 return new(DnsSecurityState.Indeterminate, IntelligenceAvailability.Degraded,
-                    DateTimeOffset.UtcNow, "The recursive resolver returned a server failure that could not be attributed conclusively.");
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), "The recursive resolver returned a server failure that could not be attributed conclusively.");
             }
             if (validated.ResponseCode == 0 && !validated.HasAnswer(DnsRecordType.DnsKey))
                 return new(DnsSecurityState.NotPresent, IntelligenceAvailability.Available,
-                    DateTimeOffset.UtcNow, "No DNSKEY was observed at the domain apex.");
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), "No DNSKEY was observed at the domain apex.");
             return new(DnsSecurityState.Indeterminate, IntelligenceAvailability.Degraded,
-                DateTimeOffset.UtcNow, $"The recursive resolver returned DNS response code {validated.ResponseCode} without authenticated data.");
+                (timeProvider ?? TimeProvider.System).GetUtcNow(), $"The recursive resolver returned DNS response code {validated.ResponseCode} without authenticated data.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -87,7 +87,7 @@ internal sealed class DnsSecurityAnalyzer(
             FailureCount.Add(1);
             logger.LogWarning("DNSSEC analysis failed for {Domain} ({ErrorType})", domain, exception.GetType().Name);
             return new(DnsSecurityState.Indeterminate, IntelligenceAvailability.Failed,
-                DateTimeOffset.UtcNow, "DNSSEC state could not be obtained from the configured resolver.");
+                (timeProvider ?? TimeProvider.System).GetUtcNow(), "DNSSEC state could not be obtained from the configured resolver.");
         }
     }
 }
@@ -95,7 +95,7 @@ internal sealed class DnsSecurityAnalyzer(
 internal sealed class EmailAuthenticationAnalyzer(
     IDnsWireQueryClient dns,
     IOptions<EmailValidationOptions> options,
-    ILogger<EmailAuthenticationAnalyzer> logger) : IEmailAuthenticationAnalyzer
+    ILogger<EmailAuthenticationAnalyzer> logger, TimeProvider? timeProvider = null) : IEmailAuthenticationAnalyzer
 {
     private static readonly Meter Meter = new("EmailValidation.Authentication", "1.0.0");
     private static readonly Counter<long> SpfPresent = Meter.CreateCounter<long>("spf_present");
@@ -106,7 +106,7 @@ internal sealed class EmailAuthenticationAnalyzer(
         string domain,
         CancellationToken cancellationToken = default)
     {
-        var observedAt = DateTimeOffset.UtcNow;
+        var observedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         var spfTask = _options.SpfEnabled
             ? LookupTxtAsync(domain, cancellationToken)
             : Task.FromResult<DnsWireResponse?>(null);

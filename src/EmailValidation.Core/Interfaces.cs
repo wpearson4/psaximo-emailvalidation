@@ -137,6 +137,10 @@ public interface IDomainIntelligenceService
     Task UpdateRecipientBehaviorAsync(
         DomainIntelligence intelligence,
         CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    Task<DomainIntelligenceAcquisition> AcquireAsync(
+        string domain, bool allowCatchAllProbe, DateTimeOffset evidenceObservedAfter,
+        CancellationToken cancellationToken = default) => AcquireAsync(domain, allowCatchAllProbe, cancellationToken);
 }
 
 public sealed record DomainIntelligenceReuseDecision(

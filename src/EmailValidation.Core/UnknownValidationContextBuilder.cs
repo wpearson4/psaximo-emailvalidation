@@ -17,6 +17,18 @@ public static class UnknownValidationContextBuilder
         var reasons = result.ReasonCodes;
         var smtpReason = result.SmtpEvidence?.Intelligence?.Reason;
 
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.Timeout ||
+            (result.DomainIntelligence is null && reasons.Contains(ReasonCode.DnsTimeout)))
+            return Create(result, UnknownCause.DnsTimeout,
+                "The domain lookup timed out before mail routing could be established.", true,
+                "Retry after resolver or network connectivity recovers.", category);
+
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.Failure ||
+            (result.DomainIntelligence is null && reasons.Contains(ReasonCode.DnsFailure)))
+            return Create(result, UnknownCause.DnsFailure,
+                "The domain lookup failed without definitive evidence that the domain is invalid.", true,
+                "Retry after checking resolver health and DNS connectivity.", category);
+
         if (smtpReason is SmtpNormalizedReason.NoEligibleOutboundIdentity or
             SmtpNormalizedReason.OutboundIdentityDnsNotReady or
             SmtpNormalizedReason.OutboundIdentityConfigurationInvalid)
@@ -41,16 +53,6 @@ public static class UnknownValidationContextBuilder
                 false,
                 "Configure or restore a healthy authorized probe sender, then start a new validation.",
                 category);
-
-        if (reasons.Contains(ReasonCode.DnsTimeout))
-            return Create(result, UnknownCause.DnsTimeout,
-                "The domain lookup timed out before mail routing could be established.", true,
-                "Retry after resolver or network connectivity recovers.", category);
-
-        if (reasons.Contains(ReasonCode.DnsFailure))
-            return Create(result, UnknownCause.DnsFailure,
-                "The domain lookup failed without definitive evidence that the domain is invalid.", true,
-                "Retry after checking resolver health and DNS connectivity.", category);
 
         if (category == SmtpResponseCategory.LocalCooldown || reasons.Contains(ReasonCode.LocalCooldown))
             return Create(result, UnknownCause.LocalCooldown,

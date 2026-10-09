@@ -48,7 +48,8 @@ public enum ValidationReuseRejectionReason
     ResultNotReusable,
     Stale,
     RecipientBehavior,
-    ProviderStrategy
+    ProviderStrategy,
+    FreshObservationRequired
 }
 
 public sealed record ValidationReuseDecision(

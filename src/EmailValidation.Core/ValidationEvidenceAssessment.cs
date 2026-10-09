@@ -12,8 +12,9 @@ public static class ValidationEvidenceAssessment
         SmtpProbeResult probe,
         ProviderValidationResult provider)
     {
-        if (domain.Dns.Status == DnsStatus.DomainNotFound || domain.Dns.ExplicitNullMx ||
-            !domain.Dns.MxPresent || domain.MailInfrastructure.Status == MailInfrastructureStatus.Unroutable)
+        if (domain.Dns.IsTransient) return EvidenceQuality.Partial;
+        if (domain.Dns.Status == DnsStatus.DomainNotFound || domain.Dns.HasDefinitiveNoRoute ||
+            domain.MailInfrastructure.Status == MailInfrastructureStatus.Unroutable)
             return EvidenceQuality.Conclusive;
         if (provider.ReasonCodes.Contains(ReasonCode.MxResultsConflicting))
             return EvidenceQuality.Partial;

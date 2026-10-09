@@ -8,6 +8,74 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class DomainIntelligencePlatformTests
 {
+    [Theory]
+    [InlineData(DnsStatus.Success, 0)]
+    [InlineData(DnsStatus.Success, 30)]
+    [InlineData(DnsStatus.Timeout, 3600)]
+    public async Task LegacyStorageRenewedExpiry_DoesNotMakeOldEvidenceFresh(DnsStatus status, int ttl)
+    {
+        var clock = new EvidenceClock();
+        using var service = CreateService(new TimedRouting(clock, status, ttl), new CountingCatchAllDetector(),
+            new StickyDomainCache(), FreshOptions(), clock);
+        var first = (await service.AcquireAsync("example.test", false)).Intelligence;
+        var legacy = first with
+        {
+            RoutingEvidence = null, ProviderEvidence = null, AuthenticationEvidence = null,
+            EvidenceExpiresAt = clock.GetUtcNow().AddHours(24)
+        };
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.False(new DomainIntelligenceFreshnessPolicy(Options.Create(FreshOptions()))
+            .Evaluate(legacy, null, clock.GetUtcNow()).CanReuse);
+    }
+
+    [Theory]
+    [InlineData(DnsStatus.Success, 0, 0)]
+    [InlineData(DnsStatus.Success, 30, 30)]
+    [InlineData(DnsStatus.Success, -1, 60)]
+    [InlineData(DnsStatus.Timeout, -1, 5)]
+    [InlineData(DnsStatus.Failure, 3600, 5)]
+    [InlineData(DnsStatus.DomainNotFound, 30, 30)]
+    public async Task RoutingExpiry_IsBoundedByObservedEvidence(DnsStatus status, int ttl, int expectedSeconds)
+    {
+        var clock = new EvidenceClock();
+        using var service = CreateService(new TimedRouting(clock, status, ttl), new CountingCatchAllDetector(),
+            new StickyDomainCache(), FreshOptions(), clock);
+        var result = await service.AcquireAsync("example.test", false);
+        Assert.Equal(clock.GetUtcNow().AddSeconds(expectedSeconds), result.Intelligence.EvidenceExpiresAt);
+    }
+
+    [Fact]
+    public async Task BehaviorRefresh_DoesNotRenewRoutingObservationOrExpiry()
+    {
+        var clock = new EvidenceClock();
+        var cache = new StickyDomainCache();
+        using var service = CreateService(new TimedRouting(clock, DnsStatus.Success, 30),
+            new CountingCatchAllDetector(), cache, FreshOptions(), clock);
+        var baseline = await service.AcquireAsync("example.test", false);
+        clock.Advance(TimeSpan.FromSeconds(10));
+        var refreshed = await service.AcquireAsync("example.test", true);
+        Assert.Equal(baseline.Intelligence.ObservedAt, refreshed.Intelligence.ObservedAt);
+        Assert.Equal(baseline.Intelligence.EvidenceExpiresAt, refreshed.Intelligence.EvidenceExpiresAt);
+        await service.UpdateRecipientBehaviorAsync(refreshed.Intelligence);
+        Assert.Equal(baseline.Intelligence.EvidenceExpiresAt, (await cache.GetAsync("example.test"))!.EvidenceExpiresAt);
+    }
+
+    private sealed class EvidenceClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan duration) => _now += duration;
+    }
+
+    private sealed class TimedRouting(TimeProvider clock, DnsStatus status, int ttl) : IMailRoutingAnalyzer
+    {
+        public Task<MailRoutingIntelligence> AnalyzeAsync(string domain, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Routing(domain, "mx.example.test") with
+            {
+                Status = status, ObservedAtUtc = clock.GetUtcNow(),
+                TimeToLive = ttl < 0 ? null : TimeSpan.FromSeconds(ttl)
+            });
+    }
     [Fact]
     public void DomainAssembly_DoesNotReferenceApplicationInfrastructureOrHosts()
     {
@@ -400,7 +468,8 @@ public sealed class DomainIntelligencePlatformTests
         IMailRoutingAnalyzer routing,
         ICatchAllDetector catchAll,
         IDomainValidationCache cache,
-        EmailValidationOptions settings)
+        EmailValidationOptions settings,
+        TimeProvider? clock = null)
     {
         var options = Options.Create(settings);
         return new DomainIntelligenceService(
@@ -416,7 +485,7 @@ public sealed class DomainIntelligencePlatformTests
             new DomainIntelligenceFreshnessPolicy(options),
             new ValidationPersistenceMetrics(),
             options,
-            TimeProvider.System,
+            clock ?? TimeProvider.System,
             NullLogger<DomainIntelligenceService>.Instance);
     }
 

@@ -15,6 +15,80 @@ public sealed class ValidationReuseAndSingleFlightTests
         ["one@example.test", "two@example.test", "three@example.test"];
 
     [Fact]
+    public async Task PersistentDomainWrite_PreservesAbsoluteEvidenceExpiry()
+    {
+        var store = new TrackingStore();
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var original = Domain(clock, "example.test") with { EvidenceExpiresAt = clock.GetUtcNow().AddSeconds(30) };
+        var cache = new PersistentDomainValidationCache(store);
+        await cache.StoreAsync(original, TimeSpan.FromHours(24));
+        var reloaded = await new PersistentDomainValidationCache(store).GetAsync(original.Domain);
+        Assert.Equal(original.ObservedAt, reloaded!.ObservedAt);
+        Assert.Equal(original.EvidenceExpiresAt, reloaded.EvidenceExpiresAt);
+    }
+
+    [Fact]
+    public async Task DurableReloadAndBehaviorWrite_CannotExtendRoutingTtl()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"email-evidence-clock-{Guid.NewGuid():N}");
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var options = Options.Create(new EmailValidationOptions
+        {
+            Persistence = new PersistenceOptions { Enabled = true, StoragePath = directory }
+        });
+        var original = Domain(clock, "example.test") with
+        {
+            EvidenceExpiresAt = clock.GetUtcNow().AddSeconds(30),
+            RoutingEvidence = new(clock.GetUtcNow(), clock.GetUtcNow().AddSeconds(30))
+        };
+        try
+        {
+            var cache = new PersistentDomainValidationCache(new JsonValidationIntelligenceStore(options), options, clock);
+            await cache.StoreAsync(original, TimeSpan.FromSeconds(30));
+            clock.Advance(TimeSpan.FromSeconds(10));
+            await cache.StoreAsync(original with { CatchAll = original.CatchAll with { ObservedAt = clock.GetUtcNow() } },
+                TimeSpan.FromHours(24));
+            var restarted = new PersistentDomainValidationCache(new JsonValidationIntelligenceStore(options), options, clock);
+            var loaded = await restarted.GetAsync(original.Domain);
+            Assert.Equal(original.RoutingEvidence, loaded!.RoutingEvidence);
+            Assert.Equal(original.EvidenceExpiresAt, loaded.EvidenceExpiresAt);
+            clock.Advance(TimeSpan.FromSeconds(21));
+            Assert.False(restarted.TryGet(original.Domain, out _));
+            Assert.Equal(original.ObservedAt, (await restarted.GetAsync(original.Domain))!.ObservedAt);
+            Assert.True(DomainEvidenceFreshness.ExpiresAt(loaded, options.Value.DomainIntelligence) < clock.GetUtcNow());
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FiveSecondRetry_BypassesTwoMinuteTransientReuse()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var domain = Domain(clock, "example.test");
+        var original = Result("person@example.test", clock.GetUtcNow(), domain) with
+        {
+            Status = EmailValidationStatus.Unknown,
+            Checks = new EmailValidationChecks { SyntaxValid = true, DomainExists = true, MxPresent = true,
+                Mailbox = SmtpMailboxStatus.TemporaryFailure },
+            ReasonCodes = [ReasonCode.TemporarySmtpFailure]
+        };
+        var store = new TrackingStore { Domain = domain, Mailbox = Mailbox(original, clock.GetUtcNow()) };
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, store, clock);
+        await validator.ValidateAsync(original.Email, new EmailValidationRequest(true));
+        Assert.Equal(0, executor.Calls);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        await validator.ValidateAsync(original.Email, new EmailValidationRequest(true)
+        {
+            EvidenceObservedAfter = original.Metadata!.ValidatedAt
+        });
+        Assert.Equal(1, executor.Calls);
+    }
+
+    [Fact]
     public async Task FreshLiveResult_PopulatesMemoryAndAvoidsPersistenceOnEquivalentRequest()
     {
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero));

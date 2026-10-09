@@ -11,6 +11,48 @@ public sealed class EmailValidatorTests
     private static readonly string[] SameDomainEmails =
         ["a@example.com", "b@example.com", "c@example.com"];
 
+    [Theory]
+    [InlineData(DnsStatus.Timeout, ReasonCode.DnsTimeout, DetailedStatus.Timeout)]
+    [InlineData(DnsStatus.Failure, ReasonCode.DnsFailure, DetailedStatus.TemporaryFailure)]
+    public async Task TransientDns_RemainsInconclusiveAcrossValidationPresentationAndRetry(
+        DnsStatus status, ReasonCode reason, DetailedStatus detail)
+    {
+        var settings = LiveSettings();
+        settings.Revalidation.Enabled = true;
+        var result = await CreateValidator(new OutcomeDns(status), settings)
+            .ValidateAsync("person@example.com", new EmailValidationRequest(true));
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(reason, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.NoMailRouting, result.ReasonCodes);
+        Assert.Equal(EvidenceQuality.Partial, result.EvidenceQuality);
+        Assert.Equal(detail, ValidationSubStatusMapper.Map(result));
+        Assert.True(result.UnknownContext?.Retryable);
+        var options = Options.Create(settings);
+        Assert.True(new RevalidationPolicy(new ProviderPolicyResolver(options), options)
+            .Evaluate(result, new(1)).ShouldRetry);
+        var contradictory = result with { ReasonCodes = [ReasonCode.NoMailRouting] };
+        Assert.True(new RevalidationPolicy(new ProviderPolicyResolver(options), options)
+            .Evaluate(contradictory, new(1)).ShouldRetry);
+        Assert.Equal(result.UnknownContext!.Cause, UnknownValidationContextBuilder.Build(contradictory)!.Cause);
+    }
+
+    [Theory]
+    [InlineData(DnsStatus.Success)]
+    [InlineData(DnsStatus.DomainNotFound)]
+    public async Task DefinitiveDns_RemainsInvalid(DnsStatus status)
+    {
+        var result = await CreateValidator(new OutcomeDns(status))
+            .ValidateAsync("person@example.com", new EmailValidationRequest());
+        Assert.Equal(EmailValidationStatus.Invalid, result.Status);
+        Assert.Equal(EvidenceQuality.Conclusive, result.EvidenceQuality);
+    }
+
+    private sealed class OutcomeDns(DnsStatus status) : IDnsMailResolver
+    {
+        public Task<DnsLookupResult> ResolveAsync(string domain, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DnsLookupResult(status, status == DnsStatus.Success, [], false, TimeSpan.Zero));
+    }
+
     [Fact]
     public async Task InvalidSyntax_ShortCircuitsNetworkAndReturnsSpecificReason()
     {
@@ -704,14 +746,15 @@ public sealed class EmailValidatorTests
         Assert.Equal(["mx1.example.com", "mx2.example.com"], result.MxValidation?.HostsAttempted);
     }
 
-    private static EmailValidator CreateValidator(
+    internal static EmailValidator CreateValidator(
         IDnsMailResolver dns,
         EmailValidationOptions? settings = null,
         IValidationObservationStore? observationStore = null,
         ICatchAllDetector? catchAll = null,
         ISmtpMailboxProbe? smtp = null,
         IDomainValidationCache? cache = null,
-        IValidationPersistenceMetrics? metrics = null)
+        IValidationPersistenceMetrics? metrics = null,
+        TimeProvider? clock = null)
     {
         settings ??= new EmailValidationOptions();
         var options = Microsoft.Extensions.Options.Options.Create(settings);
@@ -721,7 +764,7 @@ public sealed class EmailValidatorTests
         var providerDetector = new MailProviderDetector();
         var planBuilder = new ValidationPlanBuilder(options);
         var domainService = new DomainIntelligenceService(
-            new MailRoutingAnalyzer(dns),
+            new MailRoutingAnalyzer(dns, clock),
             new UnknownDnsSecurityAnalyzer(),
             new UnknownAuthenticationAnalyzer(),
             new UnknownDisposableProvider(),
@@ -733,7 +776,7 @@ public sealed class EmailValidatorTests
             new DomainIntelligenceFreshnessPolicy(options),
             persistenceMetrics,
             options,
-            TimeProvider.System,
+            clock ?? TimeProvider.System,
             NullLogger<DomainIntelligenceService>.Instance);
         IMailProviderStrategy[] strategies =
         [
@@ -746,7 +789,7 @@ public sealed class EmailValidatorTests
             new EmailClassificationEngine(), new MailProviderStrategyResolver(strategies),
             observationStore ?? new InMemoryValidationObservationStore(), new HistoricalSignalAggregator(),
             new ResultEvaluator(), new SmtpSessionBudget(), persistenceMetrics,
-            domainService, new SmtpBannerProviderDetector(), options, NullLogger<EmailValidator>.Instance);
+            domainService, new SmtpBannerProviderDetector(), options, NullLogger<EmailValidator>.Instance, timeProvider: clock);
     }
 
     private sealed class UnknownDnsSecurityAnalyzer : IDnsSecurityAnalyzer
@@ -1152,6 +1195,7 @@ public sealed class EmailValidatorTests
         },
         ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
         EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(50),
+        RoutingEvidence = new(DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow.AddMinutes(50)),
         StrategyVersion = "1.2.0",
         IntelligencePolicyVersion = "2.0.0"
     };

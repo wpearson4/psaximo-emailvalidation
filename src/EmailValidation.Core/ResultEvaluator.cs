@@ -80,12 +80,18 @@ public sealed class ResultEvaluator : IResultEvaluator
         List<ReasonCode> reasons,
         List<EvidenceProvenance> provenance)
     {
+        if (domain.Dns.IsTransient)
+        {
+            Add(details, domain.Dns.Status == DnsStatus.Timeout ? DetailedStatus.Timeout : DetailedStatus.TemporaryFailure);
+            return;
+        }
         if (domain.Dns.Status == DnsStatus.DomainNotFound)
         {
             Add(details, DetailedStatus.DomainNotFound);
             provenance.Add(new("Domain", EvidenceSource.Dns, 0.99, "DNS returned NXDOMAIN."));
+            return;
         }
-        if (domain.Dns.ExplicitNullMx || !domain.Dns.MxPresent)
+        if (domain.Dns.HasDefinitiveNoRoute)
         {
             Add(details, DetailedStatus.NoMailRouting);
             reasons.Add(ReasonCode.NoMailRouting);
@@ -246,14 +252,14 @@ public sealed class ResultEvaluator : IResultEvaluator
     private static BounceRisk DeriveBounceRisk(
         EmailValidationChecks checks,
         DomainIntelligence domain,
-        ProviderValidationResult provider) => provider.EffectiveCategory switch
+        ProviderValidationResult provider) => domain.Dns.IsTransient ? BounceRisk.Unknown : provider.EffectiveCategory switch
         {
             SmtpResponseCategory.RecipientRejected => BounceRisk.High,
             SmtpResponseCategory.MailboxFull => BounceRisk.Moderate,
             SmtpResponseCategory.Accepted when checks.CatchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll => BounceRisk.Low,
             SmtpResponseCategory.Accepted or SmtpResponseCategory.GatewayAccepted => BounceRisk.Moderate,
-            _ when domain.Dns.ExplicitNullMx || !domain.Dns.MxPresent ||
-                domain.MailInfrastructure.Status == MailInfrastructureStatus.Unroutable => BounceRisk.High,
+            _ when domain.Dns.Status == DnsStatus.DomainNotFound || domain.Dns.HasDefinitiveNoRoute ||
+                (domain.Dns.Status == DnsStatus.Success && domain.MailInfrastructure.Status == MailInfrastructureStatus.Unroutable) => BounceRisk.High,
             _ => BounceRisk.Unknown
         };
 

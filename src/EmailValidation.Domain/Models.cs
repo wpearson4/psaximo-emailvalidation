@@ -140,6 +140,10 @@ public sealed record DnsLookupResult(
     IReadOnlyList<string>? Ipv4Addresses = null,
     IReadOnlyList<string>? Ipv6Addresses = null)
 {
+    [JsonIgnore]
+    public bool IsTransient => Status is DnsStatus.Timeout or DnsStatus.Failure;
+    [JsonIgnore]
+    public bool HasDefinitiveNoRoute => Status == DnsStatus.Success && (ExplicitNullMx || !MxPresent);
     public bool MxPresent => MxRecords.Count > 0;
     public bool ExplicitMxPresent => MxPresent && !UsedAddressFallback;
 }
@@ -272,6 +276,7 @@ public sealed record CatchAllDetectionResult(
     double Confidence = 0)
 {
     public const string CurrentRecipientBehaviorEvidenceContractVersion = "recipient-behavior-evidence-v2";
+    public DateTimeOffset? EvidenceExpiresAt { get; init; }
     public bool RandomRecipientAccepted => Accepted > 0;
     public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
     public int IndependentObservationCount { get; init; }
@@ -411,6 +416,7 @@ public sealed record EmailValidationResult
     [JsonIgnore]
     public EmailValidationPrediction? Prediction { get; init; }
     public EvidenceQuality EvidenceQuality { get; init; } = EvidenceQuality.Unknown;
+    public DateTimeOffset? MailboxEvidenceObservedAt { get; init; }
     public CatchAllClassification CatchAllClassification { get; init; } = CatchAllClassification.None;
     public bool ProbeAttempted { get; init; }
     public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;
@@ -490,7 +496,11 @@ public sealed record EmailValidationRequest(
     string? ValidationId = null,
     string? TenantId = null,
     string? ConsumerId = null,
-    string? JobId = null);
+    string? JobId = null)
+{
+    /// <summary>Durable observation retry boundary; cache access is not a new observation.</summary>
+    public DateTimeOffset? EvidenceObservedAfter { get; init; }
+}
 
 public sealed record SmtpThrottleContext(
     string Domain,

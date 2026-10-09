@@ -15,6 +15,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private static readonly Meter Meter = new("EmailValidation.OutboundSmtp", "1.0.0");
     private static readonly Counter<long> BindFailures = Meter.CreateCounter<long>("outbound_identity_bind_failure_total");
     private readonly SmtpOptions _options;
+    private readonly TimeProvider _clock;
     private readonly ILogger<SmtpMailboxProbe> _logger;
     private readonly ISmtpProbeThrottle _throttle;
     private readonly ISmtpResponseClassifier _responseClassifier;
@@ -40,9 +41,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         IOutboundIdentitySelector outboundIdentitySelector,
         IOutboundIdentityHealthStore outboundIdentityHealthStore,
         ISmtpConnectionFactory? connectionFactory = null,
-        ISmtpReputationProtection? reputationProtection = null)
+        ISmtpReputationProtection? reputationProtection = null,
+        TimeProvider? timeProvider = null)
     {
         _options = options.Value.Smtp;
+        _clock = timeProvider ?? TimeProvider.System;
         _logger = logger;
         _throttle = throttle;
         _responseClassifier = responseClassifier;
@@ -130,7 +133,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                     ConnectionAttempted: true,
                     RcptAttempted: lastResult.SessionEvidence?.Stages.Any(
                         stage => stage.Stage == SmtpCommand.RcptTo) == true,
-                    DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                    _clock.GetUtcNow()), cancellationToken).ConfigureAwait(false);
             }
             await RecordOutboundIdentityOutcomeAsync(
                 outboundIdentity, provider, lastResult, cancellationToken).ConfigureAwait(false);
@@ -521,7 +524,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             Encoding.UTF8.GetBytes(probeSender.Trim().ToLowerInvariant()))).ToLowerInvariant();
         return new(RecipientDomain: recipientDomain, OutboundIdentityId: outboundIdentity?.IdentityId,
             SenderIdentityId: senderHash,
-            ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+            ObservedAtUtc: _clock.GetUtcNow(), StrategyVersion: _strategyVersion);
     }
 
     internal static bool HasEhloCapability(string response, string capability) =>
@@ -572,7 +575,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             result.Evidence?.Category ?? SmtpResponseCategory.Unknown,
             scope,
             impact,
-            DateTimeOffset.UtcNow,
+            _clock.GetUtcNow(),
             result.RetryAfter,
             result.LocalBindFailure
                 ? "LocalBindFailure"
@@ -606,7 +609,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 SmtpCommand.Connect, null, null, null, normalizedReason,
                 SmtpEvidenceStrength.High, provider, _classificationVersion,
                 normalizedReason.ToString(), evidence.SanitizedResponse,
-                ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+                ObservedAtUtc: _clock.GetUtcNow(), StrategyVersion: _strategyVersion);
         evidence = evidence with
         {
             Intelligence = intelligence,
@@ -616,7 +619,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             TimeSpan.Zero, 0, evidence)
         {
             Disposition = SmtpProbeDisposition.LocalCooldown,
-            RetryAfter = DateTimeOffset.UtcNow.AddMinutes(5)
+            RetryAfter = _clock.GetUtcNow().AddMinutes(5)
         };
     }
 
@@ -639,7 +642,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 SmtpCommand.Connect, null, null, null, SmtpNormalizedReason.ReputationPolicyDeferred,
                 SmtpEvidenceStrength.High, provider, _classificationVersion,
                 "smtp-reputation-policy-deferred", evidence.SanitizedResponse,
-                ObservedAtUtc: DateTimeOffset.UtcNow, StrategyVersion: _strategyVersion);
+                ObservedAtUtc: _clock.GetUtcNow(), StrategyVersion: _strategyVersion);
         evidence = evidence with { Intelligence = intelligence, IntelligenceMode = _intelligenceMode };
         return new(SmtpMailboxStatus.NotAttempted, null, evidence.SanitizedResponse,
             TimeSpan.Zero, 0, evidence)
@@ -669,7 +672,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             _logger.LogError(exception,
                 "SMTP reputation policy evaluation failed; applying mode-appropriate safe fallback");
             var enforced = _reputationOptions.Mode == SmtpReputationProtectionMode.Enforced;
-            var now = DateTimeOffset.UtcNow;
+            var now = _clock.GetUtcNow();
             return new SmtpReputationEvidence
             {
                 Decision = enforced ? SmtpProbeBudgetDecision.SafeFallback : SmtpProbeBudgetDecision.Allow,

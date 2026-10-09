@@ -81,6 +81,7 @@ public sealed class ValidationSingleFlight : IValidationSingleFlight
 public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions> options) : IValidationResultReusePolicy
 {
     private readonly ResultReuseOptions _options = options.Value.ResultReuse;
+    private readonly DomainIntelligenceOptions _domainOptions = options.Value.DomainIntelligence;
 
     public ValidationReuseDecision Evaluate(
         MailboxIntelligence intelligence,
@@ -91,13 +92,16 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
     {
         if (!_options.Enabled)
             return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.Disabled);
+        if (request.EvidenceObservedAfter is not null)
+            return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.FreshObservationRequired);
         if (request.EnableSmtp && !intelligence.UsedLiveSmtp)
             return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.SmtpEvidenceRequired);
         if (request.Verbose && intelligence.LastResult.Diagnostics is null)
             return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.VerboseDiagnosticsUnavailable);
         if (intelligence.Policy != currentPolicy)
             return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.PolicyVersion);
-        if (currentDomain is null || currentDomain.EvidenceExpiresAt is not { } domainExpiresAt || domainExpiresAt <= now)
+        var domainExpiresAt = currentDomain is null ? DateTimeOffset.MinValue : DomainEvidenceFreshness.ExpiresAt(currentDomain, _domainOptions);
+        if (currentDomain is null || domainExpiresAt <= now)
             return Reject(ValidationReuseAction.RevalidateDomainAndMailbox, ValidationReuseRejectionReason.DomainStale);
         if (!string.Equals(currentDomain.Provider.TopologyFingerprint, intelligence.MxTopologyFingerprint, StringComparison.Ordinal))
             return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.MxTopology);
@@ -794,6 +798,9 @@ public static class ValidationSubStatusMapper
     {
         if (result.MailingRisk?.RiskReasons.Contains(MailingRiskReason.KnownSuppression) == true)
             return DetailedStatus.KnownSuppression;
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.Timeout) return DetailedStatus.Timeout;
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.Failure) return DetailedStatus.TemporaryFailure;
+        if (result.DomainIntelligence?.Dns.Status == DnsStatus.DomainNotFound) return DetailedStatus.DomainNotFound;
         if (result.MxValidation?.Consensus == MxConsensus.Conflicting ||
             result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting))
             return DetailedStatus.ConflictingMxEvidence;
@@ -1200,7 +1207,7 @@ public sealed class IntelligenceEmailValidator(
     }
 
     private string CreateExecutionKey(string normalizedEmail, EmailValidationRequest request) =>
-        $"{normalizedEmail}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|" +
+        $"{normalizedEmail}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|after:{request.EvidenceObservedAfter:O}|" +
         $"engine:{_policy.ValidationEngineVersion}|classification:{_policy.ClassificationPolicyVersion}|" +
         $"confidence:{_policy.ConfidenceModelVersion}|provider:{_policy.ProviderStrategyVersion}";
 

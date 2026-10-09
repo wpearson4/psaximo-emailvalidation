@@ -157,6 +157,7 @@ public sealed class CatchAllReusePlanningTests
         },
         ObservedAt = Now.AddMinutes(-10),
         EvidenceExpiresAt = Now.AddMinutes(50),
+        RoutingEvidence = new(Now.AddMinutes(-10), Now.AddMinutes(50)),
         StrategyVersion = Policy.ProviderStrategyVersion
     };
 
