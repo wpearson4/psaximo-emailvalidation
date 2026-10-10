@@ -15,6 +15,48 @@ public sealed class ValidationReuseAndSingleFlightTests
         ["one@example.test", "two@example.test", "three@example.test"];
 
     [Fact]
+    public async Task LocalPartCaseVariants_RequireIndependentValidation()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, new TrackingStore(), clock);
+        var upper = await validator.ValidateAsync("Person@EXAMPLE.test", new(true));
+        var lower = await validator.ValidateAsync("person@example.test", new(true));
+        Assert.Equal(2, executor.Calls);
+        Assert.Equal("Person@example.test", upper.NormalizedEmail);
+        Assert.Equal("person@example.test", lower.NormalizedEmail);
+    }
+
+    [Fact]
+    public async Task DomainCaseVariants_StillReuseMailboxEvidence()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, new TrackingStore(), clock);
+        await validator.ValidateAsync("Person@EXAMPLE.test", new(true));
+        await validator.ValidateAsync("Person@example.TEST", new(true));
+        Assert.Equal(1, executor.Calls);
+    }
+
+    [Theory]
+    [InlineData("person@example.test")]
+    [InlineData("Person@example.test")]
+    public async Task LegacyFoldedEvidence_RequiresFreshValidationForEveryRequestedVariant(string email)
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var domain = Domain(clock, "example.test");
+        var oldResult = Result("person@example.test", clock.GetUtcNow(), domain) with { MailboxKey = null };
+        var store = new TrackingStore { Domain = domain, Mailbox = Mailbox(oldResult, clock.GetUtcNow()) };
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, store, clock);
+        var refreshed = await validator.ValidateAsync(email, new(true));
+        Assert.Equal(1, executor.Calls);
+        Assert.Equal(MailboxIdentity.Create(email).Key, refreshed.MailboxKey);
+        Assert.Equal(email, refreshed.NormalizedEmail);
+        Assert.Equal(ValidationResultSource.LiveValidation, refreshed.Metadata!.ResultSource);
+    }
+
+    [Fact]
     public async Task PersistentDomainWrite_PreservesAbsoluteEvidenceExpiry()
     {
         var store = new TrackingStore();
@@ -96,7 +138,7 @@ public sealed class ValidationReuseAndSingleFlightTests
         var executor = new ImmediateExecutor(clock);
         var (validator, metrics) = CreateValidator(executor, store, clock);
 
-        var first = await validator.ValidateAsync(" Person@Example.Test ", new EmailValidationRequest(true));
+        var first = await validator.ValidateAsync(" person@Example.Test ", new EmailValidationRequest(true));
         var readsAfterLive = store.Reads;
         var second = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
 
@@ -173,7 +215,7 @@ public sealed class ValidationReuseAndSingleFlightTests
 
         var tasks = Enumerable.Range(0, callerCount)
             .Select(index => validator.ValidateAsync(
-                index % 2 == 0 ? " Person@Example.Test " : "person@example.test",
+                index % 2 == 0 ? " person@Example.Test " : "person@example.test",
                 new EmailValidationRequest(true)))
             .ToArray();
         await entries.AllEntered.WaitAsync(TimeSpan.FromSeconds(5));
@@ -722,7 +764,8 @@ public sealed class ValidationReuseAndSingleFlightTests
         IReadOnlyList<ReasonCode>? reasons = null) => new()
         {
             Email = email,
-            NormalizedEmail = email.Trim().ToLowerInvariant(),
+            NormalizedEmail = MailboxIdentity.Create(email).Address,
+            MailboxKey = MailboxIdentity.Create(email).Key,
             Status = status,
             Confidence = status == EmailValidationStatus.Unknown ? 0.4 : 0.95,
             Checks = new EmailValidationChecks
@@ -746,6 +789,7 @@ public sealed class ValidationReuseAndSingleFlightTests
     private static MailboxIntelligence Mailbox(EmailValidationResult result, DateTimeOffset validatedAt) => new()
     {
         NormalizedEmail = result.NormalizedEmail!,
+        MailboxKey = result.MailboxKey,
         PreviousStatus = result.Status,
         PreviousMailboxResult = result.Checks.Mailbox,
         PreviousConfidence = result.Confidence,

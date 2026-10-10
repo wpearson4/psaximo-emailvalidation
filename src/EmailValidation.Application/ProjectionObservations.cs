@@ -198,8 +198,10 @@ public sealed class ObservationEventFactory(
             var attempt = lifecycle.Attempts.LastOrDefault(item => item.AttemptNumber == lifecycle.AttemptNumber);
             if (attempt is not null)
             {
-                var emailCorrelation = await correlation.TryCreateAsync(
-                    lifecycle.Request.TenantId, lifecycle.NormalizedEmail, cancellationToken).ConfigureAwait(false);
+                var emailCorrelation = MailboxIdentity.Matches(lifecycle.MailboxKey, lifecycle.NormalizedEmail)
+                    ? await correlation.TryCreateAsync(
+                        lifecycle.Request.TenantId, lifecycle.NormalizedEmail, cancellationToken).ConfigureAwait(false)
+                    : null;
                 var result = lifecycle.CurrentResult;
                 var payload = new ValidationAttemptObservationV1(
                     lifecycle.ValidationId,

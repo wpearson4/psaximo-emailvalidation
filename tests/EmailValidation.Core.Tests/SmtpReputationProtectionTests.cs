@@ -13,6 +13,24 @@ public sealed class SmtpReputationProtectionTests
     private static readonly DateTimeOffset Now = new(2026, 8, 27, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public async Task MailboxBudget_SeparatesLocalCaseAndIgnoresLegacyFoldedState()
+    {
+        var store = new InMemorySmtpReputationStateStore();
+        var service = Service(Settings(SmtpReputationProtectionMode.Enforced), new ManualTimeProvider(Now), store);
+        Assert.Equal(SmtpProbeBudgetDecision.Allow, (await service.EvaluateAsync(Context("User@example.test"))).Decision);
+        Assert.Equal(SmtpProbeBudgetDecision.Allow, (await service.EvaluateAsync(Context("user@example.test"))).Decision);
+        Assert.Equal(SmtpProbeBudgetDecision.Delay, (await service.EvaluateAsync(Context("User@EXAMPLE.test"))).Decision);
+        var states = await store.GetManyAsync([
+            (SmtpReputationScopeType.Mailbox, MailboxIdentity.Create("User@example.test").Key),
+            (SmtpReputationScopeType.Mailbox, MailboxIdentity.Create("user@example.test").Key)]);
+        Assert.Equal(2, states.Count);
+        var legacyStore = new InMemorySmtpReputationStateStore();
+        Assert.True((await legacyStore.TrySaveAsync(states[0] with { ScopeId = "user@example.test" }, 0)).Applied);
+        var migrated = Service(Settings(SmtpReputationProtectionMode.Enforced), new ManualTimeProvider(Now), legacyStore);
+        Assert.Equal(SmtpProbeBudgetDecision.Allow, (await migrated.EvaluateAsync(Context("user@example.test"))).Decision);
+    }
+
+    [Fact]
     public async Task EnforcedMailboxBudget_DefersImmediateRepeatButNotAnotherMailbox()
     {
         var clock = new ManualTimeProvider(Now);

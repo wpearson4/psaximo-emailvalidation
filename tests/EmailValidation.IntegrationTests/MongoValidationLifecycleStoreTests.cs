@@ -3,6 +3,7 @@ using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
+using MongoDB.Bson;
 
 namespace EmailValidation.IntegrationTests;
 
@@ -36,6 +37,19 @@ public sealed class MongoValidationLifecycleStoreTests
 
         try
         {
+            var collection = database.GetCollection<BsonDocument>(collectionName);
+            await collection.Indexes.CreateOneAsync(new CreateIndexModel<BsonDocument>(
+                Builders<BsonDocument>.IndexKeys.Ascending("NormalizedEmail"),
+                new CreateIndexOptions<BsonDocument>
+                {
+                    Name = "ux_lifecycle_active_email", Unique = true,
+                    PartialFilterExpression = Builders<BsonDocument>.Filter.Eq("ResultState", (int)ValidationResultState.Provisional)
+                }));
+            await collection.InsertOneAsync(new BsonDocument
+            {
+                { "_id", "legacy-case-folded" }, { "NormalizedEmail", "person@example.test" },
+                { "ResultState", (int)ValidationResultState.Provisional }
+            });
             await store.InitializeAsync();
             await store.InitializeAsync();
             var indexes = await (await database.GetCollection<object>(collectionName).Indexes.ListAsync()).ToListAsync();
@@ -44,7 +58,13 @@ public sealed class MongoValidationLifecycleStoreTests
             var claimed = await store.TryClaimAsync(initial.ValidationId, TimeSpan.FromMinutes(1));
 
             Assert.True(inserted.Applied);
-            Assert.Contains(indexes, index => index["name"] == "ux_lifecycle_active_email");
+            Assert.DoesNotContain(indexes, index => index["name"] == "ux_lifecycle_active_email");
+            var upper = Lifecycle("Person@example.test");
+            Assert.True((await store.TrySaveAsync(upper, 0)).Applied);
+            Assert.Equal(upper.ValidationId, (await store.GetActiveByEmailAsync("Person@EXAMPLE.test"))!.ValidationId);
+            Assert.Equal(initial.ValidationId, (await store.GetActiveByEmailAsync("person@example.test"))!.ValidationId);
+            Assert.False((await store.TrySaveAsync(Lifecycle(), 0)).Applied);
+            Assert.Contains(indexes, index => index["name"] == "ux_lifecycle_active_mailbox_v2");
             Assert.NotNull(claimed);
             Assert.Equal($"{initial.ValidationId}:2", claimed.Message.MessageId);
 
@@ -84,14 +104,15 @@ public sealed class MongoValidationLifecycleStoreTests
         }
     }
 
-    private static ValidationLifecycle Lifecycle()
+    private static ValidationLifecycle Lifecycle(string email = "person@example.test")
     {
         var now = DateTimeOffset.UtcNow;
         var id = Guid.NewGuid().ToString("N");
         var result = new EmailValidationResult
         {
-            Email = "person@example.test",
-            NormalizedEmail = "person@example.test",
+            Email = email,
+            NormalizedEmail = email,
+            MailboxKey = MailboxIdentity.Create(email).Key,
             Status = EmailValidationStatus.Unknown,
             Confidence = 0.3,
             Checks = new EmailValidationChecks
@@ -117,6 +138,7 @@ public sealed class MongoValidationLifecycleStoreTests
         {
             ValidationId = id,
             NormalizedEmail = result.NormalizedEmail,
+            MailboxKey = result.MailboxKey,
             Request = new(true),
             ResultState = ValidationResultState.Provisional,
             AttemptNumber = 1,

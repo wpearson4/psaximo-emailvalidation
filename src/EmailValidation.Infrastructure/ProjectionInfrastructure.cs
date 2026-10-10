@@ -72,12 +72,18 @@ public sealed class HmacEmailCorrelationService(
             return ValueTask.FromResult<EmailCorrelation?>(null);
         }
 
-        var scopedValue = $"{tenantId ?? string.Empty}\n{normalizedEmail.Trim().ToLowerInvariant()}";
+        var isDomain = normalizedEmail.StartsWith("domain:", StringComparison.Ordinal);
+        var identity = MailboxIdentity.TryCreate(isDomain ? $"domain@{normalizedEmail[7..]}" : normalizedEmail);
+        if (identity is null) return ValueTask.FromResult<EmailCorrelation?>(null);
+        var correlationValue = isDomain ? $"domain:{identity.Address[7..]}" : identity.Key;
+        var scopedValue = $"{tenantId ?? string.Empty}\n{correlationValue}";
         var digest = HMACSHA256.HashData(
             Encoding.UTF8.GetBytes(_options.EmailHashKey),
             Encoding.UTF8.GetBytes(scopedValue));
         return ValueTask.FromResult<EmailCorrelation?>(new(
-            Convert.ToHexString(digest).ToLowerInvariant(), _options.EmailHashKeyVersion));
+            Convert.ToHexString(digest).ToLowerInvariant(),
+            isDomain ? _options.EmailHashKeyVersion :
+                $"{_options.EmailHashKeyVersion}:{MailboxIdentity.KeyVersion}:{MailboxIdentity.PolicyVersion}"));
     }
 }
 

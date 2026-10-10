@@ -2,6 +2,7 @@ using System.Text.Json;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 
@@ -47,13 +48,15 @@ public sealed class MongoValidationLifecycleStore :
                     .Descending(document => document.UpdatedAt),
                 new CreateIndexOptions { Name = "ix_lifecycle_email_state_updated" }),
             new CreateIndexModel<ValidationLifecycleDocument>(
-                Builders<ValidationLifecycleDocument>.IndexKeys.Ascending(document => document.NormalizedEmail),
+                Builders<ValidationLifecycleDocument>.IndexKeys.Ascending(document => document.MailboxKey),
                 new CreateIndexOptions<ValidationLifecycleDocument>
                 {
-                    Name = "ux_lifecycle_active_email",
+                    Name = "ux_lifecycle_active_mailbox_v2",
                     Unique = true,
+                    Collation = Collation.Simple,
                     PartialFilterExpression = Builders<ValidationLifecycleDocument>.Filter.Eq(
-                        document => document.ResultState, ValidationResultState.Provisional)
+                        document => document.ResultState, ValidationResultState.Provisional) &
+                        Builders<ValidationLifecycleDocument>.Filter.Type(document => document.MailboxKey, BsonType.String)
                 }),
             new CreateIndexModel<ValidationLifecycleDocument>(
                 Builders<ValidationLifecycleDocument>.IndexKeys
@@ -62,6 +65,7 @@ public sealed class MongoValidationLifecycleStore :
                 new CreateIndexOptions { Name = "ix_lifecycle_pending_dispatch" })
         };
         await _collection.Indexes.CreateManyAsync(indexes, cancellationToken).ConfigureAwait(false);
+        await MailboxIdentityIndexMigration.DropLegacyAsync(_collection, "ux_lifecycle_active_email", cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mongo validation lifecycle collection {Collection} initialized", _collection.CollectionNamespace.CollectionName);
     }
 
@@ -80,7 +84,7 @@ public sealed class MongoValidationLifecycleStore :
     {
         var filter = Builders<ValidationLifecycleDocument>.Filter.And(
             Builders<ValidationLifecycleDocument>.Filter.Eq(
-                item => item.NormalizedEmail, normalizedEmail.ToLowerInvariant()),
+                item => item.MailboxKey, MailboxIdentity.TryCreate(normalizedEmail)?.Key ?? normalizedEmail),
             Builders<ValidationLifecycleDocument>.Filter.Eq(
                 item => item.ResultState, ValidationResultState.Provisional));
         var document = await _collection.Find(filter)
@@ -280,6 +284,7 @@ public sealed class MongoValidationLifecycleStore :
         [BsonId]
         public required string Id { get; init; }
         public required string NormalizedEmail { get; init; }
+        public string? MailboxKey { get; init; }
         public ValidationResultState ResultState { get; init; }
         public int AttemptNumber { get; init; }
         public int MaximumAttempts { get; init; }
@@ -315,7 +320,8 @@ public sealed class MongoValidationLifecycleStore :
             return new()
             {
                 Id = lifecycle.ValidationId,
-                NormalizedEmail = lifecycle.NormalizedEmail.ToLowerInvariant(),
+                NormalizedEmail = MailboxIdentity.NormalizeOrOriginal(lifecycle.NormalizedEmail),
+                MailboxKey = lifecycle.MailboxKey,
                 ResultState = lifecycle.ResultState,
                 AttemptNumber = lifecycle.AttemptNumber,
                 MaximumAttempts = lifecycle.MaximumAttempts,

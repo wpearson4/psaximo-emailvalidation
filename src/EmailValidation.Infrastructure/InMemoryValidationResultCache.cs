@@ -12,7 +12,7 @@ public sealed class InMemoryValidationResultCache(
     TimeProvider timeProvider) : IValidationResultCache
 {
     private readonly object _sync = new();
-    private readonly Dictionary<string, CacheEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CacheEntry> _entries = new(StringComparer.Ordinal);
     private readonly Queue<CacheToken> _insertionOrder = new();
     private readonly int _sizeLimit = Math.Max(1, options.Value.ResultReuse.MemoryCacheSizeLimit);
     private long _version;

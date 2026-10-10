@@ -521,6 +521,7 @@ public sealed class ProductionIntelligenceTests
     {
         Email = "person@example.test",
         NormalizedEmail = "person@example.test",
+        MailboxKey = MailboxIdentity.Create("person@example.test").Key,
         Status = EmailValidationStatus.LikelyValid,
         Confidence = 0.9,
         ConfidenceType = ConfidenceType.Heuristic,
@@ -547,6 +548,7 @@ public sealed class ProductionIntelligenceTests
     private static MailboxIntelligence Mailbox(EmailValidationResult result, DateTimeOffset validatedAt) => new()
     {
         NormalizedEmail = result.NormalizedEmail!,
+        MailboxKey = result.MailboxKey,
         PreviousStatus = result.Status,
         PreviousMailboxResult = result.Checks.Mailbox,
         PreviousConfidence = result.Confidence,
@@ -568,7 +570,10 @@ public sealed class ProductionIntelligenceTests
         DateTimeOffset validatedAt) => new(
             "person@example.test", status, confidence, ConfidenceType.Heuristic,
             MailProvider.GenericSmtp, CatchAllStatus.NotCatchAll,
-            VerificationReliabilityLevel.High, policy, validatedAt, []);
+            VerificationReliabilityLevel.High, policy, validatedAt, [])
+        {
+            MailboxKey = MailboxIdentity.Create("person@example.test").Key
+        };
 
     private sealed class TestIntelligenceStore : IValidationIntelligenceStore
     {

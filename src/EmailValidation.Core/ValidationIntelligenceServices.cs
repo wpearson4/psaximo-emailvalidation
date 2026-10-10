@@ -9,7 +9,7 @@ namespace EmailValidation.Core;
 public sealed class ValidationSingleFlight : IValidationSingleFlight
 {
     private readonly ConcurrentDictionary<string, Flight> _operations =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
 
     public async Task<EmailValidationResult> ExecuteAsync(
         string key,
@@ -92,6 +92,10 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
     {
         if (!_options.Enabled)
             return Reject(ValidationReuseAction.CannotReuse, ValidationReuseRejectionReason.Disabled);
+        if (!MailboxIdentity.Matches(intelligence.MailboxKey, intelligence.NormalizedEmail) ||
+            !MailboxIdentity.Matches(intelligence.LastResult.MailboxKey, intelligence.LastResult.NormalizedEmail) ||
+            intelligence.MailboxKey != intelligence.LastResult.MailboxKey)
+            return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.MailboxIdentity);
         if (request.EvidenceObservedAfter is not null)
             return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.FreshObservationRequired);
         if (request.EnableSmtp && !intelligence.UsedLiveSmtp)
@@ -1023,6 +1027,7 @@ public sealed class IntelligenceEmailValidator(
         var domainTask = store.GetDomainAsync(normalizedDomain, cancellationToken);
         await Task.WhenAll(mailboxTask, domainTask).ConfigureAwait(false);
         var mailbox = await mailboxTask.ConfigureAwait(false);
+        if (mailbox?.MailboxKey != MailboxIdentity.Create(normalizedEmail).Key) mailbox = null;
         var domain = await domainTask.ConfigureAwait(false);
         var decision = mailbox is null
             ? new ValidationReuseDecision(
@@ -1110,7 +1115,8 @@ public sealed class IntelligenceEmailValidator(
             currentDomain = null;
         }
 
-        if (currentDomain is not null && cached.NormalizedEmail is not null && cached.Metadata is not null)
+        if (currentDomain is not null && cached.NormalizedEmail is not null && cached.Metadata is not null &&
+            key.StartsWith(MailboxIdentity.TryCreate(cached.NormalizedEmail)?.Key + "|", StringComparison.Ordinal))
         {
             var intelligence = ToMailboxIntelligence(
                 cached,
@@ -1207,7 +1213,7 @@ public sealed class IntelligenceEmailValidator(
     }
 
     private string CreateExecutionKey(string normalizedEmail, EmailValidationRequest request) =>
-        $"{normalizedEmail}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|after:{request.EvidenceObservedAfter:O}|" +
+        $"{MailboxIdentity.Create(normalizedEmail).Key}|smtp:{request.EnableSmtp}|verbose:{request.Verbose}|after:{request.EvidenceObservedAfter:O}|" +
         $"engine:{_policy.ValidationEngineVersion}|classification:{_policy.ClassificationPolicyVersion}|" +
         $"confidence:{_policy.ConfidenceModelVersion}|provider:{_policy.ProviderStrategyVersion}";
 
@@ -1219,6 +1225,7 @@ public sealed class IntelligenceEmailValidator(
         return new MailboxIntelligence
         {
             NormalizedEmail = result.NormalizedEmail!,
+            MailboxKey = result.MailboxKey,
             PreviousStatus = result.Status,
             PreviousMailboxResult = result.Checks.Mailbox,
             PreviousConfidence = result.Confidence,

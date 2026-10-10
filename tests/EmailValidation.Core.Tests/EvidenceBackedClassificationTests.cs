@@ -9,6 +9,14 @@ namespace EmailValidation.Core.Tests;
 public sealed class EvidenceBackedClassificationTests
 {
     [Fact]
+    public async Task LegacyResult_CannotBecomeCurrentMailboxTrainingEvidence()
+    {
+        var factory = new EmailValidationFeatureSnapshotFactory(new FakeCorrelationService(), TimeProvider.System);
+        var result = Result("person@example.test", DateTimeOffset.UtcNow) with { MailboxKey = null };
+        Assert.Null(await factory.CreateAsync(result, new(ValidationId: "legacy-validation")));
+    }
+
+    [Fact]
     public async Task OutcomeIngestion_IsIdempotent_PreservesConflicts_AndRejectsInvalidTime()
     {
         using var store = Store();
@@ -852,6 +860,7 @@ public sealed class EvidenceBackedClassificationTests
         {
             Email = email,
             NormalizedEmail = email,
+            MailboxKey = MailboxIdentity.Create(email).Key,
             Status = EmailValidationStatus.Valid,
             Confidence = 0.92,
             Checks = new EmailValidationChecks

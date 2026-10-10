@@ -49,7 +49,8 @@ public enum ValidationReuseRejectionReason
     Stale,
     RecipientBehavior,
     ProviderStrategy,
-    FreshObservationRequired
+    FreshObservationRequired,
+    MailboxIdentity
 }
 
 public sealed record ValidationReuseDecision(
@@ -73,6 +74,7 @@ public sealed record ValidationSingleFlightResult(
 
 public sealed record MailboxIntelligence
 {
+    public string? MailboxKey { get; init; }
     public required string NormalizedEmail { get; init; }
     public required EmailValidationStatus PreviousStatus { get; init; }
     public required SmtpMailboxStatus PreviousMailboxResult { get; init; }
@@ -103,7 +105,10 @@ public sealed record ValidationPredictionSnapshot(
     DateTimeOffset ValidatedAt,
     IReadOnlyList<ReasonCode> ReasonCodes,
     string? DomainType = null,
-    double EvidenceAgeHours = 0);
+    double EvidenceAgeHours = 0)
+{
+    public string? MailboxKey { get; init; }
+}
 
 public static class ValidationPredictionSnapshots
 {
@@ -123,7 +128,10 @@ public static class ValidationPredictionSnapshots
             result.Metadata.ValidatedAt,
             result.ReasonCodes.ToArray(),
             result.DomainIntelligence?.FreeEmailProvider == true ? "FreeEmail" : "CustomDomain",
-            Math.Max(0, (DateTimeOffset.UtcNow - result.Metadata.ValidatedAt).TotalHours));
+            Math.Max(0, (DateTimeOffset.UtcNow - result.Metadata.ValidatedAt).TotalHours))
+        {
+            MailboxKey = result.MailboxKey
+        };
     }
 }
 
@@ -210,7 +218,10 @@ public sealed record SuppressionEntry(
     string NormalizedEmail,
     string Reason,
     string Source,
-    DateTimeOffset SuppressedAt);
+    DateTimeOffset SuppressedAt)
+{
+    public string? MailboxKey { get; init; }
+}
 
 public sealed record ProviderQualitySnapshot(
     MailProvider Provider,

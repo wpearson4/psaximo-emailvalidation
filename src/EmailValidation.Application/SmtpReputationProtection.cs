@@ -531,7 +531,7 @@ public sealed class SmtpReputationProtectionService(
             (SmtpReputationScopeType.NetworkBlock, _options.NetworkBlock.Trim().ToLowerInvariant()),
             (SmtpReputationScopeType.Provider, provider),
             (SmtpReputationScopeType.RecipientDomain, context.RecipientDomain.Trim().ToLowerInvariant()),
-            (SmtpReputationScopeType.Mailbox, context.NormalizedMailbox.Trim().ToLowerInvariant())
+            (SmtpReputationScopeType.Mailbox, MailboxIdentity.Create(context.NormalizedMailbox).Key)
         };
         if (!string.IsNullOrWhiteSpace(context.OutboundIdentityId))
             result.Insert(2, (SmtpReputationScopeType.ProviderIdentity,

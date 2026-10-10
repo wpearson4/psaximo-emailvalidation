@@ -173,6 +173,7 @@ public sealed class MongoProjectionOutboxTests
         {
             Email = "person@example.test",
             NormalizedEmail = "person@example.test",
+            MailboxKey = MailboxIdentity.Create("person@example.test").Key,
             ValidationId = id,
             Status = EmailValidationStatus.Unknown,
             SubStatus = DetailedStatus.TemporaryFailure,
@@ -188,6 +189,7 @@ public sealed class MongoProjectionOutboxTests
         {
             ValidationId = id,
             NormalizedEmail = result.NormalizedEmail,
+            MailboxKey = result.MailboxKey,
             Request = new EmailValidationRequest(true, ValidationId: id, TenantId: "tenant-test"),
             ResultState = result.ResultState,
             AttemptNumber = 1,

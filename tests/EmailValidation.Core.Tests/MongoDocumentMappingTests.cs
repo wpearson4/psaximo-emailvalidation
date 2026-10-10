@@ -152,7 +152,7 @@ public sealed class MongoDocumentMappingTests
         var document = MongoValidationIntelligenceStore.MailboxIntelligenceDocument.FromModel(mailbox);
         var restored = document.ToModel();
 
-        Assert.Equal(64, document.Id.Length);
+        Assert.Equal(MailboxIdentity.KeyPrefix.Length + 64, document.Id.Length);
         Assert.DoesNotContain("person@example.test", document.Id, StringComparison.Ordinal);
         Assert.Equal("example.test", document.Domain);
         Assert.Equal(EmailValidationStatus.LikelyValid, document.LastStatus);
@@ -214,6 +214,7 @@ public sealed class MongoDocumentMappingTests
         {
             ValidationId = "validation-123",
             NormalizedEmail = "person@example.test",
+        MailboxKey = MailboxIdentity.Create("person@example.test").Key,
             Request = new(true),
             ResultState = ValidationResultState.Provisional,
             AttemptNumber = 1,
@@ -327,6 +328,7 @@ public sealed class MongoDocumentMappingTests
     {
         Email = "person@example.test",
         NormalizedEmail = "person@example.test",
+        MailboxKey = MailboxIdentity.Create("person@example.test").Key,
         Status = EmailValidationStatus.LikelyValid,
         Confidence = 0.9,
         ConfidenceType = ConfidenceType.Heuristic,
@@ -354,6 +356,7 @@ public sealed class MongoDocumentMappingTests
     private static MailboxIntelligence Mailbox(EmailValidationResult result) => new()
     {
         NormalizedEmail = result.NormalizedEmail!,
+        MailboxKey = result.MailboxKey,
         PreviousStatus = result.Status,
         PreviousMailboxResult = result.Checks.Mailbox,
         PreviousConfidence = result.Confidence,

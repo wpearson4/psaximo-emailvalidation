@@ -111,6 +111,7 @@ public static class IdempotencyRequestHasher
         bool enableSmtp)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, $"identity:{MailboxIdentity.KeyPrefix}\n");
         Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
         Append(hash, $"source:{sourceFileId.Trim()}\n");
         Append(hash, $"column:{emailColumn.Trim()}\n");
@@ -123,6 +124,7 @@ public static class IdempotencyRequestHasher
         bool enableSmtp)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, $"identity:{MailboxIdentity.KeyPrefix}\n");
         Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
         Append(hash, $"transaction:{transactionId.Trim()}\n");
         Append(hash, $"column:{emailColumn.Trim()}\n");
@@ -139,6 +141,7 @@ public static class IdempotencyRequestHasher
         if (sourcePositions is not null && sourcePositions.Count != emails.Count)
             throw new ArgumentException("Source positions must correspond to the supplied email addresses.", nameof(sourcePositions));
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, $"identity:{MailboxIdentity.KeyPrefix}\n");
         Append(hash, enableSmtp ? "smtp:1\n" : "smtp:0\n");
         Append(hash, $"source:{sourceFileId?.Trim()}\n");
         Append(hash, $"column:{emailColumn?.Trim()}\n");
@@ -148,7 +151,7 @@ public static class IdempotencyRequestHasher
         for (var index = 0; index < emails.Count; index++)
         {
             if (includePositions) Append(hash, $"{sourcePositions![index]}:");
-            Append(hash, $"{emails[index].Trim().ToLowerInvariant()}\n");
+            Append(hash, $"{MailboxIdentity.TryCreate(emails[index])?.Key ?? MailboxIdentity.NormalizeOrOriginal(emails[index])}\n");
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }

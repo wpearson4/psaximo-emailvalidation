@@ -114,6 +114,7 @@ public sealed record PendingRevalidation(
 
 public sealed record ValidationLifecycle
 {
+    public string? MailboxKey { get; init; }
     public required string ValidationId { get; init; }
     public required string NormalizedEmail { get; init; }
     public required EmailValidationRequest Request { get; init; }

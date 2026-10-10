@@ -448,6 +448,6 @@ public sealed class IntelligenceOptions
     public string[] ToxicDomains { get; set; } = [];
     public string[] KnownSpamTrapAddresses { get; set; } = [];
     public string[] AbuseRiskAddresses { get; set; } = [];
-    public Dictionary<string, string> SuppressedAddresses { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> SuppressedAddresses { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> MxForwardingSuffixes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

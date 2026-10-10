@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
@@ -39,7 +37,7 @@ public sealed class MongoValidationIntelligenceStore :
     private readonly IValidationPersistenceMetrics _metrics;
     private readonly ILogger<MongoValidationIntelligenceStore> _logger;
     private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxCache =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
 
     public MongoValidationIntelligenceStore(
         IMongoClient client,
@@ -72,7 +70,13 @@ public sealed class MongoValidationIntelligenceStore :
             };
             var mailboxIndexes = new[]
             {
-                Index("ux_mailbox_normalized", Builders<MailboxIntelligenceDocument>.IndexKeys.Ascending(x => x.NormalizedEmail), unique: true),
+                new CreateIndexModel<MailboxIntelligenceDocument>(
+                    Builders<MailboxIntelligenceDocument>.IndexKeys.Ascending(x => x.MailboxKey),
+                    new CreateIndexOptions<MailboxIntelligenceDocument>
+                    {
+                        Name = "ux_mailbox_key_v2", Unique = true, Collation = Collation.Simple,
+                        PartialFilterExpression = Builders<MailboxIntelligenceDocument>.Filter.Type(x => x.MailboxKey, BsonType.String)
+                    }),
                 Index("ix_mailbox_domain", Builders<MailboxIntelligenceDocument>.IndexKeys.Ascending(x => x.Domain)),
                 Index("ix_mailbox_last_validated", Builders<MailboxIntelligenceDocument>.IndexKeys.Ascending(x => x.LastValidatedAt)),
                 Index("ix_mailbox_status", Builders<MailboxIntelligenceDocument>.IndexKeys.Ascending(x => x.LastStatus)),
@@ -81,6 +85,7 @@ public sealed class MongoValidationIntelligenceStore :
 
             await _domains.Indexes.CreateManyAsync(domainIndexes, cancellationToken).ConfigureAwait(false);
             await _mailboxes.Indexes.CreateManyAsync(mailboxIndexes, cancellationToken).ConfigureAwait(false);
+            await MailboxIdentityIndexMigration.DropLegacyAsync(_mailboxes, "ux_mailbox_normalized", cancellationToken).ConfigureAwait(false);
             _logger.LogInformation(
                 "Mongo validation intelligence initialized in database {Database}; collections {DomainCollection} and {MailboxCollection}",
                 _options.DatabaseName, _options.DomainCollection, _options.MailboxCollection);
@@ -133,16 +138,16 @@ public sealed class MongoValidationIntelligenceStore :
         string normalizedEmail,
         CancellationToken cancellationToken = default)
     {
-        normalizedEmail = NormalizeEmail(normalizedEmail);
-        if (_mailboxCache.TryGetValue(normalizedEmail, out var cached)) return cached;
+        var key = MailboxIdentity.Create(normalizedEmail).Key;
+        if (_mailboxCache.TryGetValue(key, out var cached)) return cached;
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            var id = Hash(normalizedEmail);
-            var document = await _mailboxes.Find(x => x.Id == id)
+            var document = await _mailboxes.Find(x => x.Id == key)
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             var model = document?.ToModel();
-            if (model is not null) _mailboxCache[normalizedEmail] = model;
+            if (model?.MailboxKey != key) model = null;
+            if (model is not null) _mailboxCache[key] = model;
             _metrics.RecordRead("mailbox", model is not null, stopwatch.Elapsed);
             return model;
         }
@@ -236,9 +241,13 @@ public sealed class MongoValidationIntelligenceStore :
         MailboxIntelligence intelligence,
         CancellationToken cancellationToken = default)
     {
+        if (!MailboxIdentity.Matches(intelligence.MailboxKey, intelligence.NormalizedEmail) ||
+            intelligence.LastResult.MailboxKey != intelligence.MailboxKey ||
+            !MailboxIdentity.Matches(intelligence.LastResult.MailboxKey, intelligence.LastResult.NormalizedEmail)) return;
         var document = MailboxIntelligenceDocument.FromModel(intelligence);
         var updates = new List<UpdateDefinition<MailboxIntelligenceDocument>>
         {
+            Builders<MailboxIntelligenceDocument>.Update.Set(x => x.MailboxKey, document.MailboxKey),
             Builders<MailboxIntelligenceDocument>.Update.Set(x => x.NormalizedEmail, document.NormalizedEmail),
             Builders<MailboxIntelligenceDocument>.Update.Set(x => x.Domain, document.Domain),
             Builders<MailboxIntelligenceDocument>.Update.Set(x => x.LastStatus, document.LastStatus),
@@ -278,7 +287,7 @@ public sealed class MongoValidationIntelligenceStore :
                     ReturnDocument = ReturnDocument.After
                 },
                 cancellationToken).ConfigureAwait(false);
-            _mailboxCache[document.NormalizedEmail] = stored.ToModel()!;
+            _mailboxCache[document.MailboxKey!] = stored.ToModel()!;
             _metrics.RecordWrite("mailbox", true);
         }
         catch (MongoException exception)
@@ -381,8 +390,6 @@ public sealed class MongoValidationIntelligenceStore :
         bool unique = false) => new(keys, new CreateIndexOptions { Name = name, Unique = unique });
 
     private static string NormalizeDomain(string domain) => domain.Trim().TrimEnd('.').ToLowerInvariant();
-    private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
-    private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     [BsonIgnoreExtraElements]
     internal sealed class DomainIntelligenceDocument
@@ -629,6 +636,7 @@ public sealed class MongoValidationIntelligenceStore :
     {
         [BsonId]
         public string Id { get; set; } = string.Empty;
+        public string? MailboxKey { get; set; }
         public string NormalizedEmail { get; set; } = string.Empty;
         public string Domain { get; set; } = string.Empty;
         [BsonRepresentation(BsonType.String)]
@@ -663,7 +671,11 @@ public sealed class MongoValidationIntelligenceStore :
 
         public static MailboxIntelligenceDocument FromModel(MailboxIntelligence model)
         {
-            var email = NormalizeEmail(model.NormalizedEmail);
+            var identity = MailboxIdentity.Create(model.NormalizedEmail);
+            if (model.MailboxKey != identity.Key || model.LastResult.MailboxKey != identity.Key ||
+                !MailboxIdentity.Matches(identity.Key, model.LastResult.NormalizedEmail))
+                throw new ArgumentException("Legacy or mismatched mailbox evidence must be refreshed.", nameof(model));
+            var email = identity.Address;
             var domain = email[(email.LastIndexOf('@') + 1)..];
             var now = DateTime.UtcNow;
             var sanitizedResult = model.LastResult with
@@ -682,10 +694,11 @@ public sealed class MongoValidationIntelligenceStore :
                     ? null
                     : model.LastResult.Diagnostics with { Detail = null }
             };
-            var sanitized = model with { LastResult = sanitizedResult };
+            var sanitized = model with { NormalizedEmail = email, LastResult = sanitizedResult };
             return new MailboxIntelligenceDocument
             {
-                Id = Hash(email),
+                Id = identity.Key,
+                MailboxKey = identity.Key,
                 NormalizedEmail = email,
                 Domain = domain,
                 LastStatus = model.PreviousStatus,
@@ -716,7 +729,11 @@ public sealed class MongoValidationIntelligenceStore :
 
         public MailboxIntelligence? ToModel()
         {
+            if (Id != MailboxKey || !MailboxIdentity.Matches(MailboxKey, NormalizedEmail)) return null;
             var model = JsonSerializer.Deserialize<MailboxIntelligence>(PayloadJson, JsonOptions);
+            if (model?.MailboxKey != MailboxKey || !MailboxIdentity.Matches(MailboxKey, model?.NormalizedEmail) ||
+                model?.LastResult.MailboxKey != MailboxKey ||
+                !MailboxIdentity.Matches(MailboxKey, model?.LastResult.NormalizedEmail)) return null;
             return model is null ? null : model with
             {
                 LastStrongPositiveEvidenceAt = LastStrongPositiveAt is null

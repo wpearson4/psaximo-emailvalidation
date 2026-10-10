@@ -3,6 +3,7 @@ using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
+using MongoDB.Bson;
 
 namespace EmailValidation.IntegrationTests;
 
@@ -38,12 +39,23 @@ public sealed class MongoValidationIntelligenceStoreTests
 
         try
         {
+            var collection = database.GetCollection<BsonDocument>(mailboxCollection);
+            await collection.Indexes.CreateOneAsync(new CreateIndexModel<BsonDocument>(
+                Builders<BsonDocument>.IndexKeys.Ascending("NormalizedEmail"),
+                new CreateIndexOptions { Name = "ux_mailbox_normalized", Unique = true }));
+            await collection.InsertOneAsync(new BsonDocument
+            {
+                { "_id", "legacy-case-folded" }, { "NormalizedEmail", "person@example.test" }
+            });
             var first = Store(client, options);
             await first.InitializeAsync();
             await first.InitializeAsync();
             await first.SaveDomainAsync(Domain());
             await first.RecordAsync(Observation());
+            Assert.Null(await first.GetMailboxAsync("person@example.test"));
+            Assert.Null(await first.GetMailboxAsync("Person@example.test"));
             await first.SaveMailboxAsync(Mailbox());
+            await first.SaveMailboxAsync(Mailbox("Person@example.test"));
 
             var second = Store(client, options);
             var domain = await second.GetDomainAsync("example.test");
@@ -56,9 +68,12 @@ public sealed class MongoValidationIntelligenceStoreTests
 
             Assert.NotNull(domain);
             Assert.NotNull(mailbox);
+            Assert.Equal("Person@example.test", (await second.GetMailboxAsync("Person@EXAMPLE.test"))!.NormalizedEmail);
+            Assert.Equal(3, await collection.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
             Assert.Single(observations);
             Assert.Contains(domainIndexes, index => index["name"] == "ux_domain_normalized");
-            Assert.Contains(mailboxIndexes, index => index["name"] == "ux_mailbox_normalized");
+            Assert.DoesNotContain(mailboxIndexes, index => index["name"] == "ux_mailbox_normalized");
+            Assert.Contains(mailboxIndexes, index => index["name"] == "ux_mailbox_key_v2");
         }
         finally
         {
@@ -101,12 +116,13 @@ public sealed class MongoValidationIntelligenceStoreTests
         10,
         TopologyFingerprint: "topology-1");
 
-    private static MailboxIntelligence Mailbox()
+    private static MailboxIntelligence Mailbox(string email = "person@example.test")
     {
         var result = new EmailValidationResult
         {
-            Email = "person@example.test",
-            NormalizedEmail = "person@example.test",
+            Email = email,
+            NormalizedEmail = email,
+            MailboxKey = MailboxIdentity.Create(email).Key,
             Status = EmailValidationStatus.LikelyValid,
             Confidence = 0.9,
             ConfidenceType = ConfidenceType.Heuristic,
@@ -131,6 +147,7 @@ public sealed class MongoValidationIntelligenceStoreTests
         return new MailboxIntelligence
         {
             NormalizedEmail = result.NormalizedEmail,
+            MailboxKey = result.MailboxKey,
             PreviousStatus = result.Status,
             PreviousMailboxResult = result.Checks.Mailbox,
             PreviousConfidence = result.Confidence,

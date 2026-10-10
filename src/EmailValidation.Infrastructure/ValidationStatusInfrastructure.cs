@@ -135,7 +135,7 @@ public sealed class InMemoryValidationLifecycleStore : IValidationLifecycleStore
         cancellationToken.ThrowIfCancellationRequested();
         var lifecycle = _lifecycles.Values
             .Where(item => item.ResultState == ValidationResultState.Provisional &&
-                string.Equals(item.NormalizedEmail, normalizedEmail, StringComparison.OrdinalIgnoreCase))
+                string.Equals(item.MailboxKey, MailboxIdentity.TryCreate(normalizedEmail)?.Key ?? normalizedEmail, StringComparison.Ordinal))
             .OrderByDescending(item => item.LastUpdatedAt)
             .FirstOrDefault();
         return Task.FromResult(lifecycle);

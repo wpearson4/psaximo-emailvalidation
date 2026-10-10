@@ -87,7 +87,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             outboundIdentity.Address, outboundIdentity.EhloHostName);
         throttleContext = throttleContext with { OutboundIp = outboundIdentity.Address.ToString() };
         var reputationContext = new SmtpReputationBudgetContext(
-            recipient.Trim().ToLowerInvariant(), domain, provider,
+            MailboxIdentity.NormalizeOrOriginal(recipient), domain, provider,
             outboundIdentity.IdentityId, outboundIdentity.Address.ToString(), mxHost);
         SmtpReputationEvidence? reputation = null;
         var sessions = 0;

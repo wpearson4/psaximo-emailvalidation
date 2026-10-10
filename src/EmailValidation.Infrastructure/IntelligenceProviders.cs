@@ -85,13 +85,13 @@ public sealed class ToxicDomainDetector(IOptions<EmailValidationOptions> options
 public sealed class SpamTrapRiskDetector(IOptions<EmailValidationOptions> options) : ISpamTrapRiskDetector
 {
     private readonly HashSet<string> _knownAddresses = new(
-        options.Value.Intelligence.KnownSpamTrapAddresses,
-        StringComparer.OrdinalIgnoreCase);
+        options.Value.Intelligence.KnownSpamTrapAddresses.Select(MailboxIdentity.NormalizeOrOriginal),
+        StringComparer.Ordinal);
 
     public Task<SpamTrapRiskResult> EvaluateAsync(string email, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var result = _knownAddresses.Contains(email)
+        var result = _knownAddresses.Contains(MailboxIdentity.NormalizeOrOriginal(email))
             ? new SpamTrapRiskResult(SpamTrapRiskStatus.KnownSpamTrap, 0.99, EvidenceSource.ConfiguredIntelligenceProvider)
             : SpamTrapRiskResult.Unknown;
         return Task.FromResult(result);
@@ -101,13 +101,13 @@ public sealed class SpamTrapRiskDetector(IOptions<EmailValidationOptions> option
 public sealed class AbuseRiskProvider(IOptions<EmailValidationOptions> options) : IAbuseRiskProvider
 {
     private readonly HashSet<string> _addresses = new(
-        options.Value.Intelligence.AbuseRiskAddresses,
-        StringComparer.OrdinalIgnoreCase);
+        options.Value.Intelligence.AbuseRiskAddresses.Select(MailboxIdentity.NormalizeOrOriginal),
+        StringComparer.Ordinal);
 
     public Task<AbuseRiskResult> EvaluateAsync(string email, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_addresses.Contains(email)
+        return Task.FromResult(_addresses.Contains(MailboxIdentity.NormalizeOrOriginal(email))
             ? new AbuseRiskResult(AbuseRiskStatus.KnownRisk, 0.99, EvidenceSource.ConfiguredIntelligenceProvider)
             : AbuseRiskResult.Unknown);
     }
@@ -116,12 +116,13 @@ public sealed class AbuseRiskProvider(IOptions<EmailValidationOptions> options) 
 public sealed class SuppressionIntelligenceProvider(IOptions<EmailValidationOptions> options) : ISuppressionIntelligenceProvider
 {
     private readonly Dictionary<string, string> _addresses =
-        new Dictionary<string, string>(options.Value.Intelligence.SuppressedAddresses, StringComparer.OrdinalIgnoreCase);
+        options.Value.Intelligence.SuppressedAddresses.ToDictionary(
+            item => MailboxIdentity.NormalizeOrOriginal(item.Key), item => item.Value, StringComparer.Ordinal);
 
     public Task<SuppressionResult> EvaluateAsync(string email, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_addresses.TryGetValue(email, out var reason)
+        return Task.FromResult(_addresses.TryGetValue(MailboxIdentity.NormalizeOrOriginal(email), out var reason)
             ? new SuppressionResult(SuppressionStatus.Suppressed, reason, EvidenceSource.ConfiguredIntelligenceProvider)
             : new SuppressionResult(SuppressionStatus.NotSuppressed, null, EvidenceSource.ConfiguredIntelligenceProvider));
     }

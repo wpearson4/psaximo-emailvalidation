@@ -417,6 +417,7 @@ public sealed record EmailValidationResult
     public EmailValidationPrediction? Prediction { get; init; }
     public EvidenceQuality EvidenceQuality { get; init; } = EvidenceQuality.Unknown;
     public DateTimeOffset? MailboxEvidenceObservedAt { get; init; }
+    public string? MailboxKey { get; init; }
     public CatchAllClassification CatchAllClassification { get; init; } = CatchAllClassification.None;
     public bool ProbeAttempted { get; init; }
     public SmtpProbeDisposition ProbeDisposition { get; init; } = SmtpProbeDisposition.NotAttempted;

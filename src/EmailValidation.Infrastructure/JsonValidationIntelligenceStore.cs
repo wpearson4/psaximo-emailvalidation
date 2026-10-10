@@ -27,8 +27,8 @@ public sealed class JsonValidationIntelligenceStore :
     private readonly CatchAllOptions _catchAllOptions;
     private readonly string _root;
     private readonly ConcurrentDictionary<string, DomainIntelligence> _domains = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxes = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, SuppressionEntry> _suppressions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SuppressionEntry> _suppressions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _observations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _recipientBehaviorObservations =
@@ -67,9 +67,13 @@ public sealed class JsonValidationIntelligenceStore :
     public async Task<MailboxIntelligence?> GetMailboxAsync(string normalizedEmail, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_mailboxes.TryGetValue(normalizedEmail, out var cached)) return cached;
+        var key = MailboxIdentity.Create(normalizedEmail).Key;
+        if (_mailboxes.TryGetValue(key, out var cached)) return cached;
         var loaded = await ReadAsync<MailboxIntelligence>(PathFor("mailboxes", normalizedEmail), cancellationToken).ConfigureAwait(false);
-        if (loaded is not null) _mailboxes[normalizedEmail] = loaded;
+        if (loaded?.MailboxKey != key || !MailboxIdentity.Matches(key, loaded.NormalizedEmail) ||
+            !MailboxIdentity.Matches(loaded.LastResult.MailboxKey, loaded.LastResult.NormalizedEmail) ||
+            loaded.LastResult.MailboxKey != key) return null;
+        _mailboxes[key] = loaded;
         return loaded;
     }
 
@@ -88,7 +92,10 @@ public sealed class JsonValidationIntelligenceStore :
 
     public async Task SaveMailboxAsync(MailboxIntelligence intelligence, CancellationToken cancellationToken = default)
     {
-        _mailboxes[intelligence.NormalizedEmail] = intelligence;
+        if (!MailboxIdentity.Matches(intelligence.MailboxKey, intelligence.NormalizedEmail) ||
+            intelligence.LastResult.MailboxKey != intelligence.MailboxKey ||
+            !MailboxIdentity.Matches(intelligence.LastResult.MailboxKey, intelligence.LastResult.NormalizedEmail)) return;
+        _mailboxes[intelligence.MailboxKey!] = intelligence;
         await WriteAsync(PathFor("mailboxes", intelligence.NormalizedEmail), intelligence, cancellationToken).ConfigureAwait(false);
     }
 
@@ -195,7 +202,8 @@ public sealed class JsonValidationIntelligenceStore :
         };
         _outcomes.Enqueue(outcome);
         await WriteOutcomesAsync(cancellationToken).ConfigureAwait(false);
-        if (outcome.ActualOutcome == DeliveryOutcomeKind.HardBounce)
+        if (outcome.ActualOutcome == DeliveryOutcomeKind.HardBounce &&
+            MailboxIdentity.Matches(outcome.Prediction.MailboxKey, outcome.Prediction.NormalizedEmail))
         {
             await AddAsync(new SuppressionEntry(
                 outcome.Prediction.NormalizedEmail,
@@ -216,15 +224,19 @@ public sealed class JsonValidationIntelligenceStore :
     public async Task<SuppressionEntry?> GetAsync(string normalizedEmail, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_suppressions.TryGetValue(normalizedEmail, out var cached)) return cached;
+        var key = MailboxIdentity.Create(normalizedEmail).Key;
+        if (_suppressions.TryGetValue(key, out var cached)) return cached;
         var loaded = await ReadAsync<SuppressionEntry>(PathFor("suppressions", normalizedEmail), cancellationToken).ConfigureAwait(false);
-        if (loaded is not null) _suppressions[normalizedEmail] = loaded;
+        if (loaded?.MailboxKey != key || !MailboxIdentity.Matches(key, loaded.NormalizedEmail)) return null;
+        _suppressions[key] = loaded;
         return loaded;
     }
 
     public async Task AddAsync(SuppressionEntry entry, CancellationToken cancellationToken = default)
     {
-        _suppressions[entry.NormalizedEmail] = entry;
+        var identity = MailboxIdentity.Create(entry.NormalizedEmail);
+        entry = entry with { NormalizedEmail = identity.Address, MailboxKey = identity.Key };
+        _suppressions[identity.Key] = entry;
         await WriteAsync(PathFor("suppressions", entry.NormalizedEmail), entry, cancellationToken).ConfigureAwait(false);
     }
 
@@ -280,8 +292,13 @@ public sealed class JsonValidationIntelligenceStore :
         finally { gate.Release(); }
     }
 
-    private string PathFor(string category, string key) =>
-        Path.Combine(_root, category, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToLowerInvariant()))) + ".json");
+    private string PathFor(string category, string key)
+    {
+        var identity = category is "mailboxes" or "suppressions"
+            ? MailboxIdentity.Create(key).Key
+            : key.ToLowerInvariant();
+        return Path.Combine(_root, category, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))) + ".json");
+    }
 
     private async Task<T?> ReadAsync<T>(string path, CancellationToken cancellationToken)
     {

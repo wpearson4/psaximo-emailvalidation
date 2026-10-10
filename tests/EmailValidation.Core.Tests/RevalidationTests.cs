@@ -9,6 +9,44 @@ public sealed class RevalidationTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
 
+    [Fact]
+    public async Task LifecycleIdentity_DistinguishesLocalCaseAndReusesDomainVariants()
+    {
+        var store = new InMemoryValidationLifecycleStore();
+        using var metrics = new RevalidationMetrics();
+        var coordinator = Coordinator(store, new StubDispatcher(true), metrics);
+        var upper = await coordinator.BeginAsync("Person@EXAMPLE.com", new(true));
+        var lower = await coordinator.BeginAsync("person@example.com", new(true));
+        var same = await coordinator.BeginAsync("Person@example.COM", new(true));
+        Assert.NotEqual(upper.ValidationId, lower.ValidationId);
+        Assert.Equal(upper.ValidationId, same.ValidationId);
+        Assert.Equal("Person@example.com", upper.Lifecycle!.NormalizedEmail);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.BeginAsync("person@example.com",
+            new(true, ValidationId: upper.ValidationId)));
+    }
+
+    [Fact]
+    public async Task LegacyRetry_IsClosedWithoutGuessingOriginalLocalCase()
+    {
+        var legacy = Lifecycle(ValidationResultState.Provisional, 1) with { MailboxKey = null };
+        var store = new MemoryLifecycleStore(legacy);
+        var service = new CountingValidationService(Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted));
+        using var metrics = new RevalidationMetrics();
+        var dispatcher = new StubDispatcher(true);
+        var coordinator = Coordinator(store, dispatcher, metrics);
+        var processor = new EmailRevalidationProcessor(store, service, coordinator, dispatcher,
+            new AvailableThrottle(), new RevalidationSchedulePolicy(new StubProviderPolicies(new("Generic", 1, 0, 15, 1)),
+                new StubBackoff(Now)), metrics, new FixedTimeProvider(Now));
+        var result = await processor.ProcessAsync(Message(legacy.ValidationId, 2));
+        Assert.Equal(RevalidationProcessingDisposition.Completed, result.Disposition);
+        Assert.Equal(0, service.Calls);
+        Assert.Equal(ValidationLifecycleState.Failed, store.Value!.LifecycleState);
+        Assert.Null(store.Value.PendingRevalidation);
+        Assert.Contains("new validation", store.Value.StatusMessage!, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.BeginAsync("person@example.com",
+            new(true, ValidationId: legacy.ValidationId)));
+    }
+
     [Theory]
     [InlineData(ReasonCode.Greylisted, 300)]
     [InlineData(ReasonCode.MailboxFull, 1800)]
@@ -862,6 +900,7 @@ public sealed class RevalidationTests
     {
         Email = "person@example.com",
         NormalizedEmail = "person@example.com",
+        MailboxKey = MailboxIdentity.Create("person@example.com").Key,
         Status = status,
         Confidence = status == EmailValidationStatus.Unknown ? 0.25 : 0.95,
         Checks = new EmailValidationChecks
@@ -891,6 +930,7 @@ public sealed class RevalidationTests
     {
         ValidationId = "validation-123",
         NormalizedEmail = "person@example.com",
+        MailboxKey = MailboxIdentity.Create("person@example.com").Key,
         Request = new(true),
         ResultState = state,
         AttemptNumber = attempt,

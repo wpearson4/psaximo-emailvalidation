@@ -13,6 +13,14 @@ public sealed class ProjectionObservationTests
     private static readonly DateTimeOffset Now = new(2026, 8, 26, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public async Task LegacyLifecycleReplay_DoesNotInventCurrentMailboxCorrelation()
+    {
+        var events = await Factory().CreateLifecycleEventsAsync(Lifecycle(1) with { MailboxKey = null }, null);
+        var attempt = events.Single(item => item.EventType == EmailValidationObservationTypes.AttemptV1);
+        Assert.Equal(JsonValueKind.Null, attempt.Payload.GetProperty("emailCorrelationId").ValueKind);
+    }
+
+    [Fact]
     public async Task EventIdentity_IsDeterministicAcrossReplay_AndChangesByAttemptAndType()
     {
         var factory = Factory();
@@ -35,7 +43,7 @@ public sealed class ProjectionObservationTests
         var service = new HmacEmailCorrelationService(options, NullLogger<HmacEmailCorrelationService>.Instance);
 
         var first = await service.TryCreateAsync("tenant-a", "person@example.com");
-        var same = await service.TryCreateAsync("tenant-a", "PERSON@example.com");
+        var same = await service.TryCreateAsync("tenant-a", "person@EXAMPLE.com");
         var otherTenant = await service.TryCreateAsync("tenant-b", "person@example.com");
         var events = await new ObservationEventFactory(service, options, new FixedTimeProvider(Now))
             .CreateLifecycleEventsAsync(Lifecycle(1), null);
@@ -251,6 +259,7 @@ public sealed class ProjectionObservationTests
         {
             Email = "person@example.com",
             NormalizedEmail = "person@example.com",
+            MailboxKey = MailboxIdentity.Create("person@example.com").Key,
             ValidationId = "validation-1",
             Status = EmailValidationStatus.Unknown,
             SubStatus = DetailedStatus.TemporaryFailure,
@@ -272,6 +281,7 @@ public sealed class ProjectionObservationTests
         {
             ValidationId = "validation-1",
             NormalizedEmail = "person@example.com",
+            MailboxKey = MailboxIdentity.Create("person@example.com").Key,
             Request = new EmailValidationRequest(true, ValidationId: "validation-1",
                 TenantId: "tenant-a", ConsumerId: "consumer-a"),
             ResultState = ValidationResultState.Provisional,

@@ -183,7 +183,8 @@ public sealed class EmailValidationFeatureSnapshotFactory(
         EmailValidationRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (result.NormalizedEmail is null || result.Metadata is null || string.IsNullOrWhiteSpace(request.ValidationId))
+        if (result.NormalizedEmail is null || result.Metadata is null || string.IsNullOrWhiteSpace(request.ValidationId) ||
+            !MailboxIdentity.Matches(result.MailboxKey, result.NormalizedEmail))
             return null;
         var at = timeProvider.GetUtcNow();
         var email = await correlations.TryCreateAsync(request.TenantId, result.NormalizedEmail, cancellationToken)

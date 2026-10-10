@@ -359,12 +359,14 @@ public sealed class ValidationLifecycleCoordinator(
         if (requestedId.Length > 128)
             throw new ArgumentException("ValidationId must not exceed 128 characters.", nameof(request));
         var normalizedEmail = LifecycleKey(email, requestedId);
+        var mailboxKey = MailboxIdentity.TryCreate(email)?.Key ?? normalizedEmail;
         var existingById = await store.GetAsync(requestedId, cancellationToken).ConfigureAwait(false);
         if (existingById is not null &&
-            !string.Equals(existingById.NormalizedEmail, normalizedEmail, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("ValidationId is already associated with a different validation.");
+            !string.Equals(existingById.MailboxKey, mailboxKey, StringComparison.Ordinal))
+            throw new InvalidOperationException("ValidationId has a different or legacy mailbox identity. Start a new validation.");
         var existing = existingById ??
             await store.GetActiveByEmailAsync(normalizedEmail, cancellationToken).ConfigureAwait(false);
+        if (existing?.MailboxKey != mailboxKey) existing = null;
         if (existing is not null)
             return new(existing.ValidationId, existing, false);
 
@@ -374,6 +376,7 @@ public sealed class ValidationLifecycleCoordinator(
         {
             ValidationId = requestedId,
             NormalizedEmail = normalizedEmail,
+            MailboxKey = mailboxKey,
             Request = request with { ValidationId = requestedId },
             ResultState = ValidationResultState.Provisional,
             AttemptNumber = 0,
@@ -392,6 +395,8 @@ public sealed class ValidationLifecycleCoordinator(
         {
             existing = await store.GetAsync(requestedId, cancellationToken).ConfigureAwait(false) ??
                 await store.GetActiveByEmailAsync(normalizedEmail, cancellationToken).ConfigureAwait(false);
+            if (existing is not null && existing.MailboxKey != mailboxKey)
+                throw new InvalidOperationException("ValidationId has a different or legacy mailbox identity. Start a new validation.");
             return new(existing?.ValidationId ?? requestedId, existing, false);
         }
 
@@ -479,8 +484,11 @@ public sealed class ValidationLifecycleCoordinator(
         CancellationToken cancellationToken = default)
     {
         var normalizedEmail = string.IsNullOrWhiteSpace(result.NormalizedEmail)
-            ? result.Email.Trim().ToLowerInvariant()
+            ? MailboxIdentity.NormalizeOrOriginal(result.Email)
             : result.NormalizedEmail;
+        if (MailboxIdentity.TryCreate(normalizedEmail) is not null &&
+            !MailboxIdentity.Matches(result.MailboxKey, normalizedEmail))
+            throw new ArgumentException("Mailbox evidence must be freshly validated under the current identity policy.", nameof(result));
 
         for (var collision = 0; collision < 3; collision++)
         {
@@ -488,6 +496,13 @@ public sealed class ValidationLifecycleCoordinator(
                 ? await store.GetActiveByEmailAsync(normalizedEmail, cancellationToken).ConfigureAwait(false)
                 : await store.GetAsync(request.ValidationId, cancellationToken).ConfigureAwait(false) ??
                     await store.GetActiveByEmailAsync(normalizedEmail, cancellationToken).ConfigureAwait(false);
+            var mailboxKey = MailboxIdentity.TryCreate(normalizedEmail)?.Key;
+            if (existing is not null && mailboxKey is not null && existing.MailboxKey != mailboxKey)
+            {
+                if (request.ValidationId == existing.ValidationId)
+                    throw new InvalidOperationException("ValidationId has a different or legacy mailbox identity. Start a new validation.");
+                existing = null;
+            }
             var now = result.Metadata?.ValidatedAt ?? timeProvider.GetUtcNow();
             if (existing?.LastValidatedAt == now)
                 return existing.PendingRevalidation is null
@@ -523,6 +538,9 @@ public sealed class ValidationLifecycleCoordinator(
     {
         var existing = await store.GetAsync(validationId, cancellationToken).ConfigureAwait(false);
         if (existing is null || existing.Version != expectedVersion ||
+            !MailboxIdentity.Matches(existing.MailboxKey, existing.NormalizedEmail) ||
+            result.MailboxKey != existing.MailboxKey ||
+            !MailboxIdentity.Matches(result.MailboxKey, result.NormalizedEmail) ||
             existing.ResultState == ValidationResultState.Final ||
             expectedAttemptNumber != (existing.LifecycleState == ValidationLifecycleState.Revalidating
                 ? existing.AttemptNumber
@@ -605,7 +623,8 @@ public sealed class ValidationLifecycleCoordinator(
         return new ValidationLifecycle
         {
             ValidationId = validationId,
-            NormalizedEmail = raw.NormalizedEmail ?? existing?.NormalizedEmail ?? raw.Email.Trim().ToLowerInvariant(),
+            NormalizedEmail = raw.NormalizedEmail ?? existing?.NormalizedEmail ?? MailboxIdentity.NormalizeOrOriginal(raw.Email),
+            MailboxKey = raw.MailboxKey ?? existing?.MailboxKey,
             Request = request,
             ResultState = state,
             AttemptNumber = attempt,
@@ -748,11 +767,7 @@ public sealed class ValidationLifecycleCoordinator(
 
     private static string LifecycleKey(string email, string validationId)
     {
-        var normalized = email.Trim().ToLowerInvariant();
-        var separator = normalized.LastIndexOf('@');
-        return separator > 0 && separator < normalized.Length - 1
-            ? normalized
-            : $"$invalid:{validationId}";
+        return MailboxIdentity.TryCreate(email)?.Address ?? $"$invalid:{validationId}";
     }
 }
 
@@ -819,6 +834,12 @@ public sealed class EmailRevalidationProcessor(
         {
             metrics.RecordAlreadyFinal();
             return new(RevalidationProcessingDisposition.AlreadyFinal);
+        }
+        if (!MailboxIdentity.Matches(lifecycle.MailboxKey, lifecycle.NormalizedEmail))
+        {
+            await coordinator.FailAsync(lifecycle.ValidationId,
+                "Legacy mailbox identity requires a new validation of the original address.", cancellationToken).ConfigureAwait(false);
+            return new(RevalidationProcessingDisposition.Completed);
         }
         if (message.AttemptNumber < lifecycle.AttemptNumber ||
             (message.AttemptNumber == lifecycle.AttemptNumber &&

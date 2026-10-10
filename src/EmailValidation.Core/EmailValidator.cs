@@ -297,6 +297,7 @@ public sealed class EmailValidator(
             CatchAllEvidence = activeDomainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
             MailboxEvidenceObservedAt = mailboxObservedAt,
+            MailboxKey = MailboxIdentity.Create(normalized.NormalizedEmail!).Key,
             SmtpSessionEvidence = mailbox.SessionEvidence,
             MxValidation = mxValidation,
             RecipientEvidence = new RecipientEvidenceSummary(
