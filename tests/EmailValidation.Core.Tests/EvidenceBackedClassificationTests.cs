@@ -10,6 +10,43 @@ namespace EmailValidation.Core.Tests;
 public sealed class EvidenceBackedClassificationTests
 {
     [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task FeatureSnapshot_UsesExecutionAttemptForMetadataAndId_AndDeduplicatesReplay(int attempt)
+    {
+        var at = new DateTimeOffset(2026, 10, 10, 12, 0, 0, TimeSpan.Zero);
+        var factory = new EmailValidationFeatureSnapshotFactory(new FakeCorrelationService(), new FixedTimeProvider(at));
+        var result = Result("person@example.test", at); // The result still has its default attempt number.
+        var request = new EmailValidationRequest(ValidationId: "retry-snapshot");
+        var first = await factory.CreateAsync(result, request);
+        var retryRequest = request with { AttemptNumber = attempt };
+        var retry = await factory.CreateAsync(result, retryRequest);
+        var replay = await factory.CreateAsync(result, retryRequest);
+
+        Assert.NotNull(first);
+        Assert.NotNull(retry);
+        Assert.NotNull(replay);
+        Assert.Equal(1, first.Operational.AttemptNumber);
+        Assert.Equal(attempt, retry.Operational.AttemptNumber);
+        Assert.NotEqual(first.SnapshotId, retry.SnapshotId);
+        Assert.Equal(retry.SnapshotId, replay.SnapshotId);
+        using var store = Store();
+        var snapshots = (IEmailValidationFeatureSnapshotStore)store;
+        Assert.True(await snapshots.AppendAsync(first));
+        Assert.True(await snapshots.AppendAsync(retry));
+        Assert.False(await snapshots.AppendAsync(replay));
+    }
+
+    [Fact]
+    public void LegacyPersistedRequest_DefaultsToInitialAttempt()
+    {
+        var request = JsonSerializer.Deserialize<EmailValidationRequest>(
+            "{\"enableSmtp\":true,\"validationId\":\"legacy\"}", JsonSerializerOptions.Web);
+        Assert.NotNull(request);
+        Assert.Equal(1, request.AttemptNumber);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task SnapshotCapture_RequiresHmacKey_EvenWithModelAndProjectionDisabled(bool keyConfigured)

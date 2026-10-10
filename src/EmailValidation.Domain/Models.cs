@@ -527,6 +527,9 @@ public sealed record EmailValidationRequest(
     string? ConsumerId = null,
     string? JobId = null)
 {
+    /// <summary>Lifecycle-assigned execution attempt, available before result finalization and snapshot capture.</summary>
+    public int AttemptNumber { get; init; } = 1;
+
     /// <summary>Durable observation retry boundary; cache access is not a new observation.</summary>
     public DateTimeOffset? EvidenceObservedAfter { get; init; }
 }

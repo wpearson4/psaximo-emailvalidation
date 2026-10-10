@@ -113,6 +113,14 @@ the worker logs for correlation or evidence-backed scoring failures as well. Mis
 historical snapshots must not be recreated as if they were captured at prediction time;
 collect fresh observations for outcome-linked benchmarks.
 
+Snapshot attempt numbers and IDs use the lifecycle-assigned execution attempt carried
+into validation, before the coordinator finalizes the result. Durable retries therefore
+capture attempt 2 or later even when the raw evaluator result still has its default
+attempt number. Older persisted requests default to attempt 1; retry dispatch supplies
+the actual current attempt. Previously captured snapshots with incorrect attempt-1
+labels remain immutable. Use fresh runs for attempt-specific benchmark comparisons;
+do not infer historical attempt numbers from snapshot ordering alone.
+
 Focused synthetic regressions exercise authorized import identity/tenancy/idempotency/conflicts, label censoring, domain/time separation, deterministic reports, denominator math, checksum-only promotion rejection, expired/mismatched approval, calibration leakage, unsupported-provider abstention, and REST/gRPC/CSV contracts. A local Mongo regression checks concurrent immutable event writes and tenant separation.
 
 Deploy the changes together, run a small validation smoke test against your existing authorized test set, and inspect Unknown/CatchAll/policy-block/timeout responses plus CSV and status updates. Then collect an authorized-real baseline and candidate benchmark before making an accuracy claim or activating a model. No new recurring service is required.

@@ -924,7 +924,11 @@ public sealed class EmailRevalidationProcessor(
 
             var evidenceAfter = RetryEvidencePolicy.LatestObservation(lifecycle.CurrentResult, message.PreviousAttemptAt);
             var result = await validationService.ValidateAsync(
-                lifecycle.NormalizedEmail, lifecycle.Request with { EvidenceObservedAfter = evidenceAfter },
+                lifecycle.NormalizedEmail, lifecycle.Request with
+                {
+                    AttemptNumber = message.AttemptNumber,
+                    EvidenceObservedAfter = evidenceAfter
+                },
                 cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
             var reused = result.Metadata?.ResultSource is ValidationResultSource.MemoryCache or
                 ValidationResultSource.PersistentReuse or ValidationResultSource.JoinedInFlightValidation;

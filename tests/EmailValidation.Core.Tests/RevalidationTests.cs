@@ -1,3 +1,4 @@
+using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -70,6 +71,7 @@ public sealed class RevalidationTests
         settings.Smtp.Enabled = true;
         settings.CatchAll.Enabled = false;
         settings.Persistence.Enabled = false;
+        settings.Projection.Privacy.EmailHashKey = "synthetic-only-correlation-key-32-bytes";
         settings.Revalidation.Enabled = true;
         settings.Revalidation.MaximumPositiveJitterMilliseconds = 0;
         var options = Microsoft.Extensions.Options.Options.Create(settings);
@@ -91,15 +93,22 @@ public sealed class RevalidationTests
         var schedule = new RevalidationSchedulePolicy(providerPolicies, new DomainBackoffPolicy(options), options);
         var coordinator = new ValidationLifecycleCoordinator(lifecycleStore, new RevalidationPolicy(providerPolicies, options),
             schedule, dispatcher, metrics, clock, options, NullLogger<ValidationLifecycleCoordinator>.Instance);
+        using var snapshotStore = new LocalClassificationEvidenceStore(options);
+        using var classificationMetrics = new ClassificationFoundationMetrics();
+        var snapshotFactory = new EmailValidationFeatureSnapshotFactory(
+            new HmacEmailCorrelationService(options, NullLogger<HmacEmailCorrelationService>.Instance), clock);
+        var capturedValidator = new EvidenceBackedEmailValidationService(validator, snapshotFactory, snapshotStore,
+            new DisabledClassificationPredictionOrchestrator(), new ConfidenceLevelPolicy(), classificationMetrics,
+            NullLogger<EvidenceBackedEmailValidationService>.Instance);
+        var lifecycleValidator = new LifecycleEmailValidator(capturedValidator, coordinator);
         var request = new EmailValidationRequest(true);
-        var original = await validator.ValidateAsync("person@example.com", request);
+        var original = await lifecycleValidator.ValidateAsync("person@example.com", request);
         Assert.Equal(EmailValidationStatus.Unknown, original.Status);
-        var initial = await coordinator.ProcessInitialResultAsync(original, request);
-        Assert.Equal(ValidationResultState.Provisional, initial.Result.ResultState);
-        var message = initial.Lifecycle!.PendingRevalidation!.Message;
+        Assert.Equal(ValidationResultState.Provisional, original.ResultState);
+        var message = lifecycleStore.Value!.PendingRevalidation!.Message;
         Assert.Equal(Now.AddSeconds(5), message.ScheduledRetryAt);
         clock.Now = message.ScheduledRetryAt;
-        var processor = new EmailRevalidationProcessor(lifecycleStore, validator, coordinator, dispatcher,
+        var processor = new EmailRevalidationProcessor(lifecycleStore, capturedValidator, coordinator, dispatcher,
             new AvailableThrottle(), schedule, metrics, clock);
 
         var processed = await processor.ProcessAsync(message);
@@ -114,6 +123,19 @@ public sealed class RevalidationTests
         Assert.Equal(dnsFailure ? 1 : 2, smtp.Calls);
         Assert.Equal(dnsFailure ? clock.GetUtcNow() : Now, final.CurrentResult.DomainIntelligence!.RoutingEvidence!.ObservedAt);
         Assert.Null(final.PendingRevalidation);
+
+        var snapshots = (await ((IEmailValidationFeatureSnapshotStore)snapshotStore).QueryAsync(
+            Now.AddSeconds(-1), clock.GetUtcNow().AddSeconds(1), EvidenceBackedClassificationVersions.FeatureSchemaV2))
+            .OrderBy(snapshot => snapshot.SnapshotAtUtc).ToArray();
+        Assert.Equal([1, 2], snapshots.Select(snapshot => snapshot.Operational.AttemptNumber));
+        Assert.All(snapshots, snapshot => Assert.Equal(final.ValidationId, snapshot.ValidationId));
+        Assert.Equal(final.CurrentResult.Status, snapshots[1].HeuristicStatus);
+        Assert.Equal(final.CurrentResult.MailboxEvidenceObservedAt, snapshots[1].MailboxEvidenceObservedAtUtc);
+        Assert.NotEqual(snapshots[0].SnapshotId, snapshots[1].SnapshotId);
+
+        Assert.Equal(RevalidationProcessingDisposition.AlreadyFinal, (await processor.ProcessAsync(message)).Disposition);
+        Assert.Equal(2, (await ((IEmailValidationFeatureSnapshotStore)snapshotStore).QueryAsync(
+            Now.AddSeconds(-1), clock.GetUtcNow().AddSeconds(1), EvidenceBackedClassificationVersions.FeatureSchemaV2)).Count);
     }
 
     private sealed class RetryClock(DateTimeOffset now) : TimeProvider

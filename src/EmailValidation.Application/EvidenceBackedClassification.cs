@@ -209,7 +209,9 @@ public sealed class EmailValidationFeatureSnapshotFactory(
         var session = result.SmtpSessionEvidence;
         var history = result.HistoricalEvidence ?? HistoricalSignalSummary.Empty;
         var reputation = smtp?.Reputation;
-        var snapshotId = StableId(request.ValidationId, result.AttemptNumber,
+        // The coordinator finalizes result.AttemptNumber only after this capture.
+        // Use the lifecycle-assigned execution context, including on durable retries.
+        var snapshotId = StableId(request.ValidationId, request.AttemptNumber,
             EvidenceBackedClassificationVersions.FeatureSchemaV2, result.Metadata.ValidatedAt);
         return new EmailValidationFeatureSnapshot
         {
@@ -279,7 +281,7 @@ public sealed class EmailValidationFeatureSnapshotFactory(
                 history.GreylistingProbability),
             Operational = new(
                 result.Metadata.ResultSource,
-                result.AttemptNumber,
+                request.AttemptNumber,
                 result.EvidenceQuality,
                 result.ProbeAttempted,
                 reputation?.Mode,
