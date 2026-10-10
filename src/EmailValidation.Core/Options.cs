@@ -2,6 +2,7 @@ namespace EmailValidation.Core;
 
 public sealed class EmailValidationOptions
 {
+    public ValidationRetentionOptions Retention { get; set; } = new();
     public DomainIntelligenceOptions DomainIntelligence { get; set; } = new();
     public DnsSecurityOptions DnsSecurity { get; set; } = new();
     public AuthenticationIntelligenceOptions AuthenticationIntelligence { get; set; } = new();
@@ -39,7 +40,7 @@ public sealed class ClassificationModelOptions
     public double AbstentionUpperBound { get; set; } = 0.6;
     public double MinimumVerificationReliability { get; set; } = 0.25;
     public double MaximumMissingFeatureFraction { get; set; } = 0.35;
-    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v2";
+    public string DecisionPolicyVersion { get; set; } = "classification-decision-policy-v3";
 }
 
 public sealed class EmailValidationProjectionOptions
@@ -228,6 +229,7 @@ public sealed class DisposableEmailOptions
     public bool Enabled { get; set; } = true;
     public int CacheMinutes { get; set; } = 60;
     public string DatasetVersion { get; set; } = "configured-1";
+    public DateTimeOffset? DatasetPublishedAtUtc { get; set; }
 }
 
 public sealed class RiskIntelligenceOptions
@@ -286,6 +288,7 @@ public sealed class PersistenceOptions
     public string OutboundIdentityHealthCollection { get; set; } = "EmailValidationOutboundIdentityHealth";
     public string SmtpReputationStateCollection { get; set; } = "EmailValidationSmtpReputationState";
     public string FeatureSnapshotCollection { get; set; } = "EmailValidationFeatureSnapshots";
+    public string SuppressionCollection { get; set; } = "EmailValidationSuppressions";
     public string OutcomeObservationCollection { get; set; } = "EmailValidationOutcomeObservations";
 }
 
@@ -494,4 +497,13 @@ public sealed class IntelligenceOptions
     public string[] AbuseRiskAddresses { get; set; } = [];
     public Dictionary<string, string> SuppressedAddresses { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> MxForwardingSuffixes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class ValidationRetentionOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int DetailDays { get; set; } = 90;
+    public int BenchmarkDays { get; set; } = 365;
+    public int BatchSize { get; set; } = 200;
+    public int SweepIntervalMinutes { get; set; } = 60;
 }

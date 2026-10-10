@@ -12,7 +12,7 @@ namespace EmailValidation.Infrastructure;
 /// domain, mailbox, observations, outcomes, and suppressions so mailbox evidence
 /// cannot accidentally become domain behavior.
 /// </summary>
-public sealed class JsonValidationIntelligenceStore :
+public sealed partial class JsonValidationIntelligenceStore :
     IValidationIntelligenceStore,
     IValidationObservationStore,
     IDeliveryOutcomeStore,
@@ -24,12 +24,12 @@ public sealed class JsonValidationIntelligenceStore :
     };
 
     private readonly PersistenceOptions _options;
+    private readonly ValidationRetentionOptions _retention;
     private readonly CatchAllOptions _catchAllOptions;
     private readonly string _root;
     private readonly BoundedEvidenceCache<DomainIntelligence> _domains;
     private readonly TimeProvider _clock;
     private readonly BoundedEvidenceCache<MailboxIntelligence> _mailboxes;
-    private readonly ConcurrentDictionary<string, SuppressionEntry> _suppressions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _observations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _recipientBehaviorObservations =
@@ -42,6 +42,7 @@ public sealed class JsonValidationIntelligenceStore :
     public JsonValidationIntelligenceStore(IOptions<EmailValidationOptions> options, TimeProvider? timeProvider = null)
     {
         _options = options.Value.Persistence;
+        _retention = options.Value.Retention;
         _clock = timeProvider ?? TimeProvider.System;
         _domains = new(_options.EvidenceCacheSizeLimit, _clock);
         _mailboxes = new(_options.EvidenceCacheSizeLimit, _clock);
@@ -232,27 +233,36 @@ public sealed class JsonValidationIntelligenceStore :
         CancellationToken cancellationToken = default)
     {
         await EnsureOutcomesLoadedAsync(cancellationToken).ConfigureAwait(false);
-        return _outcomes.Where(item => Matches(item, query)).ToArray();
+        return _outcomes.Where(item => (!_retention.Enabled || item.OutcomeObservedAt >= _clock.GetUtcNow().AddDays(-_retention.DetailDays)) && Matches(item, query)).ToArray();
     }
 
-    public async Task<SuppressionEntry?> GetAsync(string normalizedEmail, CancellationToken cancellationToken = default)
+    public Task<SuppressionEntry?> GetAsync(string normalizedEmail, CancellationToken cancellationToken = default) =>
+        GetScopedAsync(normalizedEmail, null, cancellationToken);
+
+    public async Task<SuppressionEntry?> GetScopedAsync(string normalizedEmail, string? tenantId,
+        CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var key = MailboxIdentity.Create(normalizedEmail).Key;
-        if (_suppressions.TryGetValue(key, out var cached)) return cached;
-        var loaded = await ReadAsync<SuppressionEntry>(PathFor("suppressions", normalizedEmail), cancellationToken).ConfigureAwait(false);
-        if (loaded?.MailboxKey != key || !MailboxIdentity.Matches(key, loaded.NormalizedEmail)) return null;
-        _suppressions[key] = loaded;
-        return loaded;
+        var identity = MailboxIdentity.Create(normalizedEmail);
+        foreach (var scope in string.IsNullOrWhiteSpace(tenantId) ? new string?[] { null } : [tenantId, null])
+        {
+            var loaded = await ReadAsync<SuppressionEntry>(SuppressionPath(identity.Address, scope), cancellationToken).ConfigureAwait(false);
+            if (loaded?.MailboxKey == identity.Key && loaded.TenantId == scope &&
+                MailboxIdentity.Matches(identity.Key, loaded.NormalizedEmail)) return loaded;
+        }
+        return null;
     }
 
     public async Task AddAsync(SuppressionEntry entry, CancellationToken cancellationToken = default)
     {
         var identity = MailboxIdentity.Create(entry.NormalizedEmail);
         entry = entry with { NormalizedEmail = identity.Address, MailboxKey = identity.Key };
-        _suppressions[identity.Key] = entry;
-        await WriteAsync(PathFor("suppressions", entry.NormalizedEmail), entry, cancellationToken).ConfigureAwait(false);
+        await WriteAsync(SuppressionPath(entry.NormalizedEmail, entry.TenantId), entry, cancellationToken).ConfigureAwait(false);
     }
+
+    private string SuppressionPath(string email, string? tenantId) => tenantId is null
+        ? PathFor("suppressions", email)
+        : Path.Combine(_root, "tenant-suppressions", Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new[] { tenantId, MailboxIdentity.Create(email).Key })))) + ".json");
 
     private static bool Matches(DeliveryOutcomeRecord item, CalibrationQuery query)
     {
@@ -301,7 +311,7 @@ public sealed class JsonValidationIntelligenceStore :
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteWithoutGateAsync(path, _outcomes.ToArray(), cancellationToken).ConfigureAwait(false);
+            await WriteWithoutGateAsync(path, _outcomes.Where(item => !_retention.Enabled || item.OutcomeObservedAt >= _clock.GetUtcNow().AddDays(-_retention.DetailDays)).ToArray(), cancellationToken).ConfigureAwait(false);
         }
         finally { gate.Release(); }
     }

@@ -765,6 +765,9 @@ public sealed record ProjectionIndexResult(
 
 public interface IElasticsearchObservationSink
 {
+    Task<long> PruneAsync(ValidationRetentionRequest retention, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Projection retention is not supported by this adapter.");
+
     Task<IReadOnlyList<ProjectionIndexResult>> IndexBatchAsync(
         IReadOnlyList<EmailValidationObservationEnvelope> observations,
         CancellationToken cancellationToken = default);
@@ -775,6 +778,24 @@ public sealed class ElasticsearchObservationSink(
     IOptions<EmailValidationOptions> options) : IElasticsearchObservationSink
 {
     private readonly ProjectionElasticsearchOptions _options = options.Value.Projection.Elasticsearch;
+
+    public async Task<long> PruneAsync(ValidationRetentionRequest retention, CancellationToken cancellationToken = default)
+    {
+        var query = new JsonObject { ["range"] = new JsonObject { ["@timestamp"] = new JsonObject {
+            ["lt"] = retention.BenchmarkCutoffUtc.ToString("O") } } };
+        var body = new JsonObject { ["query"] = query };
+        if (!retention.DryRun) body["max_docs"] = retention.BatchSize;
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            Uri.EscapeDataString(_options.DataStreamName) + (retention.DryRun ? "/_count" : "/_delete_by_query?conflicts=proceed"))
+        { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
+        ApplyAuthentication(request);
+        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        if (result.RootElement.TryGetProperty("failures", out var failures) && failures.GetArrayLength() > 0)
+            throw new InvalidOperationException("Projection retention did not complete.");
+        return result.RootElement.GetProperty(retention.DryRun ? "count" : "deleted").GetInt64();
+    }
 
     public async Task<IReadOnlyList<ProjectionIndexResult>> IndexBatchAsync(
         IReadOnlyList<EmailValidationObservationEnvelope> observations,

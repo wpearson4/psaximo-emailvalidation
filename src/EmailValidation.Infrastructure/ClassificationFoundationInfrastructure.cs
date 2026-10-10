@@ -75,6 +75,22 @@ public sealed class LocalClassificationEvidenceStore :
 
     public LocalClassificationEvidenceStore(IOptions<EmailValidationOptions> options) => _options = options.Value.Persistence;
 
+    public async Task<ValidationRetentionReport> PruneAsync(ValidationRetentionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
+        var outcomes = _outcomes.Where(item => item.Value.ObservedAtUtc < request.BenchmarkCutoffUtc).Take(request.BatchSize).ToArray();
+        var snapshots = _snapshots.Where(item => item.Value.SnapshotAtUtc < request.BenchmarkCutoffUtc).Take(request.BatchSize).ToArray();
+        if (!request.DryRun)
+        {
+            foreach (var item in outcomes) _outcomes.TryRemove(item.Key, out _);
+            foreach (var item in snapshots) _snapshots.TryRemove(item.Key, out _);
+            await PersistAsync(cancellationToken).ConfigureAwait(false);
+        }
+        return new(request.DryRun, new Dictionary<string, long> { ["localOutcomes"] = outcomes.Length,
+            ["localSnapshots"] = snapshots.Length }, 0);
+    }
+
     public async Task<AppendObservationResult> AppendAsync(
         EmailDeliveryOutcomeObservation observation,
         CancellationToken cancellationToken = default)

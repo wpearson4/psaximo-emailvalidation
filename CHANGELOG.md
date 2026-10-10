@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Completed EV13 with current tenant-scoped suppression checks after evidence reuse and bounded retention
+  (90-day detail / 365-day benchmark), protecting active retries and interrupted cleanup.
+- Completed EV15 with explicit partial authentication metadata, honest dataset publication clocks, and
+  model support based on inputs actually consumed by the model (decision policy v3).
+- Added optional cleaned CSV downloads that blank only final Invalid values in the selected email column,
+  preserving every purchased row, other fields, and the original source. See `docs/ev13-ev15-cleaned-export.md`.
+
 - Added an evidence-aware `HIGH` / `MEDIUM` / `LOW` confidence level to canonical results, REST, unary/status gRPC,
   and lifecycle events while retaining the existing numeric heuristic for compatibility. Inconclusive `Unknown`
   results remain `LOW` even when the legacy score expresses high confidence that validation was inconclusive.

@@ -32,6 +32,7 @@ internal sealed class BoundedEvidenceCache<T>(int capacity, TimeProvider clock) 
             _entries.Add(key, new(value, expiresAt, _order.AddLast(key)));
         }
     }
+    public void Clear() { lock (_sync) { _entries.Clear(); _order.Clear(); } }
     public void Remove(string key) { lock (_sync) RemoveCore(key); }
     private void RemoveCore(string key)
     {

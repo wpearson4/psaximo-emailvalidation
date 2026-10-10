@@ -305,3 +305,5 @@ dotnet test tests/EmailValidation.IntegrationTests --filter Category=MongoIntegr
 - This phase intentionally contains no hosted API, queues, proxy/IP rotation, tenant/authentication, machine-learning calibration, or commercial validation-provider integration.
 
 EV10/EV11 add authorized outcome imports, an offline accuracy benchmark, model release evidence gates, and additive confidence semantics. See [the implementation and operator guide](docs/ev10-ev11-accuracy-and-public-confidence.md).
+
+EV13/EV15 add current risk after reuse, 90-day detail/365-day benchmark retention, honest auxiliary metadata, and optional cleaned CSV downloads. See [the implementation and operator guide](docs/ev13-ev15-cleaned-export.md).

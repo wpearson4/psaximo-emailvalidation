@@ -93,6 +93,13 @@ public static class ServiceCollectionExtensions
             return new MongoClient(settings);
         });
         services.AddSingleton<MongoValidationIntelligenceStore>();
+        services.AddSingleton<MongoValidationRetentionStore>();
+        services.AddSingleton<IValidationRetentionStore>(provider => new ValidationRetentionStore(
+            provider.GetRequiredService<JsonValidationIntelligenceStore>(),
+            provider.GetRequiredService<LocalClassificationEvidenceStore>(),
+            provider.GetRequiredService<IOptions<EmailValidationOptions>>(),
+            provider.GetRequiredService<IElasticsearchObservationSink>(),
+            IsMongo(provider) ? provider.GetRequiredService<MongoValidationRetentionStore>() : null));
         services.AddSingleton<NoOpEmailValidationPersistenceInitializer>();
         services.AddSingleton<LocalClassificationEvidenceStore>();
         services.AddSingleton<MongoClassificationEvidenceStore>();
@@ -128,8 +135,10 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDeliveryOutcomeRecorder>(provider =>
             provider.GetRequiredService<JsonValidationIntelligenceStore>());
-        services.AddSingleton<IGlobalSuppressionStore>(provider =>
-            provider.GetRequiredService<JsonValidationIntelligenceStore>());
+        services.AddSingleton<MongoSuppressionStore>();
+        services.AddSingleton<IGlobalSuppressionStore>(provider => IsMongo(provider)
+            ? provider.GetRequiredService<MongoSuppressionStore>()
+            : provider.GetRequiredService<JsonValidationIntelligenceStore>());
         services.AddSingleton<IDomainValidationCache, PersistentDomainValidationCache>();
         services.AddSingleton<IDomainIntelligenceFreshnessPolicy, DomainIntelligenceFreshnessPolicy>();
         services.AddSingleton<IDomainIntelligenceService, DomainIntelligenceService>();

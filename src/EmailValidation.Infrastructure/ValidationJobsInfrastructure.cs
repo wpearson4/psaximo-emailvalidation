@@ -302,15 +302,10 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         int chunkCount,
         CancellationToken cancellationToken = default)
     {
-        await _items.UpdateManyAsync(
-            value => value.JobId == jobId && value.State == ValidationJobItemState.Processing,
-            Builders<ItemDocument>.Update
-                .Set(value => value.State, ValidationJobItemState.Pending)
-                .Unset(value => value.LeaseOwner)
-                .Unset(value => value.LeaseExpiresAtUtc),
-            cancellationToken: cancellationToken).ConfigureAwait(false);
         var updated = await _jobs.UpdateOneAsync(
-            value => value.Id == jobId && value.State == ValidationJobState.Failed,
+            Builders<JobDocument>.Filter.Eq(value => value.Id, jobId) &
+            Builders<JobDocument>.Filter.Eq(value => value.State, ValidationJobState.Failed) &
+            Builders<JobDocument>.Filter.Ne(value => value.RetentionDeleting, true),
             Builders<JobDocument>.Update
                 .Set(value => value.State, ValidationJobState.Requested)
                 .Set(value => value.FailureReason, null)
@@ -327,6 +322,13 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
             cancellationToken: cancellationToken).ConfigureAwait(false);
         if (updated.ModifiedCount == 0)
             throw new InvalidOperationException($"Validation job '{jobId}' could not be queued from its current state.");
+        await _items.UpdateManyAsync(
+            value => value.JobId == jobId && value.State == ValidationJobItemState.Processing,
+            Builders<ItemDocument>.Update
+                .Set(value => value.State, ValidationJobItemState.Pending)
+                .Unset(value => value.LeaseOwner)
+                .Unset(value => value.LeaseExpiresAtUtc),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<ValidationJobDispatch>> ClaimPendingAsync(
@@ -538,6 +540,7 @@ public sealed class MongoValidationJobStore : IValidationJobStore, IValidationJo
         [BsonDateTimeOptions(Kind = DateTimeKind.Utc)]
         public DateTime? DispatchRetryAtUtc { get; set; }
         public string? DispatchLastError { get; set; }
+        public bool RetentionDeleting { get; set; }
         public static JobDocument FromModel(ValidationJobSnapshot value) => new()
         {
             Id = value.JobId, CreatedAtUtc = value.CreatedAtUtc, State = value.State,

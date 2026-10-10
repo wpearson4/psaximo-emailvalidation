@@ -667,7 +667,7 @@ public sealed class PersistentSuppressionRiskDataSource(IGlobalSuppressionStore 
 {
     public async Task<RiskDataResult> LookupAsync(EmailRiskContext context, CancellationToken cancellationToken = default)
     {
-        var match = await suppressions.GetAsync(context.NormalizedEmail, cancellationToken).ConfigureAwait(false);
+        var match = await suppressions.GetScopedAsync(context.NormalizedEmail, context.TenantId, cancellationToken).ConfigureAwait(false);
         return match is null
             ? new("PersistentSuppression", MailingRiskLevel.Unknown, [], [])
             : new("PersistentSuppression", MailingRiskLevel.High, [MailingRiskReason.KnownSuppression],
@@ -683,6 +683,7 @@ public sealed class EmailRiskIntelligence(IEnumerable<IRiskDataSource> sources) 
         var results = await Task.WhenAll(sources.Select(source => LookupSafelyAsync(source, context, cancellationToken)))
             .ConfigureAwait(false);
         var level = results.Select(item => item.Level).DefaultIfEmpty(MailingRiskLevel.Unknown).MaxBy(Rank);
+        if (level != MailingRiskLevel.High && results.Any(item => !item.Available)) level = MailingRiskLevel.Unknown;
         return new(
             context.DeliverabilityStatus,
             context.DeliverabilityConfidence,
@@ -718,7 +719,7 @@ public sealed class EmailRiskIntelligence(IEnumerable<IRiskDataSource> sources) 
                 source.GetType().Name,
                 MailingRiskLevel.Unknown,
                 [],
-                []);
+                []) { Available = false };
         }
     }
 }
@@ -869,12 +870,54 @@ public sealed class IntelligenceEmailValidator(
     IOptions<EmailValidationOptions> options,
     TimeProvider timeProvider,
     ILogger<IntelligenceEmailValidator> logger,
-    IConfidenceLevelPolicy confidenceLevelPolicy) : IEmailValidator, IEmailValidationService
+    IConfidenceLevelPolicy confidenceLevelPolicy,
+    IEmailIntelligenceEvaluator? addressIntelligence = null) : IEmailValidator, IEmailValidationService
 {
     private readonly ValidationPolicyVersions _policy = ProviderCapabilityPolicy.PolicyVersions(options.Value);
     private readonly ResultReuseOptions _reuseOptions = options.Value.ResultReuse;
 
     public async Task<EmailValidationResult> ValidateAsync(
+        string email,
+        EmailValidationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        // Shared caches and single-flight carry technical evidence only. Risk belongs to
+        // this caller and is re-evaluated after every reuse path, including joined work.
+        var result = await ValidateTechnicalAsync(email, request, cancellationToken).ConfigureAwait(false);
+        var normalized = normalizer.Normalize(email);
+        var address = result.AddressIntelligence;
+        if (normalized.IsValid && addressIntelligence is not null)
+            address = await addressIntelligence.EvaluateAsync(normalized.NormalizedEmail!,
+                normalized.LocalPart!, normalized.Domain!, cancellationToken).ConfigureAwait(false);
+        var risk = result.NormalizedEmail is null ? null : await riskIntelligence.EvaluateAsync(
+            new EmailRiskContext(result.NormalizedEmail, result.Status, result.Confidence, result.Checks,
+                result.DomainIntelligence, address) { TenantId = request.TenantId }, cancellationToken).ConfigureAwait(false);
+        var staged = result with
+        {
+            AddressIntelligence = address,
+            MailingRisk = risk is null ? null : risk with { EvaluatedAtUtc = timeProvider.GetUtcNow(), PolicyVersion = "mailing-risk-v2" },
+            DetailedStatuses = result.DetailedStatuses.Where(status => status is not
+                (DetailedStatus.KnownSuppression or DetailedStatus.GlobalSuppression)).ToArray(),
+            SubStatuses = result.SubStatuses.Where(status => status is not
+                (DetailedStatus.KnownSuppression or DetailedStatus.GlobalSuppression)).ToArray()
+        };
+        var recommendation = SendRecommendationPolicy.Evaluate(staged.Status, staged.Checks, staged.DomainIntelligence, address);
+        if (risk?.MailingRisk == MailingRiskLevel.High)
+            recommendation = new(false, RecommendationRisk.High,
+                recommendation.Reasons.Concat(risk.RiskReasons.Select(reason => reason.ToString())).Distinct().ToArray());
+        if (risk?.MailingRisk == MailingRiskLevel.Unknown && recommendation.Send == true)
+            recommendation = new(null, RecommendationRisk.Unknown, ["CurrentRiskUnavailable"]);
+        staged = staged with { Recommendation = recommendation,
+            DetailedStatus = staged.DetailedStatus is DetailedStatus.KnownSuppression or DetailedStatus.GlobalSuppression
+                ? DetailedStatus.Unknown : staged.DetailedStatus };
+        var subStatus = ValidationSubStatusMapper.Map(staged);
+        var current = staged with { SubStatus = subStatus,
+            SubStatuses = staged.SubStatuses.Append(subStatus).Distinct().ToArray() };
+        qualityMetrics.Record(current);
+        return current;
+    }
+
+    private async Task<EmailValidationResult> ValidateTechnicalAsync(
         string email,
         EmailValidationRequest request,
         CancellationToken cancellationToken = default)
@@ -986,7 +1029,7 @@ public sealed class IntelligenceEmailValidator(
             : flight.Result with { Email = email };
     }
 
-    private async Task<EmailValidationResult> EnrichAsync(
+    private Task<EmailValidationResult> EnrichAsync(
         EmailValidationResult result,
         ValidationResultSource source,
         CancellationToken cancellationToken)
@@ -995,20 +1038,9 @@ public sealed class IntelligenceEmailValidator(
         var validatedAt = result.Metadata?.ValidatedAt ?? now;
         var reused = source is ValidationResultSource.MemoryCache or ValidationResultSource.PersistentReuse or
             ValidationResultSource.PersistentDomainIntelligence;
-        EmailRiskResult? risk = result.MailingRisk;
-        if (result.NormalizedEmail is not null)
-        {
-            risk = await riskIntelligence.EvaluateAsync(new EmailRiskContext(
-                result.NormalizedEmail,
-                result.Status,
-                result.Confidence,
-                result.Checks,
-                result.DomainIntelligence,
-                result.AddressIntelligence), cancellationToken).ConfigureAwait(false);
-        }
         var staged = result with
         {
-            MailingRisk = risk,
+            MailingRisk = null,
             Metadata = new ValidationResultMetadata(
                 _policy,
                 validatedAt,
@@ -1027,8 +1059,7 @@ public sealed class IntelligenceEmailValidator(
             SubStatus = subStatus,
             SubStatuses = staged.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
-        qualityMetrics.Record(enriched);
-        return enriched;
+        return Task.FromResult(enriched);
     }
 
     private async Task<PersistenceLookup> LookupPersistentAsync(
@@ -1240,7 +1271,6 @@ public sealed class IntelligenceEmailValidator(
                 }
             }
         };
-        if (source == ValidationResultSource.MemoryCache) qualityMetrics.Record(returned);
         return returned;
     }
 

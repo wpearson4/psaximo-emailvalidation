@@ -116,7 +116,7 @@ public sealed class LogisticRegressionProbabilityScorer(
         var metadata = new PredictionModelMetadata(
             artifact.ModelName, artifact.ModelVersion, artifact.FeatureSchemaVersion,
             artifact.CalibrationVersion, artifact.OutcomeDefinitionVersion,
-            EvidenceBackedClassificationVersions.DefaultDecisionPolicyV2,
+            EvidenceBackedClassificationVersions.DefaultDecisionPolicyV3,
             artifact.TrainingDataCutoffUtc, artifact.TrainingDatasetId, checksum,
             DateTimeOffset.MinValue, ModelRolloutMode.Disabled) { SupportedProviders = artifact.SupportedProviders };
         return new(artifact.Target, score, metadata);

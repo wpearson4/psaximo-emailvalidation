@@ -168,7 +168,7 @@ public static class ApiEndpoints
         group.MapGet("/email-validation-jobs/{jobId}/file", DownloadValidatedFileAsync)
             .WithName("DownloadValidatedFileV1")
             .WithSummary("Download the source file with current validation results")
-            .WithDescription("Reauthorizes the source file and streams a CSV that preserves every original row while appending the current validation result columns.")
+            .WithDescription("Reauthorizes the source file and streams a CSV that preserves every original row while appending the current validation result columns. Optional removeInvalidEmails=true blanks only finalized Invalid emails in the selected column; the original file and other contact fields remain unchanged.")
             .RequireAuthorization(EmailValidationPolicies.JobsRead)
             .RequireRateLimiting(ApiRateLimitPolicies.Requests)
             .Produces(StatusCodes.Status200OK, contentType: "text/csv")
@@ -879,6 +879,7 @@ public static class ApiEndpoints
 
     private static async Task<IResult> DownloadValidatedFileAsync(
         string jobId,
+        bool? removeInvalidEmails,
         HttpContext http,
         IValidationJobService jobs,
         IValidationJobAccessPolicy accessPolicy,
@@ -938,7 +939,7 @@ public static class ApiEndpoints
         }
 
         var outputName = Path.GetFileNameWithoutExtension(job.SourceFileName ?? "validated-file") +
-            "-email-validated.csv";
+            (removeInvalidEmails == true ? "-email-cleaned.csv" : "-email-validated.csv");
         var authorization = http.Request.Headers.Authorization.ToString();
         return Results.Stream(async output =>
         {
@@ -951,6 +952,7 @@ public static class ApiEndpoints
                 source.FileName,
                 job,
                 output,
+                removeInvalidEmails == true,
                 http.RequestAborted).ConfigureAwait(false);
         }, "text/csv; charset=utf-8", outputName);
     }

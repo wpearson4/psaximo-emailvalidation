@@ -29,10 +29,22 @@ builder.Services.AddHostedService<ServiceBusValidationJobWorker>();
 builder.Services.AddHostedService<ProjectionOutboxPublisherWorker>();
 builder.Services.AddHostedService<ElasticsearchProjectionWorker>();
 builder.Services.AddHostedService<ProjectionReconciliationWorker>();
+builder.Services.AddHostedService<ValidationRetentionWorker>();
 
 using var host = builder.Build();
 try
 {
+    if (args.Contains("--retention", StringComparer.Ordinal))
+    {
+        var settings = host.Services.GetRequiredService<IOptions<EmailValidationOptions>>().Value;
+        var now = DateTimeOffset.UtcNow;
+        var report = await host.Services.GetRequiredService<IValidationRetentionStore>().SweepAsync(
+            new ValidationRetentionRequest(now.AddDays(-settings.Retention.DetailDays),
+                now.AddDays(-settings.Retention.BenchmarkDays), settings.Retention.BatchSize,
+                DryRun: !args.Contains("--retention-apply", StringComparer.Ordinal)));
+        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(report, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        return 0;
+    }
     await host.Services.GetRequiredService<IEmailValidationPersistenceInitializer>().InitializeAsync();
     await host.Services.GetRequiredService<IRevalidationInfrastructureInitializer>().InitializeAsync();
     await host.Services.GetRequiredService<IValidationJobInfrastructureInitializer>().InitializeAsync();

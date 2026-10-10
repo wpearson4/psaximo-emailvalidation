@@ -161,10 +161,12 @@ internal sealed class EmailAuthenticationAnalyzer(
 
     internal static SpfIntelligence ParseSpf(DnsWireResponse response)
     {
+        if (response.ResponseCode == 3) return new(AuthenticationRecordState.NotPresent);
         if (response.ResponseCode != 0)
             return new(AuthenticationRecordState.LookupFailed, Detail: $"DNS response code {response.ResponseCode}.");
         var records = response.TextRecords
-            .Where(record => record.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase))
+            .Where(record => record.Equals("v=spf1", StringComparison.OrdinalIgnoreCase) ||
+                record.StartsWith("v=spf1 ", StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (records.Length == 0) return new(AuthenticationRecordState.NotPresent);
         if (records.Length > 1)
@@ -175,7 +177,8 @@ internal sealed class EmailAuthenticationAnalyzer(
             return new(AuthenticationRecordState.Invalid, Record: records[0], Detail: "Malformed SPF version tag.");
         var all = tokens.LastOrDefault(token => token.TrimStart('+', '-', '~', '?')
             .Equals("all", StringComparison.OrdinalIgnoreCase));
-        return new(AuthenticationRecordState.Valid, all, records[0]);
+        return new(AuthenticationRecordState.Valid, all, records[0],
+            "SPF record and selected mechanisms observed; recursive evaluation and sender authorization were not performed.");
     }
 
     internal static DmarcIntelligence ParseDmarc(DnsWireResponse response)
@@ -215,7 +218,8 @@ internal sealed class EmailAuthenticationAnalyzer(
                 return new(AuthenticationRecordState.Invalid, Record: records[0], Detail: "The DMARC pct tag is invalid.");
             percentage = parsed;
         }
-        return new(AuthenticationRecordState.Valid, policy, subdomain, percentage, records[0]);
+        return new(AuthenticationRecordState.Valid, policy, subdomain, percentage, records[0],
+            "Selected DMARC tags parsed at the exact domain; organizational fallback and message alignment were not evaluated.");
     }
 
     private static bool TryPolicy(string value, out DmarcPolicy policy)

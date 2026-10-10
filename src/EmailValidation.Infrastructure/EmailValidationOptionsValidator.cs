@@ -26,6 +26,14 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var projection = options.Projection;
         var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
+        if (options.Retention.DetailDays is < 1 or > 3650 ||
+            options.Retention.BenchmarkDays < options.Retention.DetailDays || options.Retention.BenchmarkDays > 3650 ||
+            options.Retention.BatchSize is < 1 or > 1000 || options.Retention.SweepIntervalMinutes is < 1 or > 1440)
+            failures.Add("Retention requires 1–3650 detail days, at least as many benchmark days, a bounded batch and a 1–1440 minute interval.");
+        if (string.IsNullOrWhiteSpace(persistence.SuppressionCollection))
+            failures.Add("A shared suppression collection name is required.");
+        if (options.DisposableEmail.DatasetPublishedAtUtc > DateTimeOffset.UtcNow)
+            failures.Add("Disposable dataset publication time cannot be in the future.");
         var capabilities = options.ProviderCapabilities;
         if (!Enum.IsDefined(capabilities.Mode) || string.IsNullOrWhiteSpace(capabilities.PolicyVersion) ||
             capabilities.Profiles.Keys.Any(key => !ProviderCapabilityPolicy.SupportedKeys.Contains(key)) ||

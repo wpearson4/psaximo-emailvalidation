@@ -8,6 +8,37 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class DomainIntelligencePlatformTests
 {
+    [Fact]
+    public void AuthenticationMetadata_DoesNotClaimFullEvaluationFromPartialParsing()
+    {
+        var spf = EmailAuthenticationAnalyzer.ParseSpf(Response("v=spf1 include:missing.test -all"));
+        var dmarc = EmailAuthenticationAnalyzer.ParseDmarc(Response("v=DMARC1; p=reject"));
+        Assert.Equal(AuthenticationEvaluationScope.PartialRecordParsing, spf.EvaluationScope);
+        Assert.False(spf.FullyEvaluated);
+        Assert.False(dmarc.FullyEvaluated);
+        Assert.False(dmarc.OrganizationalPolicyEvaluated);
+        Assert.False(DkimIntelligence.NotEvaluated.SignatureVerified);
+        Assert.Equal(AuthenticationRecordState.NotPresent,
+            EmailAuthenticationAnalyzer.ParseSpf(Response("v=spf10 -all")).State);
+    }
+
+    [Fact]
+    public void DisposableDataset_PublicationTimeIsStableAndUnknownUntilConfigured()
+    {
+        var clock = new EvidenceClock();
+        var configuration = new EmailValidationOptions();
+        configuration.Intelligence.DisposableDomains = ["disposable.test"];
+        var detector = new DisposableEmailDetector(Options.Create(configuration), clock);
+        Assert.Null(detector.Evaluate("disposable.test").LastUpdatedUtc);
+        configuration.DisposableEmail.DatasetPublishedAtUtc = clock.GetUtcNow().AddDays(-10);
+        var first = detector.Evaluate("disposable.test");
+        clock.Advance(TimeSpan.FromHours(1));
+        var second = detector.Evaluate("disposable.test");
+        Assert.Equal(first.LastUpdatedUtc, second.LastUpdatedUtc);
+        Assert.True(second.DetectedAtUtc > first.DetectedAtUtc);
+        Assert.Equal(first.LastUpdatedUtc, detector.Evaluate("other.test").LastUpdatedUtc);
+    }
+
     [Theory]
     [InlineData(DnsStatus.Success, 0)]
     [InlineData(DnsStatus.Success, 30)]
@@ -439,7 +470,7 @@ public sealed class DomainIntelligencePlatformTests
     [Fact]
     public async Task RiskProviderFailure_DegradesToUnknownWithoutChangingMailboxAssessment()
     {
-        var service = new EmailRiskIntelligence([new ThrowingRiskSource()]);
+        var service = new EmailRiskIntelligence([new LowRiskSource(), new ThrowingRiskSource()]);
         var context = new EmailRiskContext(
             "person@example.test", EmailValidationStatus.Valid, 0.98,
             new EmailValidationChecks(), null, null);
@@ -543,6 +574,13 @@ public sealed class DomainIntelligencePlatformTests
             bool dnssec,
             bool checkingDisabled,
             CancellationToken cancellationToken) => throw new IOException("Resolver unavailable.");
+    }
+
+    private sealed class LowRiskSource : IRiskDataSource
+    {
+        public Task<RiskDataResult> LookupAsync(EmailRiskContext context,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new RiskDataResult("available", MailingRiskLevel.Low, [], []));
     }
 
     private sealed class ThrowingRiskSource : IRiskDataSource

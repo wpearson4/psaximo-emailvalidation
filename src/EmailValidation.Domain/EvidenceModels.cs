@@ -345,6 +345,19 @@ public sealed record DnsSecurityIntelligence(
         DnsSecurityState.Unknown, IntelligenceAvailability.NotAvailable, default);
 }
 
+public enum AuthenticationEvaluationScope { NotEvaluated, Unavailable, RecordDiscovery, PartialRecordParsing }
+
+public static class AuthenticationEvaluationPolicy
+{
+    public static AuthenticationEvaluationScope Scope(AuthenticationRecordState state) => state switch
+    {
+        AuthenticationRecordState.Unknown => AuthenticationEvaluationScope.NotEvaluated,
+        AuthenticationRecordState.LookupFailed => AuthenticationEvaluationScope.Unavailable,
+        AuthenticationRecordState.NotPresent => AuthenticationEvaluationScope.RecordDiscovery,
+        _ => AuthenticationEvaluationScope.PartialRecordParsing
+    };
+}
+
 public enum AuthenticationRecordState { Unknown, NotPresent, Valid, Invalid, LookupFailed }
 public enum DkimObservationState { Unknown, Observed, NotEvaluated }
 public enum DmarcPolicy { Unknown, None, Quarantine, Reject }
@@ -355,6 +368,8 @@ public sealed record SpfIntelligence(
     string? Record = null,
     string? Detail = null)
 {
+    public AuthenticationEvaluationScope EvaluationScope => AuthenticationEvaluationPolicy.Scope(State);
+    public bool FullyEvaluated { get; }
     public static SpfIntelligence Unknown { get; } = new(AuthenticationRecordState.Unknown);
 }
 
@@ -366,6 +381,9 @@ public sealed record DmarcIntelligence(
     string? Record = null,
     string? Detail = null)
 {
+    public AuthenticationEvaluationScope EvaluationScope => AuthenticationEvaluationPolicy.Scope(State);
+    public bool OrganizationalPolicyEvaluated { get; }
+    public bool FullyEvaluated { get; }
     public static DmarcIntelligence Unknown { get; } = new(AuthenticationRecordState.Unknown);
 }
 
@@ -374,6 +392,7 @@ public sealed record DkimIntelligence(
     IReadOnlyList<string> ObservedSelectors,
     string? Detail = null)
 {
+    public bool SignatureVerified { get; }
     public static DkimIntelligence NotEvaluated { get; } = new(
         DkimObservationState.NotEvaluated, [], "DKIM selectors are not exhaustively discoverable.");
 }

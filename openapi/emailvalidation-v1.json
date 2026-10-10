@@ -1178,7 +1178,7 @@
           "Email Validation v1"
         ],
         "summary": "Download the source file with current validation results",
-        "description": "Reauthorizes the source file and streams a CSV that preserves every original row while appending the current validation result columns.",
+        "description": "Reauthorizes the source file and streams a CSV that preserves every original row while appending the current validation result columns. Optional removeInvalidEmails=true blanks only finalized Invalid emails in the selected column; the original file and other contact fields remain unchanged.",
         "operationId": "DownloadValidatedFileV1",
         "parameters": [
           {
@@ -1187,6 +1187,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "removeInvalidEmails",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           }
         ],

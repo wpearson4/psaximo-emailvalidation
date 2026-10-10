@@ -8,6 +8,42 @@ namespace EmailValidation.Core.Tests;
 public sealed class ProductionIntelligenceTests
 {
     [Fact]
+    public async Task CachedEvidence_RefreshesTenantRiskWithoutRenewingObservationOrReprobing()
+    {
+        var options = Options.Create(new EmailValidationOptions());
+        var executor = new CountingExecutor();
+        var risk = new MutableTenantRisk();
+        var store = new TestIntelligenceStore { Domain = Domain(DateTimeOffset.UtcNow.AddHours(1)) };
+        var validator = new IntelligenceEmailValidator(executor, new EmailNormalizer(), store,
+            new InMemoryValidationResultCache(options, TimeProvider.System), new ValidationSingleFlight(),
+            new ValidationResultReusePolicy(options), risk, new ValidationQualityMetrics(),
+            new ValidationPersistenceMetrics(), options, TimeProvider.System,
+            NullLogger<IntelligenceEmailValidator>.Instance, new ConfidenceLevelPolicy());
+        var first = await validator.ValidateAsync("person@example.test", new(true, TenantId: "tenant-a"));
+        risk.Suppressed = true;
+        var suppressed = await validator.ValidateAsync("person@example.test", new(true, TenantId: "tenant-a"));
+        var otherTenant = await validator.ValidateAsync("person@example.test", new(true, TenantId: "tenant-b"));
+        Assert.Equal(1, executor.Calls);
+        Assert.Contains(MailingRiskReason.KnownSuppression, suppressed.MailingRisk!.RiskReasons);
+        Assert.False(suppressed.Recommendation!.Send);
+        Assert.DoesNotContain(MailingRiskReason.KnownSuppression, otherTenant.MailingRisk!.RiskReasons);
+        Assert.True(otherTenant.Recommendation!.Send);
+        Assert.Equal(first.Metadata!.ValidatedAt, suppressed.Metadata!.ValidatedAt);
+        Assert.Equal(first.MailboxEvidenceObservedAt, suppressed.MailboxEvidenceObservedAt);
+        Assert.Null(store.Mailbox!.LastResult.MailingRisk);
+        Assert.False(RetryEvidencePolicy.HasNewObservation(first, suppressed, RetryEvidencePolicy.LatestObservation(first, first.Metadata.ValidatedAt)));
+    }
+
+    private sealed class MutableTenantRisk : IEmailRiskIntelligence
+    {
+        public bool Suppressed { get; set; }
+        public Task<EmailRiskResult> EvaluateAsync(EmailRiskContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EmailRiskResult(context.DeliverabilityStatus, context.DeliverabilityConfidence,
+                Suppressed && context.TenantId == "tenant-a" ? MailingRiskLevel.High : MailingRiskLevel.Low,
+                Suppressed && context.TenantId == "tenant-a" ? [MailingRiskReason.KnownSuppression] : [], []));
+    }
+
+    [Fact]
     public async Task PersistentStore_SeparatelyRestoresDomainAndMailboxAcrossInstances()
     {
         var path = Path.Combine(Path.GetTempPath(), "email-validation-tests", Guid.NewGuid().ToString("N"));

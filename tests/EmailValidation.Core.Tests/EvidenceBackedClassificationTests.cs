@@ -38,6 +38,21 @@ public sealed class EvidenceBackedClassificationTests
     }
 
     [Fact]
+    public void UnusedAuthenticationMetadata_DoesNotChangePredictionSupport()
+    {
+        var baseline = Snapshot("support", "email", "domain", DateTimeOffset.UtcNow, MailProvider.GoogleWorkspace);
+        var enriched = baseline with { Domain = baseline.Domain with { DnsSecurity = DnsSecurityState.Secure,
+            SpfState = AuthenticationRecordState.Valid, DmarcState = AuthenticationRecordState.Valid } };
+        var model = new PredictionModelMetadata("baseline", "1", EvidenceBackedClassificationVersions.FeatureSchemaV2,
+            "platt-1", EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2, "policy-1",
+            DateTimeOffset.UtcNow, "dataset", "checksum", DateTimeOffset.UtcNow, ModelRolloutMode.Shadow);
+        var prediction = new CalibratedPrediction(PredictionTargetKind.MailboxExistence, .99, model);
+        var policy = new TransparentPredictionUncertaintyPolicy(Options.Create(new EmailValidationOptions()));
+        Assert.Equal(policy.Evaluate(prediction, baseline), policy.Evaluate(prediction, enriched));
+        Assert.Equal(LogisticFeatureEncoder.Encode(baseline), LogisticFeatureEncoder.Encode(enriched));
+    }
+
+    [Fact]
     public async Task ProviderShadowAssessment_SurvivesSnapshotStorage_AndReportsByReviewedPolicy()
     {
         var at = new DateTimeOffset(2026, 10, 10, 12, 0, 0, TimeSpan.Zero);

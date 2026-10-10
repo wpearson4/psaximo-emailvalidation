@@ -665,6 +665,9 @@ public interface IEmailRiskIntelligence
 
 public interface IGlobalSuppressionStore
 {
+    Task<SuppressionEntry?> GetScopedAsync(string normalizedEmail, string? tenantId,
+        CancellationToken cancellationToken = default) => GetAsync(normalizedEmail, cancellationToken);
+
     Task<SuppressionEntry?> GetAsync(string normalizedEmail, CancellationToken cancellationToken = default);
     Task AddAsync(SuppressionEntry entry, CancellationToken cancellationToken = default);
 }

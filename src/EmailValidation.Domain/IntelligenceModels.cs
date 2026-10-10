@@ -204,20 +204,31 @@ public sealed record EmailRiskContext(
     double DeliverabilityConfidence,
     EmailValidationChecks Checks,
     DomainIntelligence? Domain,
-    EmailAddressIntelligence? Address);
+    EmailAddressIntelligence? Address)
+{
+    public string? TenantId { get; init; }
+}
 
 public sealed record RiskDataResult(
     string Source,
     MailingRiskLevel Level,
     IReadOnlyList<MailingRiskReason> Reasons,
-    IReadOnlyList<EvidenceProvenance> Evidence);
+    IReadOnlyList<EvidenceProvenance> Evidence)
+{
+    public bool Available { get; init; } = true;
+}
+
 
 public sealed record EmailRiskResult(
     EmailValidationStatus DeliverabilityStatus,
     double DeliverabilityConfidence,
     MailingRiskLevel MailingRisk,
     IReadOnlyList<MailingRiskReason> RiskReasons,
-    IReadOnlyList<EvidenceProvenance> Evidence);
+    IReadOnlyList<EvidenceProvenance> Evidence)
+{
+    public DateTimeOffset? EvaluatedAtUtc { get; init; }
+    public string? PolicyVersion { get; init; }
+}
 
 public sealed record SuppressionEntry(
     string NormalizedEmail,
@@ -226,6 +237,7 @@ public sealed record SuppressionEntry(
     DateTimeOffset SuppressedAt)
 {
     public string? MailboxKey { get; init; }
+    public string? TenantId { get; init; }
 }
 
 public sealed record ProviderQualitySnapshot(

@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Infrastructure;
 
-public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> options) :
+public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> options, TimeProvider? timeProvider = null) :
     IDisposableEmailDetector,
     IDisposableDomainIntelligenceProvider,
     IDisposableEmailDomainProvider
@@ -25,7 +25,7 @@ public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> opt
             {
                 Source = "ConfiguredDomainDataset",
                 DatasetVersion = _options.DatasetVersion,
-                LastUpdatedUtc = DateTimeOffset.UtcNow
+                LastUpdatedUtc = _options.DatasetPublishedAtUtc
             };
         Matches.Add(1);
         return new DisposableDomainResult(
@@ -34,8 +34,8 @@ public sealed class DisposableEmailDetector(IOptions<EmailValidationOptions> opt
             EvidenceSource.ConfiguredIntelligenceProvider,
             "ConfiguredDomainDataset",
             _options.DatasetVersion,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
+            (timeProvider ?? TimeProvider.System).GetUtcNow(),
+            _options.DatasetPublishedAtUtc);
     }
 
     public ValueTask<DisposableDomainResult> GetAsync(

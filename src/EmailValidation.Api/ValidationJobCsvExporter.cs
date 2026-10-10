@@ -25,6 +25,7 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         string sourceFileName,
         ValidationJobSnapshot job,
         Stream destination,
+        bool removeInvalidEmails = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -36,9 +37,9 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         var results = new ValidationResultCursor(jobs, job.JobId);
 
         if (sourceFileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            await WriteJsonAsync(source, writer, results, cancellationToken).ConfigureAwait(false);
+            await WriteJsonAsync(source, writer, results, job.EmailColumn, removeInvalidEmails, cancellationToken).ConfigureAwait(false);
         else if (sourceFileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
-            await WriteCsvAsync(source, writer, results, cancellationToken).ConfigureAwait(false);
+            await WriteCsvAsync(source, writer, results, job.EmailColumn, removeInvalidEmails, cancellationToken).ConfigureAwait(false);
         else
             throw new InvalidDataException("Validated file download supports CSV and JSON source files.");
 
@@ -49,6 +50,8 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         Stream source,
         CsvWriter writer,
         ValidationResultCursor results,
+        string? emailColumn,
+        bool removeInvalidEmails,
         CancellationToken cancellationToken)
     {
         using var input = new StreamReader(
@@ -64,7 +67,9 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         if (!await csv.ReadAsync().ConfigureAwait(false))
             throw new InvalidDataException("The source file is empty.");
 
-        var headers = CreateUniqueHeaders(csv.Parser.Record ?? []);
+        var sourceHeaders = csv.Parser.Record ?? [];
+        var emailIndex = ResolveEmailColumn(sourceHeaders, emailColumn, removeInvalidEmails);
+        var headers = CreateUniqueHeaders(sourceHeaders);
         foreach (var header in headers.Concat(ValidationHeaders))
             writer.WriteField(header);
         await writer.NextRecordAsync().ConfigureAwait(false);
@@ -74,12 +79,14 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var row = csv.Parser.Record ?? [];
+            var item = await results.ReadAtAsync(position, cancellationToken).ConfigureAwait(false);
             for (var index = 0; index < headers.Count; index++)
-                writer.WriteField(index < row.Length ? row[index] : string.Empty);
+                {
+                var value = index < row.Length ? row[index] : string.Empty;
+                writer.WriteField(index == emailIndex && ShouldRemove(value, item) ? string.Empty : value);
+            }
 
-            WriteValidationFields(
-                writer,
-                await results.ReadAtAsync(position, cancellationToken).ConfigureAwait(false));
+            WriteValidationFields(writer, item);
             await writer.NextRecordAsync().ConfigureAwait(false);
             position++;
         }
@@ -89,6 +96,8 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         Stream source,
         CsvWriter writer,
         ValidationResultCursor results,
+        string? emailColumn,
+        bool removeInvalidEmails,
         CancellationToken cancellationToken)
     {
         await using var records = JsonSerializer.DeserializeAsyncEnumerable<Dictionary<string, JsonElement>>(
@@ -101,6 +110,7 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
             throw new InvalidDataException("The source JSON file contains no data rows.");
 
         var sourceHeaders = record.Keys.ToArray();
+        var emailIndex = ResolveEmailColumn(sourceHeaders, emailColumn, removeInvalidEmails);
         var outputHeaders = CreateUniqueHeaders(sourceHeaders);
         foreach (var header in outputHeaders.Concat(ValidationHeaders))
             writer.WriteField(header);
@@ -112,15 +122,16 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
             cancellationToken.ThrowIfCancellationRequested();
             if (record.Keys.Any(key => !sourceHeaders.Contains(key, StringComparer.OrdinalIgnoreCase)))
                 throw new InvalidDataException("The source JSON file contains inconsistent object fields.");
-            foreach (var header in sourceHeaders)
+            var item = await results.ReadAtAsync(position, cancellationToken).ConfigureAwait(false);
+            for (var index = 0; index < sourceHeaders.Length; index++)
             {
+                var header = sourceHeaders[index];
                 var field = record.FirstOrDefault(item =>
                     string.Equals(item.Key, header, StringComparison.OrdinalIgnoreCase));
-                writer.WriteField(string.IsNullOrEmpty(field.Key) ? string.Empty : JsonValue(field.Value));
+                var value = string.IsNullOrEmpty(field.Key) ? string.Empty : JsonValue(field.Value);
+                writer.WriteField(index == emailIndex && ShouldRemove(value, item) ? string.Empty : value);
             }
-            WriteValidationFields(
-                writer,
-                await results.ReadAtAsync(position, cancellationToken).ConfigureAwait(false));
+            WriteValidationFields(writer, item);
             await writer.NextRecordAsync().ConfigureAwait(false);
             position++;
 
@@ -129,6 +140,22 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
                 record = records.Current;
         }
     }
+
+    private static int ResolveEmailColumn(string[] headers, string? emailColumn, bool removeInvalidEmails)
+    {
+        if (!removeInvalidEmails) return -1;
+        var matches = headers.Select((header, index) => (header, index))
+            .Where(item => string.Equals(item.header.Trim(), emailColumn?.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.index).ToArray();
+        if (string.IsNullOrWhiteSpace(emailColumn) || matches.Length != 1)
+            throw new InvalidDataException("The validated email column could not be uniquely identified.");
+        return matches[0];
+    }
+
+    private static bool ShouldRemove(string value, ValidationJobItem? item) =>
+        item is { State: ValidationJobItemState.Completed } &&
+        InvalidEmailRemovalPolicy.CanRemove(item.Result) &&
+        string.Equals(value.Trim(), item.Email.Trim(), StringComparison.Ordinal);
 
     private static string JsonValue(JsonElement value) => value.ValueKind switch
     {

@@ -14,6 +14,7 @@ public static class EvidenceBackedClassificationVersions
     public const string BuilderV1 = "training-dataset-builder-v1";
     public const string BuilderV2 = "training-dataset-builder-v2";
     public const string DefaultDecisionPolicyV1 = "classification-decision-policy-v1";
+    public const string DefaultDecisionPolicyV3 = "classification-decision-policy-v3";
     public const string DefaultDecisionPolicyV2 = "classification-decision-policy-v2";
     public const string MailboxExistenceOutcomeV1 = "mailbox-existence-v1";
     public const string MailboxExistenceOutcomeV2 = "mailbox-existence-v2";
@@ -720,13 +721,11 @@ public sealed class TransparentPredictionUncertaintyPolicy(
 
     private static double MissingFraction(EmailValidationFeatureSnapshot snapshot)
     {
-        const int total = 8;
+        // Only missing groups consumed by the current logistic feature encoder count.
+        // Authentication, DNSSEC, and topology metadata are not model inputs.
+        const int total = 4;
         var missing = 0;
         if (snapshot.Domain.Provider == MailProvider.Unknown) missing++;
-        if (string.IsNullOrWhiteSpace(snapshot.Domain.MxTopologyFingerprint)) missing++;
-        if (snapshot.Domain.DnsSecurity == DnsSecurityState.Unknown) missing++;
-        if (snapshot.Domain.SpfState == AuthenticationRecordState.Unknown) missing++;
-        if (snapshot.Domain.DmarcState == AuthenticationRecordState.Unknown) missing++;
         if (snapshot.Domain.RecipientBehavior == DomainRecipientBehavior.Unknown) missing++;
         if (snapshot.Smtp.StageReached is null) missing++;
         if (snapshot.History.ObservationCount == 0) missing++;
