@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Simplified purchased-file validation downloads to the five customer validation columns; omitted the
+  18 assessment/model diagnostic columns from both ordinary and cleaned downloads, including existing jobs.
+
 - Completed EV13 with current tenant-scoped suppression checks after evidence reuse and bounded retention
   (90-day detail / 365-day benchmark), protecting active retries and interrupted cleanup.
 - Completed EV15 with explicit partial authentication metadata, honest dataset publication clocks, and

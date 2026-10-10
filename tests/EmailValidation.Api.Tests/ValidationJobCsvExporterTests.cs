@@ -9,8 +9,12 @@ namespace EmailValidation.Api.Tests;
 
 public sealed class ValidationJobCsvExporterTests
 {
+    private static readonly string[] ExpectedHeaders = ["Contact", "Backup", "Name", "Email Validation Status",
+        "Email Validation Detail", "Email Validation Confidence Reason", "Email Validation Domain Behavior", "Email Validation Date"];
+
     [Theory]
     [InlineData(false, false)]
+    [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
     public async Task Cleaning_PreservesRowsOtherColumnsAndUncertainEmails(bool clean, bool json)
@@ -35,9 +39,11 @@ public sealed class ValidationJobCsvExporterTests
         using var reader = new StreamReader(output);
         using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
         await csv.ReadAsync(); csv.ReadHeader();
+        Assert.Equal(ExpectedHeaders, csv.HeaderRecord);
         var count = 0;
         while (await csv.ReadAsync())
         {
+            Assert.Equal(csv.HeaderRecord!.Length, csv.Parser.Count);
             Assert.Equal(clean && count == 0 ? "" : rows[count], csv.GetField("Contact"));
             Assert.Equal("keep@example.test", csv.GetField("Backup"));
             Assert.Equal("Smith, Jane", csv.GetField("Name"));

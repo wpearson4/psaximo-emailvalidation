@@ -590,7 +590,8 @@ public sealed class EmailValidationApiTests : IClassFixture<EmailValidationApiFa
         Assert.Equal("customers-email-validated.csv",
             download.Content.Headers.ContentDisposition?.FileNameStar);
         var csv = await download.Content.ReadAsStringAsync();
-        Assert.Contains("Contact,Email,CustomerName,Email Validation Status", csv, StringComparison.Ordinal);
+        Assert.StartsWith("Contact,Email,CustomerName,Email Validation Status,Email Validation Detail," +
+            "Email Validation Confidence Reason,Email Validation Domain Behavior,Email Validation Date\r\n", csv, StringComparison.Ordinal);
         Assert.Contains("john@example.com,12345,John,Pending", csv, StringComparison.Ordinal);
     }
 

@@ -16,8 +16,7 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         "Email Validation Detail",
         "Email Validation Confidence Reason",
         "Email Validation Domain Behavior",
-        "Email Validation Date",
-        .. PublicAssessmentCsv.Headers
+        "Email Validation Date"
     ];
 
     public async Task WriteAsync(
@@ -81,7 +80,7 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
             var row = csv.Parser.Record ?? [];
             var item = await results.ReadAtAsync(position, cancellationToken).ConfigureAwait(false);
             for (var index = 0; index < headers.Count; index++)
-                {
+            {
                 var value = index < row.Length ? row[index] : string.Empty;
                 writer.WriteField(index == emailIndex && ShouldRemove(value, item) ? string.Empty : value);
             }
@@ -188,7 +187,6 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         writer.WriteField(validation?.ConfidenceReason ?? string.Empty);
         writer.WriteField(validation?.Checks.RecipientBehavior ?? string.Empty);
         writer.WriteField(validation?.ValidatedAtUtc?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
-        foreach (var value in PublicAssessmentCsv.Values(validation?.Assessment)) writer.WriteField(value);
     }
 
     private sealed class ValidationResultCursor(IValidationJobService jobs, string jobId)

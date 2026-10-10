@@ -95,7 +95,13 @@ All source rows and other fields remain. Unknown, LikelyInvalid, provisional,
 missing, failed, and source-value-mismatched entries are preserved. The selected
 column must be unambiguous; cleaning never guesses a column from its name.
 
-The default remains the original values plus validation columns. Cleaned downloads
+Customer downloads append only Email Validation Status, Email Validation Detail,
+Email Validation Confidence Reason, Email Validation Domain Behavior, and Email
+Validation Date. Assessment diagnostics (summary/score/evidence fields, observation
+clocks and ages, probability, and model provenance) are omitted from these downloads.
+REST/gRPC assessment metadata and diagnostic CLI exports remain available.
+
+The default remains the original values plus these five validation columns. Cleaned downloads
 use `-email-cleaned.csv`; ordinary downloads keep `-email-validated.csv`. CSV and JSON
 sources both stream to CSV using the existing parser and bounded result pages.
 The original source and stored results are unchanged. Authorization is unchanged.

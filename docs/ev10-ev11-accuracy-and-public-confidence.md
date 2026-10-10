@@ -65,7 +65,7 @@ These files are operator-approved evidence, pinned by trusted deployment configu
 
 ## Additive public result contract
 
-REST validation, job results and status responses now include `assessment`. Both validation and status-stream gRPC responses carry the same assessment message. CSV appends equivalent named columns, preserving existing column order and legacy fields.
+REST validation, job results and status responses now include `assessment`. Both validation and status-stream gRPC responses carry the same assessment message. Diagnostic CLI CSV exports append equivalent named columns, preserving existing column order and legacy fields. Purchased-file downloads use the five customer validation columns described in [the cleaned-export contract](ev13-ev15-cleaned-export.md#optional-cleaned-csv) and omit assessment diagnostics.
 
 | Field | Meaning |
 | --- | --- |
