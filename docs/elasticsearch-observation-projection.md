@@ -141,6 +141,18 @@ Use this order:
 The bootstrap script performs read-only validation unless `--apply` is supplied. Runtime never
 auto-creates an Elasticsearch index or installs templates.
 
+### Outbox timestamp compatibility (2026-10-10)
+
+The Mongo outbox stores occurrence, creation, retry, and lock-expiry timestamps as native BSON UTC dates. The previous default `DateTimeOffset` array representation caused the compound claim index to fail when a lease was acquired. `PublishedAtUtc` remains a BSON date for the existing published-only TTL index.
+
+Initialization converts historical timestamp arrays before creating indexes or starting publication. Conversion streams batches of 200 records and updates only timestamps, with compare-and-set checks against the original values. Event IDs, payloads, retry counts, states, and live leases are preserved; repeated or concurrent initialization is safe. Old offsets are converted to the same UTC instant, at BSON millisecond precision. No new collection or infrastructure is required.
+
+Upgrade API producers and worker publishers together; do not leave older writers running against the converted outbox. Older query code emits array-valued comparisons and cannot reliably claim date-valued records, so rolling back requires a compatible timestamp fix as well. This change repairs observation publication and does not alter validation classifications or enable provider-policy enforcement.
+
+Local Mongo regressions cover fresh claims, competing publishers, expiry/reclaim, retry delays, TTL configuration, and historical pending/publishing records with and without an existing claim index. Run them using `EMAIL_VALIDATION_TEST_MONGO=mongodb://127.0.0.1:27017 dotnet test tests/EmailValidation.IntegrationTests --filter FullyQualifiedName~MongoProjectionOutboxTests`.
+
+Verification: the full Release solution suite with local Mongo integration enabled passed 894 tests, with one environment-dependent Service Bus test skipped. All four Mongo outbox cases passed, including the previously reproduced failure.
+
 ## Backfill, reconciliation, and DLQ
 
 Reconciliation reads bounded, ordered lifecycle pages, overlaps the saved Mongo checkpoint, and

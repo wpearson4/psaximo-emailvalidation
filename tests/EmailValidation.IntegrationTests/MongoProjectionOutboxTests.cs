@@ -5,11 +5,13 @@ using EmailValidation.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
+using MongoDB.Bson;
 
 namespace EmailValidation.IntegrationTests;
 
 public sealed class MongoProjectionOutboxTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     [Fact]
     [Trait("Category", "MongoIntegration")]
     public async Task Outbox_IsIdempotentAtomicallyClaimedReclaimableAndTtlSafe()
@@ -50,10 +52,15 @@ public sealed class MongoProjectionOutboxTests
             Assert.True(await store.EnqueueAsync(Event()));
             Assert.False(await store.EnqueueAsync(Event()));
 
-            var first = await store.ClaimAsync(1, "worker-a", TimeSpan.FromMinutes(1));
-            var concurrent = await store.ClaimAsync(1, "worker-b", TimeSpan.FromMinutes(1));
-            Assert.Single(first);
-            Assert.Empty(concurrent);
+            var competing = await Task.WhenAll(
+                store.ClaimAsync(1, "worker-a", TimeSpan.FromMinutes(1)),
+                store.ClaimAsync(1, "worker-b", TimeSpan.FromMinutes(1)));
+            Assert.Single(competing.SelectMany(claims => claims));
+            Assert.Single(competing, claims => claims.Count == 0);
+            var claimedDocument = await database.GetCollection<BsonDocument>(collectionName)
+                .Find(Builders<BsonDocument>.Filter.Eq("_id", "event-1")).SingleAsync();
+            Assert.Equal(BsonType.DateTime, claimedDocument["NextPublishAttemptAtUtc"].BsonType);
+            Assert.Equal(BsonType.DateTime, claimedDocument["LockExpiresAtUtc"].BsonType);
 
             time.Advance(TimeSpan.FromMinutes(2));
             var reclaimed = await store.ClaimAsync(1, "worker-b", TimeSpan.FromMinutes(1));
@@ -156,6 +163,89 @@ public sealed class MongoProjectionOutboxTests
             await database.DropCollectionAsync(outboxCollection);
             await database.DropCollectionAsync(checkpointCollection);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "MongoIntegration")]
+    public async Task LegacyTimestamps_MigrateIdempotentlyWithoutLosingEventsOrLeases(bool existingClaimIndex)
+    {
+        var connection = Environment.GetEnvironmentVariable("EMAIL_VALIDATION_TEST_MONGO");
+        if (string.IsNullOrWhiteSpace(connection)) return;
+        var databaseName = "ev_outbox_dates_" + Guid.NewGuid().ToString("N");
+        var settings = new EmailValidationOptions
+        {
+            Persistence = new() { DatabaseName = databaseName },
+            Projection = new() { Enabled = true }
+        };
+        var client = new MongoClient(connection);
+        var raw = client.GetDatabase(databaseName).GetCollection<BsonDocument>(settings.Projection.Outbox.CollectionName);
+        var now = new DateTimeOffset(2026, 10, 10, 7, 0, 0, TimeSpan.FromHours(-5));
+        var time = new AdjustableTimeProvider(now);
+        MongoProjectionOutbox Store() => new(client, Options.Create(settings), time, NullLogger<MongoProjectionOutbox>.Instance);
+        BsonArray Legacy(DateTimeOffset at) => new() { at.Ticks, (int)at.Offset.TotalMinutes };
+        BsonDocument Document(string id, ProjectionOutboxState state, DateTimeOffset due, DateTimeOffset? lease = null)
+        {
+            var envelope = Event() with { EventId = id };
+            return new BsonDocument
+            {
+                ["_id"] = id, ["EventType"] = envelope.EventType, ["SchemaVersion"] = envelope.SchemaVersion,
+                ["PayloadJson"] = JsonSerializer.Serialize(envelope, JsonOptions),
+                ["OccurredAtUtc"] = Legacy(now.AddMinutes(-10)), ["CreatedAtUtc"] = Legacy(now.AddMinutes(-10)),
+                ["State"] = (int)state, ["PublishAttemptCount"] = lease is null ? 0 : 1,
+                // Existing indexes cannot contain two arrays in a single document.
+                ["NextPublishAttemptAtUtc"] = existingClaimIndex && lease is not null ? new BsonDateTime(due.UtcDateTime) : Legacy(due),
+                ["LockExpiresAtUtc"] = lease is { } until ? Legacy(until) : BsonNull.Value,
+                ["LockedBy"] = lease is null ? BsonNull.Value : new BsonString("original-owner"),
+                ["PublishedAtUtc"] = BsonNull.Value
+            };
+        }
+        var documents = new[]
+        {
+            Document("due", ProjectionOutboxState.Pending, now.AddMinutes(-1)),
+            Document("future", ProjectionOutboxState.Pending, now.AddMinutes(5)),
+            Document("expired", ProjectionOutboxState.Publishing, now.AddMinutes(-5), now.AddMinutes(-1)),
+            Document("active", ProjectionOutboxState.Publishing, now.AddMinutes(-5), now.AddMinutes(10))
+        };
+        try
+        {
+            await raw.InsertManyAsync(documents);
+            if (existingClaimIndex)
+                await raw.Indexes.CreateOneAsync(new CreateIndexModel<BsonDocument>(
+                    Builders<BsonDocument>.IndexKeys.Ascending("State").Ascending("NextPublishAttemptAtUtc").Ascending("LockExpiresAtUtc"),
+                    new CreateIndexOptions { Name = "ix_projection_outbox_claim" }));
+            var first = Store();
+            var second = Store();
+            await Task.WhenAll(first.InitializeAsync(), second.InitializeAsync());
+            await first.InitializeAsync();
+            var migrated = await raw.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync();
+            Assert.Equal(documents.Length, migrated.Count);
+            foreach (var saved in migrated)
+            {
+                var original = documents.Single(document => document["_id"] == saved["_id"]);
+                foreach (var field in new[] { "PayloadJson", "State", "PublishAttemptCount", "LockedBy" })
+                    Assert.Equal(original[field], saved[field]);
+                foreach (var field in new[] { "OccurredAtUtc", "CreatedAtUtc", "NextPublishAttemptAtUtc" })
+                    Assert.Equal(BsonType.DateTime, saved[field].BsonType);
+                if (!saved["LockExpiresAtUtc"].IsBsonNull)
+                    Assert.Equal(BsonType.DateTime, saved["LockExpiresAtUtc"].BsonType);
+            }
+            Assert.Equal(now.AddMinutes(-10), (await first.GetBacklogAsync()).OldestCreatedAtUtc);
+            var claims = await Task.WhenAll(first.ClaimAsync(4, "a", TimeSpan.FromMinutes(1)),
+                second.ClaimAsync(4, "b", TimeSpan.FromMinutes(1)));
+            var claimed = claims.SelectMany(items => items).ToArray();
+            Assert.Equal(["due", "expired"], claimed.Select(item => item.Event.EventId).Order().ToArray());
+            foreach (var claim in claimed)
+                await first.MarkPublishedAsync(claim.Event.EventId, claim.LockedBy!);
+            Assert.Empty(await first.ClaimAsync(4, "c", TimeSpan.FromMinutes(1)));
+            time.Advance(TimeSpan.FromMinutes(6));
+            Assert.Equal("future", Assert.Single(await first.ClaimAsync(4, "c", TimeSpan.FromMinutes(1))).Event.EventId);
+            var active = await raw.Find(Builders<BsonDocument>.Filter.Eq("_id", "active")).SingleAsync();
+            Assert.Equal("original-owner", active["LockedBy"].AsString);
+            Assert.Equal(now.AddMinutes(10).UtcDateTime, active["LockExpiresAtUtc"].ToUniversalTime());
+        }
+        finally { await client.DropDatabaseAsync(databaseName); }
     }
 
     private static EmailValidationObservationEnvelope Event()

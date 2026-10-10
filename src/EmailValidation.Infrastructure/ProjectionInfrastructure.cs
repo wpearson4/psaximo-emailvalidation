@@ -11,6 +11,8 @@ using EmailValidation.Application;
 using EmailValidation.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 
@@ -114,6 +116,8 @@ public sealed class DisabledProjectionReconciler : IProjectionReconciler
 
 public sealed class MongoProjectionOutbox : IProjectionOutbox, IProjectionPersistenceInitializer
 {
+    private static readonly string[] TimestampFields =
+        ["OccurredAtUtc", "CreatedAtUtc", "NextPublishAttemptAtUtc", "LockExpiresAtUtc"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly IMongoCollection<ProjectionOutboxDocument> _collection;
     private readonly ProjectionOutboxOptions _options;
@@ -136,6 +140,7 @@ public sealed class MongoProjectionOutbox : IProjectionOutbox, IProjectionPersis
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        await MigrateLegacyTimestampsAsync(cancellationToken).ConfigureAwait(false);
         var indexes = new[]
         {
             new CreateIndexModel<ProjectionOutboxDocument>(
@@ -157,6 +162,42 @@ public sealed class MongoProjectionOutbox : IProjectionOutbox, IProjectionPersis
         };
         await _collection.Indexes.CreateManyAsync(indexes, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mongo projection outbox {Collection} initialized", _options.CollectionName);
+    }
+
+    private async Task MigrateLegacyTimestampsAsync(CancellationToken cancellationToken)
+    {
+        // DateTimeOffset's historical array representation cannot share a compound
+        // index with another array. Date-typed queries also cannot find those rows.
+        // Convert only timestamp fields; preserve event payloads, states, and leases.
+        var raw = _collection.Database.GetCollection<BsonDocument>(_collection.CollectionNamespace.CollectionName);
+        var filter = Builders<BsonDocument>.Filter.Or(TimestampFields.Select(field =>
+            Builders<BsonDocument>.Filter.Type(field, BsonType.Array)));
+        using var cursor = await raw.FindAsync(filter, new FindOptions<BsonDocument> { BatchSize = 200 },
+            cancellationToken).ConfigureAwait(false);
+        while (await cursor.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+        {
+            foreach (var document in cursor.Current)
+            {
+                var unchanged = Builders<BsonDocument>.Filter.Eq("_id", document["_id"]);
+                var updates = new List<UpdateDefinition<BsonDocument>>();
+                foreach (var field in TimestampFields)
+                {
+                    if (!document.TryGetValue(field, out var value) || !value.IsBsonArray) continue;
+                    var timestamp = BsonSerializer.Deserialize<LegacyTimestamp>(new BsonDocument("Value", value));
+                    unchanged &= Builders<BsonDocument>.Filter.Eq(field, value);
+                    updates.Add(Builders<BsonDocument>.Update.Set(field, new BsonDateTime(timestamp.Value.UtcDateTime)));
+                }
+                // Compare the old values atomically so concurrent initialization or
+                // a publisher changing a lease cannot be overwritten by migration.
+                await raw.UpdateOneAsync(unchanged, Builders<BsonDocument>.Update.Combine(updates),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private sealed class LegacyTimestamp
+    {
+        public DateTimeOffset Value { get; set; }
     }
 
     public async Task<bool> EnqueueAsync(
@@ -275,15 +316,19 @@ public sealed class MongoProjectionOutbox : IProjectionOutbox, IProjectionPersis
         [BsonId] public required string Id { get; init; }
         public required string EventType { get; init; }
         public required string SchemaVersion { get; init; }
+        [BsonRepresentation(BsonType.DateTime)]
         public DateTimeOffset OccurredAtUtc { get; init; }
         public required string PayloadJson { get; init; }
         public ProjectionOutboxState State { get; set; }
         public int PublishAttemptCount { get; set; }
+        [BsonRepresentation(BsonType.DateTime)]
         public DateTimeOffset NextPublishAttemptAtUtc { get; set; }
         public string? LockedBy { get; set; }
+        [BsonRepresentation(BsonType.DateTime)]
         public DateTimeOffset? LockExpiresAtUtc { get; set; }
         public DateTime? PublishedAtUtc { get; set; }
         public string? LastErrorCode { get; set; }
+        [BsonRepresentation(BsonType.DateTime)]
         public DateTimeOffset CreatedAtUtc { get; init; }
 
         public ProjectionOutboxEntry ToModel() => new(
