@@ -104,7 +104,9 @@ public sealed class RevalidationExecutionTests
         var result = await Processor(store, service, clock, metrics, options: options)
             .ProcessAsync(Message(initial)).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(RevalidationProcessingDisposition.Stale, result.Disposition);
-        Assert.True(service.Cancelled);
+        // The processor's cancellation wait can finish before the service's catch
+        // continuation runs. Wait for the service to observe cancellation explicitly.
+        await service.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(ValidationResultState.Provisional, (await inner.GetAsync(initial.ValidationId))!.ResultState);
     }
 
@@ -213,13 +215,13 @@ public sealed class RevalidationExecutionTests
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Calls { get; private set; }
-        public bool Cancelled { get; private set; }
+        public TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public async Task<EmailValidationResult> ValidateAsync(string email, EmailValidationRequest request, CancellationToken cancellationToken = default)
         {
             Calls++;
             Started.TrySetResult();
             try { await Release.Task.WaitAsync(cancellationToken); }
-            catch (OperationCanceledException) { Cancelled = true; throw; }
+            catch (OperationCanceledException) { CancellationObserved.TrySetResult(); throw; }
             return Result(clock.GetUtcNow()) with { Status = EmailValidationStatus.Valid, ReasonCodes = [ReasonCode.MailboxAccepted] };
         }
     }

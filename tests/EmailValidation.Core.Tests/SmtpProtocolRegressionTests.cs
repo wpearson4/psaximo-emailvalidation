@@ -201,10 +201,31 @@ public sealed class SmtpProtocolRegressionTests
         Assert.DoesNotContain("STARTTLS\r\n", stream.Commands);
     }
 
+    [Fact]
+    public async Task WholeSessionDeadline_BoundsAStalledRecipientWithALongerCommandTimeout()
+    {
+        // Complete the initial exchange synchronously, then stop replying. Delaying EHLO
+        // on a real socket leaves too little scheduling headroom on a busy CI worker.
+        using var stream = new TranscriptStream(Prefix, stallAtEnd: true);
+        var settings = Settings();
+        settings.Smtp.CommandTimeoutSeconds = 10;
+        settings.Smtp.SessionTimeoutSeconds = 1;
+
+        var result = await Probe(settings, new StreamFactory(stream))
+            .ProbeAsync("mx.example.test", "person@example.test")
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SmtpMailboxStatus.Timeout, result.Status);
+        Assert.Equal(SmtpCommand.RcptTo, result.SessionEvidence!.FailedStage);
+        Assert.True(result.SessionEvidence.Duration < TimeSpan.FromSeconds(4));
+        Assert.Contains("MAIL FROM", stream.Commands);
+        Assert.Contains("RCPT TO:<person@example.test>", stream.Commands);
+        Assert.DoesNotContain("RSET", stream.Commands);
+    }
+
     [Theory]
     [InlineData("greeting")]
     [InlineData("tls")]
-    [InlineData("session")]
     [InlineData("cleanup")]
     [InlineData("quit")]
     public async Task SlowPeer_IsBounded(string stage)
@@ -226,10 +247,8 @@ public sealed class SmtpProtocolRegressionTests
             }
             else
             {
-                if (stage == "session") await Task.Delay(650, token);
                 await Send(stream, "250 mx\r\n", token);
                 Assert.StartsWith("MAIL FROM", await reader.ReadLineAsync(token));
-                if (stage == "session") await Task.Delay(650, token);
                 await Send(stream, "250 sender\r\n", token);
                 Assert.StartsWith("RCPT TO", await reader.ReadLineAsync(token));
                 await Send(stream, "250 recipient\r\n", token);
@@ -243,8 +262,8 @@ public sealed class SmtpProtocolRegressionTests
             await Task.Delay(Timeout.Infinite, token);
         });
         var settings = Settings();
-        settings.Smtp.CommandTimeoutSeconds = stage == "session" ? 10 : 1;
-        settings.Smtp.SessionTimeoutSeconds = stage == "session" ? 1 : 10;
+        settings.Smtp.CommandTimeoutSeconds = 1;
+        settings.Smtp.SessionTimeoutSeconds = 10;
         settings.Smtp.CleanupTimeoutSeconds = 1;
         var result = await Probe(settings, server).ProbeAsync("mx.example.test", "person@example.test").WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(stage is "cleanup" or "quit" ? SmtpMailboxStatus.Accepted : SmtpMailboxStatus.Timeout, result.Status);
@@ -450,7 +469,7 @@ public sealed class SmtpProtocolRegressionTests
         }
     }
 
-    private sealed class TranscriptStream(string transcript) : Stream
+    private sealed class TranscriptStream(string transcript, bool stallAtEnd = false) : Stream
     {
         private readonly MemoryStream _input = new(Encoding.UTF8.GetBytes(transcript));
         private readonly MemoryStream _output = new();
@@ -462,7 +481,12 @@ public sealed class SmtpProtocolRegressionTests
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
         public override void Flush() { }
         public override int Read(byte[] buffer, int offset, int count) => _input.Read(buffer, offset, count);
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => _input.ReadAsync(buffer, cancellationToken);
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (stallAtEnd && _input.Position == _input.Length)
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            return await _input.ReadAsync(buffer, cancellationToken);
+        }
         public override void Write(byte[] buffer, int offset, int count) => _output.Write(buffer, offset, count);
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) => _output.WriteAsync(buffer, cancellationToken);
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
