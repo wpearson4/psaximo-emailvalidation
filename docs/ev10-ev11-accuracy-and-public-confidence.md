@@ -84,6 +84,35 @@ Final Unknown is always Inconclusive. “Final” means no more automatic attemp
 
 ## Verification and rollout
 
+Feature capture requires `EmailValidation:Projection:Privacy:EmailHashKey`, even when
+`Projection:Enabled` is false and `ClassificationModel:Mode` is Disabled. The key must
+contain at least 32 UTF-8 bytes. Configure a stable, cryptographically random secret
+through the existing Key Vault and a Key Vault reference under that exact key in Azure
+App Configuration, using the production label. Keep `EmailHashKeyVersion` stable (the
+default is `v1`). Both API and worker must resolve the same secret. Do not enable the
+Elasticsearch projection or model scoring just to capture snapshots.
+
+The production Compose manifest mounts the same protected file into both services at
+`/run/secrets/projection_hmac_key`. Provision its host source at
+`/opt/emailvalidation/secrets/projection_hmac_key` (or `PROJECTION_HMAC_SECRET_FILE`),
+owned by UID/GID 1654 with mode 0400, from the exact Key Vault secret version referenced
+by App Configuration. `AZURE_PROJECTION_HMAC_SECRET_URI` identifies that reference;
+its default is the versionless URI for `EmailValidation--Projection--Privacy--EmailHashKey`
+in the existing vault. The bootstrap resolver substitutes the mounted value for the
+matching reference, as it already does for Mongo and Service Bus. Keep this file outside
+the repository and preserve it across deployments. Changing the Key Vault reference
+alone does not rotate a mounted value; key rotation needs coordinated migration.
+
+A missing key deliberately preserves validation behavior and omits private correlation
+IDs. The factory consequently skips feature snapshots; workers log
+`Email observation correlation key is unavailable`. A successful job is therefore not
+proof that measurement data was captured. Configuration is loaded at startup: after
+configuring the key, restart/redeploy API and worker, then check that a fresh validation
+with a validation ID creates a document in `EmailValidationFeatureSnapshots`. Check
+the worker logs for correlation or evidence-backed scoring failures as well. Missing
+historical snapshots must not be recreated as if they were captured at prediction time;
+collect fresh observations for outcome-linked benchmarks.
+
 Focused synthetic regressions exercise authorized import identity/tenancy/idempotency/conflicts, label censoring, domain/time separation, deterministic reports, denominator math, checksum-only promotion rejection, expired/mismatched approval, calibration leakage, unsupported-provider abstention, and REST/gRPC/CSV contracts. A local Mongo regression checks concurrent immutable event writes and tenant separation.
 
 Deploy the changes together, run a small validation smoke test against your existing authorized test set, and inspect Unknown/CatchAll/policy-block/timeout responses plus CSV and status updates. Then collect an authorized-real baseline and candidate benchmark before making an accuracy claim or activating a model. No new recurring service is required.

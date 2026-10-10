@@ -2,12 +2,62 @@ using System.Text.Json;
 using EmailValidation.Application;
 using EmailValidation.Core;
 using EmailValidation.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Core.Tests;
 
 public sealed class EvidenceBackedClassificationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotCapture_RequiresHmacKey_EvenWithModelAndProjectionDisabled(bool keyConfigured)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.Configure<EmailValidationOptions>(options =>
+        {
+            options.Persistence.Enabled = false;
+            options.Persistence.Provider = "Json";
+            options.ClassificationModel.Mode = ModelRolloutMode.Disabled;
+            options.Projection.Enabled = false;
+            options.Projection.Privacy.EmailHashKey = keyConfigured
+                ? "synthetic-only-correlation-key-32-bytes" : string.Empty;
+        });
+        services.AddEmailValidation();
+        var baseline = Result("person@example.test", DateTimeOffset.UtcNow);
+        services.AddSingleton<IEmailValidationExecutor>(new SnapshotTestExecutor(baseline));
+        services.AddSingleton<IEmailRiskIntelligence>(
+            new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]));
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider.GetRequiredService<IEmailValidationService>().ValidateAsync(
+            baseline.Email, new EmailValidationRequest(ValidationId: "snapshot-regression", TenantId: "tenant-a"));
+        var snapshots = await provider.GetRequiredService<IEmailValidationFeatureSnapshotStore>().QueryAsync(
+            DateTimeOffset.MinValue, DateTimeOffset.MaxValue,
+            EvidenceBackedClassificationVersions.FeatureSchemaV2, "tenant-a");
+
+        Assert.Equal(baseline.Status, result.Status);
+        Assert.Equal(baseline.Confidence, result.Confidence);
+        Assert.Equal(ConfidenceType.Heuristic, result.ConfidenceType);
+        Assert.Null(result.Prediction);
+        if (!keyConfigured)
+        {
+            Assert.Empty(snapshots);
+            return;
+        }
+
+        var snapshot = Assert.Single(snapshots);
+        Assert.Equal("snapshot-regression", snapshot.ValidationId);
+        Assert.Equal("tenant-a", snapshot.TenantId);
+        Assert.Equal(result.Confidence, snapshot.HeuristicEvidenceStrength);
+        Assert.Equal(64, snapshot.EmailCorrelationId.Length);
+        Assert.Equal(64, snapshot.DomainCorrelationId.Length);
+        Assert.NotEqual(snapshot.EmailCorrelationId, snapshot.DomainCorrelationId);
+        Assert.DoesNotContain(baseline.Email, JsonSerializer.Serialize(snapshot), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task LegacyResult_CannotBecomeCurrentMailboxTrainingEvidence()
     {
@@ -923,6 +973,13 @@ public sealed class EvidenceBackedClassificationTests
                 System.Text.Encoding.UTF8.GetBytes($"{tenantId}|{normalizedEmail}"))).ToLowerInvariant();
             return ValueTask.FromResult<EmailCorrelation?>(new(id, "test-key-v1"));
         }
+    }
+
+    private sealed class SnapshotTestExecutor(EmailValidationResult result) : IEmailValidationExecutor
+    {
+        public Task<EmailValidationResult> ValidateAsync(
+            string email, EmailValidationRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(result);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

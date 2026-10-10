@@ -75,6 +75,10 @@ stages:
               docker compose --file compose.yaml config --format json | \
                 jq --exit-status \
                   '.services["emailvalidation-api"].environment.Api__OpenMeta__BaseUrl == "https://api.digitalwarehouse.io" and
+                   .services["emailvalidation-api"].environment.Azure__ProjectionHmacSecretFile == "/run/secrets/projection_hmac_key" and
+                   .services["emailvalidation-worker"].environment.Azure__ProjectionHmacSecretFile == "/run/secrets/projection_hmac_key" and
+                   ([.services["emailvalidation-api"].secrets[].source] | index("projection_hmac_key")) != null and
+                   ([.services["emailvalidation-worker"].secrets[].source] | index("projection_hmac_key")) != null and
                    .services["mail-forwarder"] == null' \
                   >/dev/null
             displayName: Validate Compose configuration
@@ -88,6 +92,7 @@ stages:
               AZURE_MONGO_SECRET_URI: https://example.vault.azure.net/secrets/mongo
               JOBS_SERVICE_BUS_CONNECTION_SECRET_FILE: /tmp/emailvalidation-placeholder-servicebus
               AZURE_JOBS_SERVICE_BUS_SECRET_URI: https://example.vault.azure.net/secrets/servicebus
+              PROJECTION_HMAC_SECRET_FILE: /tmp/emailvalidation-placeholder-hmac
               RELEASE_TAG: validation
 
           - bash: |

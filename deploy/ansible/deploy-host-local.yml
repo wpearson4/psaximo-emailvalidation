@@ -37,6 +37,7 @@
         - "{{ emailvalidation_source_root }}/ops/email-validation/configure-outbound-identities.sh"
         - "{{ emailvalidation_deploy_root }}/.env"
         - "{{ emailvalidation_deploy_root }}/secrets/revalidation_service_bus_connection_string"
+        - "{{ emailvalidation_deploy_root }}/secrets/projection_hmac_key"
       register: emailvalidation_required_files
 
     - name: Require every source and host file
@@ -49,12 +50,15 @@
       loop_control:
         label: "{{ item.item }}"
 
-    - name: Restrict the revalidation runtime secret to the container user
+    - name: Restrict runtime secrets to the container user
       ansible.builtin.file:
-        path: "{{ emailvalidation_deploy_root }}/secrets/revalidation_service_bus_connection_string"
+        path: "{{ emailvalidation_deploy_root }}/secrets/{{ item }}"
         owner: "{{ emailvalidation_runtime_uid }}"
         group: "{{ emailvalidation_runtime_gid }}"
         mode: "0400"
+      loop:
+        - revalidation_service_bus_connection_string
+        - projection_hmac_key
 
     - name: Verify all outbound addresses, routing, and firewall policy before deployment
       ansible.builtin.command:
