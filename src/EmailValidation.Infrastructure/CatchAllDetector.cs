@@ -9,7 +9,7 @@ public sealed class CatchAllDetector(
     IOptions<EmailValidationOptions> options, TimeProvider? timeProvider = null) : ICatchAllDetector
 {
     private readonly CatchAllOptions _options = options.Value.CatchAll;
-    private readonly string _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
+    private readonly string _strategyVersion = ProviderCapabilityPolicy.StrategyVersion(options.Value);
 
     public async Task<CatchAllDetectionResult> DetectAsync(
         string domain,

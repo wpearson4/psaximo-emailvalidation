@@ -8,6 +8,19 @@ public static class UnknownValidationContextBuilder
 {
     public static UnknownValidationContext? Build(EmailValidationResult result)
     {
+        var context = BuildCore(result);
+        return context?.Retryable == true && result.ProviderCapabilities?.SmtpRetryPermitted == false &&
+            context.Cause is not (UnknownCause.DnsTimeout or UnknownCause.DnsFailure)
+            ? context with
+            {
+                Retryable = false,
+                RecommendedAction = "The reviewed provider policy does not recommend another SMTP attempt for this cause. Use authoritative evidence or review the policy."
+            }
+            : context;
+    }
+
+    private static UnknownValidationContext? BuildCore(EmailValidationResult result)
+    {
         if (result.Status != EmailValidationStatus.Unknown) return null;
 
         var category = result.ProviderValidation?.EffectiveCategory
@@ -28,6 +41,16 @@ public static class UnknownValidationContextBuilder
             return Create(result, UnknownCause.DnsFailure,
                 "The domain lookup failed without definitive evidence that the domain is invalid.", true,
                 "Retry after checking resolver health and DNS connectivity.", category);
+
+        if (reasons.Contains(ReasonCode.ProviderCapabilityRestricted))
+            return Create(result, UnknownCause.ProviderVerificationBlocked,
+                "The reviewed provider capability policy does not permit this mailbox probe.", false,
+                "Use authoritative directory or delivery evidence, or review the provider policy.", category);
+
+        if (reasons.Contains(ReasonCode.NonDiscriminationEvidenceReused))
+            return Create(result, UnknownCause.NonDiscriminatingSmtpEndpoint,
+                $"Confirmed public-endpoint accept-all evidence from {result.CatchAllEvidence?.ObservedAt:O} was reused; mailbox existence remains unknown.", false,
+                $"Use authoritative directory or delivery evidence. The next useful endpoint refresh is {result.ProviderCapabilities?.NextUsefulCheckAt:O}.", category);
 
         if (smtpReason is SmtpNormalizedReason.NoEligibleOutboundIdentity or
             SmtpNormalizedReason.OutboundIdentityDnsNotReady or

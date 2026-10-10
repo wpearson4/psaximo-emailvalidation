@@ -38,6 +38,33 @@ public sealed class EvidenceBackedClassificationTests
     }
 
     [Fact]
+    public async Task ProviderShadowAssessment_SurvivesSnapshotStorage_AndReportsByReviewedPolicy()
+    {
+        var at = new DateTimeOffset(2026, 10, 10, 12, 0, 0, TimeSpan.Zero);
+        var factory = new EmailValidationFeatureSnapshotFactory(new FakeCorrelationService(), new FixedTimeProvider(at));
+        var assessment = new ProviderCapabilityAssessment("Gmail", "v1", "policy-a", ProviderCapabilityMode.Shadow,
+            true, false, false, at.AddHours(1), false) { UnknownResponseFingerprint = "response-fingerprint" };
+        var snapshot = await factory.CreateAsync(Result("person@example.test", at) with { ProviderCapabilities = assessment },
+            new(ValidationId: "provider-shadow"));
+        Assert.NotNull(snapshot);
+        using var store = Store();
+        Assert.True(await ((IEmailValidationFeatureSnapshotStore)store).AppendAsync(snapshot));
+        var restored = System.Text.Json.JsonSerializer.Deserialize<EmailValidationFeatureSnapshot>(
+            System.Text.Json.JsonSerializer.Serialize(snapshot))!;
+        Assert.Equal(assessment, restored.ProviderCapabilities);
+        var other = restored with { SnapshotId = "second-policy", ProviderCapabilities = assessment with
+            { PolicyHash = "policy-b", ShadowStatusDisagrees = true } };
+        var report = ProviderCapabilityReport.Summarize([restored, restored, other]);
+        Assert.Equal(2, report.Count);
+        Assert.All(report, row => Assert.Equal(1, row.Attempts));
+        Assert.Equal(1, report.Single(row => row.PolicyHash == "policy-a").ComparedStatuses);
+        Assert.Equal(0, report.Single(row => row.PolicyHash == "policy-a").StatusDisagreements);
+        Assert.Equal(1, report.Single(row => row.PolicyHash == "policy-b").StatusDisagreements);
+        Assert.DoesNotContain("person@example.test", System.Text.Json.JsonSerializer.Serialize(report), StringComparison.Ordinal);
+        Assert.All(report, row => Assert.False(row.Applied));
+    }
+
+    [Fact]
     public void LegacyPersistedRequest_DefaultsToInitialAttempt()
     {
         var request = JsonSerializer.Deserialize<EmailValidationRequest>(

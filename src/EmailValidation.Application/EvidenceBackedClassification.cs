@@ -286,6 +286,7 @@ public sealed class EmailValidationFeatureSnapshotFactory(
                 result.ProbeAttempted,
                 reputation?.Mode,
                 reputation?.Decision),
+            ProviderCapabilities = result.ProviderCapabilities,
             HeuristicEvidenceStrength = result.HeuristicEvidenceStrength,
             HeuristicStatus = result.Status,
             PolicyVersions = result.Metadata.Policy,

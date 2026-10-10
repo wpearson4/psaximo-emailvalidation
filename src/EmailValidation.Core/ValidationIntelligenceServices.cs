@@ -871,7 +871,7 @@ public sealed class IntelligenceEmailValidator(
     ILogger<IntelligenceEmailValidator> logger,
     IConfidenceLevelPolicy confidenceLevelPolicy) : IEmailValidator, IEmailValidationService
 {
-    private readonly ValidationPolicyVersions _policy = options.Value.Policy.ToVersions();
+    private readonly ValidationPolicyVersions _policy = ProviderCapabilityPolicy.PolicyVersions(options.Value);
     private readonly ResultReuseOptions _reuseOptions = options.Value.ResultReuse;
 
     public async Task<EmailValidationResult> ValidateAsync(

@@ -1,0 +1,24 @@
+{
+  "EmailValidation": {
+    "ProviderCapabilities": {
+      "Mode": "Shadow",
+      "PolicyVersion": "provider-capabilities-v1",
+      "CanaryProviders": ["Microsoft365"],
+      "Profiles": {
+        "Microsoft365": {
+          "ProbeMailbox": true,
+          "ProbeControls": true,
+          "ReuseConfirmedNonDiscrimination": true,
+          "NonDiscriminationRefreshMinutes": 60,
+          "RequireTls": false,
+          "AllowSmtpUtf8": true,
+          "RetryVerificationBlocked": true,
+          "RetryAmbiguousAcceptance": true,
+          "MinimumRetrySeconds": 60
+        }
+      },
+      "ApprovedPolicyHash": "",
+      "ApprovalReference": ""
+    }
+  }
+}

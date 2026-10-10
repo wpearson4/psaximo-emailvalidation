@@ -64,7 +64,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         _reputationProtection = reputationProtection;
         _outboundIdentityOptions = options.Value.OutboundIdentities;
         _reputationOptions = options.Value.SmtpReputationProtection;
-        _strategyVersion = options.Value.Policy.ProviderStrategyVersion;
+        _strategyVersion = ProviderCapabilityPolicy.StrategyVersion(options.Value);
         _classificationVersion = options.Value.SmtpResponseIntelligence.ClassificationVersion;
         _intelligenceMode = options.Value.SmtpResponseIntelligence.Mode;
     }
@@ -100,8 +100,8 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         var sessions = 0;
         var sessionHistory = new List<SmtpSessionEvidence>();
         SmtpProbeResult? lastResult = null;
-        var maximumRetries = EffectiveRetryLimit(
-            _options.RetryCount, _providerPolicyResolver.Resolve(provider));
+        var providerPolicy = _providerPolicyResolver.Resolve(provider, domain);
+        var maximumRetries = EffectiveRetryLimit(_options.RetryCount, providerPolicy);
         var transientAttempt = 0;
         do
         {
@@ -165,6 +165,9 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             };
             if (!IsTransient(lastResult.Status) || IsProviderPolicyOutcome(lastResult))
                 return lastResult;
+            if (providerPolicy.Capabilities.MinimumRetrySeconds > 0)
+                return lastResult with
+                { RetryAfter = _clock.GetUtcNow().AddSeconds(providerPolicy.Capabilities.MinimumRetrySeconds) };
             if (transientAttempt > maximumRetries)
             {
                 _throttle.RecordProviderRetry(provider, exhausted: true);
@@ -188,6 +191,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         OutboundIdentity? outboundIdentity,
         CancellationToken cancellationToken)
     {
+        var capabilities = _providerPolicyResolver.Resolve(provider, recipient.Split('@').LastOrDefault()).Capabilities;
         var operationWatch = Stopwatch.StartNew();
         var connectionWatch = Stopwatch.StartNew();
         var currentCommand = SmtpCommand.Connect;
@@ -266,6 +270,17 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                     provider, mxHost, attempt, stages, currentCommand, banner, ehloHost,
                     tlsAdvertised, probeSender, outboundIdentity, actualBoundSourceIp: actualBoundSourceIp);
 
+            if (capabilities.RequireTls && (!tlsAdvertised || !_options.EnableStartTls))
+                return BuildResult(ehloEvidence with
+                {
+                    Category = SmtpResponseCategory.NotAttempted,
+                    ResponseCode = null, EnhancedStatusCode = null, Intelligence = null, Decision = null,
+                    TextClassification = SmtpResponseTextClassification.VerificationUnavailable,
+                    SanitizedResponse = "The reviewed provider policy requires STARTTLS; recipient probing was skipped."
+                }, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
+                    currentCommand, banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity,
+                    actualBoundSourceIp: actualBoundSourceIp) with { Disposition = SmtpProbeDisposition.ProviderPolicyRestricted };
+
             if (tlsAdvertised && _options.EnableStartTls)
             {
                 currentCommand = SmtpCommand.StartTls;
@@ -297,6 +312,17 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
             }
 
             var requiresSmtpUtf8 = recipient.Any(character => !char.IsAscii(character));
+            if (requiresSmtpUtf8 && !capabilities.AllowSmtpUtf8)
+                return BuildResult(ehloEvidence with
+                {
+                    Category = SmtpResponseCategory.NotAttempted,
+                    ResponseCode = null, EnhancedStatusCode = null, Intelligence = null, Decision = null,
+                    TextClassification = SmtpResponseTextClassification.VerificationUnavailable,
+                    SanitizedResponse = "The reviewed provider policy disables SMTPUTF8 probes; recipient probing was skipped."
+                }, connectionWatch.Elapsed, operationWatch.Elapsed, provider, mxHost, attempt, stages,
+                    currentCommand, banner, ehloHost, tlsAdvertised, probeSender, outboundIdentity,
+                    smtpUtf8Advertised, requiresSmtpUtf8, actualBoundSourceIp, tlsUsed)
+                    with { Disposition = SmtpProbeDisposition.ProviderPolicyRestricted };
             if (requiresSmtpUtf8 && !smtpUtf8Advertised)
             {
                 var unsupported = ehloEvidence with

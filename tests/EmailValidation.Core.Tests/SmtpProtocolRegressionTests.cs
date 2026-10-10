@@ -103,6 +103,48 @@ public sealed class SmtpProtocolRegressionTests
         Assert.DoesNotContain("QUIT", stream.Commands);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProviderCapabilityRestriction_StopsBeforeMailFrom_AndExplainsLocalPolicy(bool requireTls)
+    {
+        using var stream = new TranscriptStream("220 ready\r\n250-mx\r\n250 SMTPUTF8\r\n");
+        var settings = Settings();
+        settings.ProviderCapabilities.Mode = ProviderCapabilityMode.Enforced;
+        settings.ProviderCapabilities.CanaryProviders = ["Generic"];
+        settings.ProviderCapabilities.Profiles["Generic"] = new()
+        { RequireTls = requireTls, AllowSmtpUtf8 = requireTls };
+        ProviderCapabilityTests.Approve(settings);
+        var result = await EmailValidatorTests.CreateValidator(new Routing(), settings,
+            smtp: Probe(settings, new StreamFactory(stream)))
+            .ValidateAsync(requireTls ? "person@example.test" : "ü@example.test", new(true));
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Contains(ReasonCode.ProviderCapabilityRestricted, result.ReasonCodes);
+        Assert.DoesNotContain(ReasonCode.MailboxRejected, result.ReasonCodes);
+        Assert.False(result.UnknownContext!.Retryable);
+        Assert.DoesNotContain("MAIL FROM", stream.Commands);
+        Assert.DoesNotContain("RCPT TO", stream.Commands);
+        Assert.Equal(SmtpProbeDisposition.ProviderPolicyRestricted, result.ProbeDisposition);
+    }
+
+    [Fact]
+    public async Task ProviderRetryFloor_DefersToDurableRetry_InsteadOfOpeningAnotherSession()
+    {
+        using var stream = new TranscriptStream(Prefix + "451 4.3.0 try later\r\n250 reset\r\n221 bye\r\n");
+        var settings = Settings();
+        settings.Smtp.RetryCount = 3;
+        settings.ProviderCapabilities.Mode = ProviderCapabilityMode.Enforced;
+        settings.ProviderCapabilities.CanaryProviders = ["Generic"];
+        settings.ProviderCapabilities.Profiles["Generic"] = new() { MinimumRetrySeconds = 900 };
+        ProviderCapabilityTests.Approve(settings);
+        var before = DateTimeOffset.UtcNow;
+        var result = await Probe(settings, new StreamFactory(stream))
+            .ProbeAsync("mx.example.test", "person@example.test", MailProvider.GenericSmtp);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(SmtpMailboxStatus.TemporaryFailure, result.Status);
+        Assert.True(result.RetryAfter >= before.AddSeconds(900));
+    }
+
     [Fact]
     public async Task HeloFallback_DiscardsFailedEhloCapabilities()
     {

@@ -5,10 +5,13 @@ namespace EmailValidation.Infrastructure;
 
 public sealed class ProviderPolicyResolver(IOptions<EmailValidationOptions> options) : IProviderPolicyResolver
 {
+    private readonly EmailValidationOptions _options = options.Value;
     private readonly SchedulingOptions _scheduling = options.Value.Scheduling;
     private readonly SmtpOptions _smtp = options.Value.Smtp;
 
-    public ProviderPolicy Resolve(MailProvider provider)
+    public ProviderPolicy Resolve(MailProvider provider) => Resolve(provider, null);
+
+    public ProviderPolicy Resolve(MailProvider provider, string? domain)
     {
         var providerKey = Normalize(provider);
         var configured = Find(providerKey, provider) ?? _scheduling.DefaultProviderPolicy;
@@ -20,14 +23,14 @@ public sealed class ProviderPolicyResolver(IOptions<EmailValidationOptions> opti
                     : _smtp.PerProviderConcurrency,
                 _scheduling.ProviderMinIntervalMilliseconds,
                 15,
-                _smtp.RetryCount);
+                _smtp.RetryCount) { Capabilities = ProviderCapabilityPolicy.Resolve(_options, provider, domain) };
         return new ProviderPolicy(
             providerKey,
             configured.PerProviderConcurrency,
             configured.MinIntervalMilliseconds ?? configured.DelayMilliseconds,
             configured.PolicyBlockCooldownMinutes,
             configured.MaxRetries,
-            configured.PerDomainConcurrency);
+            configured.PerDomainConcurrency) { Capabilities = ProviderCapabilityPolicy.Resolve(_options, provider, domain) };
     }
 
     internal static string Normalize(MailProvider provider) => provider switch

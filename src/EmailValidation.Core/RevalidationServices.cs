@@ -75,7 +75,9 @@ public sealed class RevalidationPolicy(
 
     public RevalidationDecision Evaluate(EmailValidationResult result, RevalidationContext context)
     {
-        var providerMaximum = Math.Max(1, providerPolicies.Resolve(result.MailProvider).MaxRetries + 1);
+        var providerPolicy = providerPolicies.Resolve(result.MailProvider,
+            result.DomainIntelligence?.Domain ?? result.NormalizedEmail?.Split('@').LastOrDefault());
+        var providerMaximum = Math.Max(1, providerPolicy.MaxRetries + 1);
         var configuredMaximum = Math.Max(1, _options.DefaultMaxAttempts);
         var maximum = context.ExistingMaximumAttempts ?? Math.Min(configuredMaximum, providerMaximum);
         maximum = Math.Max(context.AttemptNumber, maximum);
@@ -102,6 +104,8 @@ public sealed class RevalidationPolicy(
             ? result.DomainIntelligence!.Dns.Status == DnsStatus.Timeout ? ReasonCode.DnsTimeout : ReasonCode.DnsFailure
             : RetryPriority.FirstOrDefault(reason => result.ReasonCodes.Contains(reason) &&
                 !(result.DomainIntelligence is not null && reason is ReasonCode.DnsTimeout or ReasonCode.DnsFailure));
+        if (!transientDns && !ProviderCapabilityPolicy.AllowsSmtpRetry(providerPolicy.Capabilities, result))
+            return new(false, null, maximum);
         if (!RetryableReasons.Contains(reason))
             return new(false, null, maximum);
 
@@ -125,6 +129,10 @@ public sealed class RevalidationSchedulePolicy(
             SmtpResponseCategory.MailboxFull => _options.Revalidation.MailboxFullRetrySeconds,
             _ => _options.Revalidation.MinimumRetrySeconds
         };
+        var providerPolicy = providerPolicies.Resolve(context.Result.MailProvider,
+            context.Result.DomainIntelligence?.Domain ?? context.Result.NormalizedEmail?.Split('@').LastOrDefault());
+        if (context.Reason is not (ReasonCode.DnsTimeout or ReasonCode.DnsFailure))
+            minimumSeconds = Math.Max(minimumSeconds, providerPolicy.Capabilities.MinimumRetrySeconds);
         var causeFloor = context.Now.AddSeconds(Math.Max(1, minimumSeconds));
         var backoff = backoffPolicy.Evaluate(
             context.Result.MailProvider,
@@ -134,7 +142,7 @@ public sealed class RevalidationSchedulePolicy(
         if (category == SmtpResponseCategory.VerificationBlocked)
         {
             var providerCooldown = context.Now.AddMinutes(
-                Math.Max(0, providerPolicies.Resolve(context.Result.MailProvider).PolicyBlockCooldownMinutes));
+                Math.Max(0, providerPolicy.PolicyBlockCooldownMinutes));
             causeFloor = Max(causeFloor, providerCooldown);
         }
         if (context.Reason == ReasonCode.AcceptAllCandidate)

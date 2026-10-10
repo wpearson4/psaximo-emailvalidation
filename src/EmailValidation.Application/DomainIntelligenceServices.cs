@@ -26,7 +26,7 @@ public sealed class DomainIntelligenceFreshnessPolicy(
         if (!string.Equals(existing.IntelligencePolicyVersion, _options.DomainIntelligence.PolicyVersion,
                 StringComparison.Ordinal))
             return new(false, false, "The domain-intelligence policy version changed.");
-        if (!string.Equals(existing.StrategyVersion, _options.Policy.ProviderStrategyVersion,
+        if (!string.Equals(existing.StrategyVersion, ProviderCapabilityPolicy.StrategyVersion(_options),
                 StringComparison.Ordinal))
             return new(false, false, "The provider strategy version changed.");
         if (current is null)
@@ -192,7 +192,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             data,
             allowCatchAllProbe,
             baseResult.Source is not DomainIntelligenceSource.LiveAnalysis,
-            _options.Policy.ToVersions(),
+            ProviderCapabilityPolicy.PolicyVersions(_options),
             _timeProvider.GetUtcNow());
         if (plan.PerformCatchAllProbe)
         {
@@ -214,7 +214,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             data,
             allowCatchAllProbe,
             baseResult.Source is not DomainIntelligenceSource.LiveAnalysis || catchAllProbes == 0,
-            _options.Policy.ToVersions(),
+            ProviderCapabilityPolicy.PolicyVersions(_options),
             _timeProvider.GetUtcNow());
         return new(data, baseResult.Source, catchAllProbes, baseResult.AnalysisDurationMs, plan);
     }
@@ -290,7 +290,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                     ? detectedProvider.Evidence
                     : ["MxTopology"],
                 DetectedAtUtc = now,
-                DetectionVersion = _options.Policy.ProviderStrategyVersion
+                DetectionVersion = ProviderCapabilityPolicy.StrategyVersion(_options)
             };
             var authentication = await authenticationTask.ConfigureAwait(false);
             var disposable = await disposableTask.ConfigureAwait(false);
@@ -307,7 +307,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             var catchAllTopologyCompatible = existing is not null &&
                 string.Equals(Fingerprints.Mx(existing), mxFingerprint, StringComparison.Ordinal) &&
                 ProviderCompatible(existing, provider, providerFingerprint) &&
-                string.Equals(existing.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal);
+                string.Equals(existing.StrategyVersion, ProviderCapabilityPolicy.StrategyVersion(_options), StringComparison.Ordinal);
             var lifetime = DomainLifetime(routing.Status, routing.TimeToLive);
             var observedAt = routing.ObservedAtUtc == default ? now : routing.ObservedAtUtc;
             var routingClock = new EvidenceLifetime(observedAt, observedAt.Add(lifetime));
@@ -339,7 +339,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 RoutingEvidence = routingClock,
                 ProviderEvidence = routingClock,
                 AuthenticationEvidence = new(authenticationAt, authenticationAt.AddMinutes(Math.Max(0, _options.Dns.CacheMinutes))),
-                StrategyVersion = _options.Policy.ProviderStrategyVersion,
+                StrategyVersion = ProviderCapabilityPolicy.StrategyVersion(_options),
                 MxTopologyFingerprint = mxFingerprint,
                 ProviderFingerprint = providerFingerprint,
                 AuthenticationFingerprint = authenticationFingerprint,
@@ -376,7 +376,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             current,
             true,
             true,
-            _options.Policy.ToVersions(),
+            ProviderCapabilityPolicy.PolicyVersions(_options),
             now);
         if (!plan.PerformCatchAllProbe)
         {
@@ -403,7 +403,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 current.StrategyVersion, Guid.NewGuid().ToString("N")),
             ObservedAt = detection.ObservedAt ?? now,
             StrategyVersion = string.IsNullOrWhiteSpace(detection.StrategyVersion)
-                ? _options.Policy.ProviderStrategyVersion
+                ? ProviderCapabilityPolicy.StrategyVersion(_options)
                 : detection.StrategyVersion,
             EvidenceContractVersion =
                 CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
@@ -462,7 +462,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
     private bool CanPreserveAfterInconclusiveRefresh(DomainIntelligence current) =>
         (current.CatchAll.HasIndependentRoutingEvidence ||
          current.CatchAll.HasConfirmedAcceptAllEvidence) &&
-        string.Equals(current.StrategyVersion, _options.Policy.ProviderStrategyVersion, StringComparison.Ordinal) &&
+        string.Equals(current.StrategyVersion, ProviderCapabilityPolicy.StrategyVersion(_options), StringComparison.Ordinal) &&
         string.Equals(Fingerprints.Mx(current), current.Provider.TopologyFingerprint, StringComparison.Ordinal);
 
     private static bool ProviderCompatible(

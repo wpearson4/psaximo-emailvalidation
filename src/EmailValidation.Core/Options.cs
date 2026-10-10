@@ -23,6 +23,7 @@ public sealed class EmailValidationOptions
     public EmailColumnDetectionOptions ColumnDetection { get; set; } = new();
     public EmailValidationProjectionOptions Projection { get; set; } = new();
     public ClassificationModelOptions ClassificationModel { get; set; } = new();
+    public ProviderCapabilityOptions ProviderCapabilities { get; set; } = new();
 }
 
 public sealed class ClassificationModelOptions

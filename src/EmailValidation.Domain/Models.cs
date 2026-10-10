@@ -12,7 +12,7 @@ public enum EvidenceQuality { Unknown, Conclusive, Partial, Blocked, NotAttempte
 // Public CatchAll results retain the internal basis without reintroducing separate deliverability statuses.
 public enum CatchAllClassification { None, Confirmed, Likely, GatewayAmbiguous, Historical }
 // Distinguishes an observed remote result from work deliberately skipped by local scheduling policy.
-public enum SmtpProbeDisposition { Completed, RemoteBlocked, LocalCooldown, SessionBudgetExhausted, NotAttempted }
+public enum SmtpProbeDisposition { Completed, RemoteBlocked, LocalCooldown, SessionBudgetExhausted, NotAttempted, ProviderPolicyRestricted }
 // A stable, consumer-facing explanation of why a technically valid address could not be classified.
 public enum UnknownCause
 {
@@ -57,7 +57,7 @@ public enum ReasonCode
     LocalCooldown, RetryRecommended, CatchAllGatewayAmbiguous, SmtpUtf8Unsupported,
     NoEligibleOutboundIdentity, OutboundIdentityDnsNotReady, OutboundIdentityConfigurationInvalid,
     AcceptAllObserved, RecipientSpecificBehavior, AcceptAllCandidate,
-    ProviderEvidenceConflicting
+    ProviderEvidenceConflicting, NonDiscriminationEvidenceReused, ProviderCapabilityRestricted
 }
 
 public enum DnsStatus { Success, DomainNotFound, Timeout, Failure }
@@ -216,7 +216,10 @@ public sealed record ProviderPolicy(
     int DelayMilliseconds,
     int PolicyBlockCooldownMinutes,
     int MaxRetries,
-    int? PerDomainConcurrency = null);
+    int? PerDomainConcurrency = null)
+{
+    public ProviderCapabilityProfile Capabilities { get; init; } = new() { ReuseConfirmedNonDiscrimination = false, MinimumRetrySeconds = 0 };
+}
 
 public sealed record ProviderRuntimeState(
     string Provider,
@@ -419,6 +422,8 @@ public sealed record EmailValidationChecks
 
 public sealed record EmailValidationResult
 {
+    public ProviderCapabilityAssessment? ProviderCapabilities { get; init; }
+
     public required string Email { get; init; }
     public string? NormalizedEmail { get; init; }
     public EmailValidationStatus Status { get; init; }

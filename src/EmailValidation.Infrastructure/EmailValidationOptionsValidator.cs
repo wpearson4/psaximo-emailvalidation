@@ -26,10 +26,25 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var projection = options.Projection;
         var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
+        var capabilities = options.ProviderCapabilities;
+        if (!Enum.IsDefined(capabilities.Mode) || string.IsNullOrWhiteSpace(capabilities.PolicyVersion) ||
+            capabilities.Profiles.Keys.Any(key => !ProviderCapabilityPolicy.SupportedKeys.Contains(key)) ||
+            capabilities.CanaryProviders.Any(key => !ProviderCapabilityPolicy.SupportedKeys.Contains(key)) ||
+            capabilities.Profiles.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != capabilities.Profiles.Count ||
+            capabilities.CanaryProviders.Distinct(StringComparer.OrdinalIgnoreCase).Count() != capabilities.CanaryProviders.Count)
+            failures.Add("Provider capability mode, version, profile keys or canary providers are invalid.");
+        if (capabilities.Profiles.Values.Any(profile => profile is null ||
+            profile.NonDiscriminationRefreshMinutes is < 1 or > 1440 || profile.MinimumRetrySeconds is < 1 or > 86400))
+            failures.Add("Provider capability refresh and retry bounds are invalid.");
+        if (capabilities.Mode == ProviderCapabilityMode.Enforced && !ProviderCapabilityPolicy.Approved(capabilities))
+            failures.Add("Enforced provider capabilities require a reviewed policy hash, approval reference and explicit canary providers.");
         if (persistence.EvidenceCacheSizeLimit is < 1 or > 1_000_000 ||
             persistence.EvidenceCacheSeconds is < 0 or > 300 || persistence.DomainWriteRetryLimit is < 1 or > 32)
             failures.Add("Persistence evidence cache size must be 1..1000000, freshness 0..300 seconds, and domain write retries 1..32.");
         var smtp = options.Smtp;
+        if (capabilities.Mode == ProviderCapabilityMode.Enforced && !smtp.EnableStartTls &&
+            capabilities.Profiles.Values.Any(profile => profile?.RequireTls == true))
+            failures.Add("Provider TLS requirements require Smtp:EnableStartTls=true.");
         var fleet = smtp.FleetBudget;
         if (!Enum.IsDefined(fleet.Mode) || fleet.GlobalConcurrency is < 1 or > 128 ||
             fleet.PerProviderConcurrency is < 1 or > 128 || fleet.PerDomainConcurrency is < 1 or > 128 ||

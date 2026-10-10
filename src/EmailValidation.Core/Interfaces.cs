@@ -352,6 +352,7 @@ public interface IDomainBackoffPolicy
 public interface IProviderPolicyResolver
 {
     ProviderPolicy Resolve(MailProvider provider);
+    ProviderPolicy Resolve(MailProvider provider, string? domain) => Resolve(provider);
 }
 
 public interface IDomainValidationScheduler

@@ -43,7 +43,7 @@ public sealed class EmailValidator(
             if (request.EnableSmtp) persistenceMetrics.RecordSmtpValidationAvoided();
             var reason = normalized.FailureReason ?? ReasonCode.InvalidSyntax;
             var invalidResult = InvalidSyntaxResult(
-                email, reason, stopwatch.ElapsedMilliseconds, validatedAt, _options.Policy.ToVersions());
+                email, reason, stopwatch.ElapsedMilliseconds, validatedAt, ProviderCapabilityPolicy.PolicyVersions(_options));
             logger.LogInformation("Validation ended with {Status} in {DurationMs} ms", invalidResult.Status, invalidResult.DurationMs);
             return invalidResult;
         }
@@ -64,8 +64,14 @@ public sealed class EmailValidator(
             normalized.NormalizedEmail!, localPart, domain, cancellationToken);
         var (domainData, cacheHit, catchAllProbes, domainIntelligenceDurationMs, validationPlan) =
             await GetDomainDataAsync(domain, smtpEnabled, request.EvidenceObservedAfter, cancellationToken);
-        if (request.EvidenceObservedAfter is not null && smtpEnabled)
-            validationPlan = validationPlan with { PerformMailboxProbe = true, UsePersistedCatchAll = false };
+        if (request.EvidenceObservedAfter is not null && smtpEnabled && !validationPlan.ProviderRestricted)
+            validationPlan = validationPlan with
+            {
+                PerformMailboxProbe = true, UsePersistedCatchAll = false, UsePersistedNonDiscrimination = false,
+                Capabilities = validationPlan.Capabilities is { } retryCapabilities
+                    ? retryCapabilities with { WouldSkipMailbox = false, WouldReuseNonDiscrimination = false, NextUsefulCheckAt = null }
+                    : null
+            };
         await ReportProgressAsync(request.ValidationId, ValidationProgressStage.DomainChecks,
             "Domain and MX validation completed.", cancellationToken).ConfigureAwait(false);
         var (addressIntelligence, addressIntelligenceDurationMs) = await addressTask;
@@ -82,6 +88,32 @@ public sealed class EmailValidator(
                 domainData.Provider.TopologyFingerprint,
                 StringComparison.Ordinal))
             .ToArray();
+        var contradiction = activeObservations.Where(observation =>
+            observation.ObservedAt >= domainData.CatchAll.ObservedAt && observation.RecipientEvidenceQualified &&
+            (observation.ResponseCategory == SmtpResponseCategory.RecipientRejected || observation.RecipientEvidenceContested))
+            .MaxBy(observation => observation.ObservedAt);
+        if (validationPlan.Capabilities?.WouldReuseNonDiscrimination == true && contradiction is not null)
+        {
+            if (validationPlan.Capabilities.Applied)
+            {
+                domainData = domainData with { CatchAll = domainData.CatchAll with
+                {
+                    RecipientBehavior = DomainRecipientBehavior.Unknown, Status = CatchAllStatus.Unknown,
+                    ReasonCode = CatchAllReasonCode.TargetRecipientContradictedAcceptAll,
+                    IndependentObservationCount = 0, Confidence = .20, RefreshInconclusive = true,
+                    BehaviorEvaluatedAt = contradiction.ObservedAt, EvidenceExpiresAt = contradiction.ObservedAt,
+                    Detail = "Newer qualified recipient evidence contradicts the persisted accept-all behavior."
+                } };
+                await domainIntelligenceService.UpdateRecipientBehaviorAsync(domainData, cancellationToken).ConfigureAwait(false);
+            }
+            validationPlan = validationPlan with
+            {
+                PerformMailboxProbe = smtpEnabled && !validationPlan.ProviderRestricted,
+                UsePersistedNonDiscrimination = false,
+                Capabilities = validationPlan.Capabilities with
+                { WouldSkipMailbox = false, WouldReuseNonDiscrimination = false, NextUsefulCheckAt = null }
+            };
+        }
         var history = historicalAggregator.Aggregate(activeObservations);
         var activeDomainData = domainData with
         {
@@ -129,6 +161,9 @@ public sealed class EmailValidator(
                 "Catch-all intelligence reused for {Domain}; randomized-recipient and mailbox SMTP probes skipped",
                 domain);
         }
+        if (validationPlan.UsePersistedNonDiscrimination)
+            await ReportProgressAsync(request.ValidationId, ValidationProgressStage.PersistedIntelligence,
+                "Fresh public-endpoint accept-all evidence reused; mailbox existence remains inconclusive.", cancellationToken);
         if (smtpRequested)
         {
             if (mailbox.ProbeAttempted) persistenceMetrics.RecordSmtpValidationPerformed();
@@ -264,6 +299,30 @@ public sealed class EmailValidator(
             AddressIntelligence = addressIntelligence
         };
         var classification = classifier.Classify(classificationEvidence);
+        var capabilityAssessment = validationPlan.Capabilities;
+        if (capabilityAssessment is not null)
+        {
+            capabilityAssessment = capabilityAssessment with
+            {
+                ShadowStatusDisagrees = !capabilityAssessment.Applied && capabilityAssessment.WouldSkipMailbox
+                    ? classification.Status != EmailValidationStatus.Unknown : null,
+                UnknownResponseFingerprint = mailbox.Evidence?.Category is SmtpResponseCategory.Unknown or SmtpResponseCategory.ProtocolFailure
+                    ? mailbox.Evidence.Intelligence?.ResponseFingerprint : null
+            };
+            if (capabilityAssessment.WouldSkipMailbox)
+                ProviderCapabilityPolicy.RecordPlan(capabilityAssessment.ProfileKey, capabilityAssessment.Mode, "skip_mailbox");
+            if (capabilityAssessment.WouldSkipControls)
+                ProviderCapabilityPolicy.RecordPlan(capabilityAssessment.ProfileKey, capabilityAssessment.Mode, "skip_controls");
+            if (capabilityAssessment.ShadowStatusDisagrees == true)
+                ProviderCapabilityPolicy.RecordPlan(capabilityAssessment.ProfileKey, capabilityAssessment.Mode, "status_disagreement");
+            if (mailbox.Evidence?.Category is SmtpResponseCategory.Unknown or SmtpResponseCategory.ProtocolFailure)
+                ProviderCapabilityPolicy.RecordUnknownResponse(capabilityAssessment.ProfileKey);
+        }
+        var capabilityReasons = validationPlan.UsePersistedNonDiscrimination
+            ? new[] { ReasonCode.NonDiscriminationEvidenceReused }
+            : validationPlan.ProviderRestricted || mailbox.Disposition == SmtpProbeDisposition.ProviderPolicyRestricted
+                ? new[] { ReasonCode.ProviderCapabilityRestricted } : [];
+
         var evaluation = resultEvaluator.Evaluate(
             classification.Status,
             checks,
@@ -286,12 +345,15 @@ public sealed class EmailValidator(
 
         var result = new EmailValidationResult
         {
+            ProviderCapabilities = capabilityAssessment,
             Email = email,
             NormalizedEmail = normalized.NormalizedEmail,
             Status = classification.Status,
             Confidence = classification.Confidence,
             ConfidenceType = ConfidenceType.Heuristic,
-            ConfidenceReason = EvidenceConfidenceExplainer.Explain(
+            ConfidenceReason = validationPlan.UsePersistedNonDiscrimination
+                ? "Fresh confirmed public-endpoint accept-all evidence was reused. Individual mailbox existence remains unknown; no new mailbox probe was performed."
+                : EvidenceConfidenceExplainer.Explain(
                 classification.Status, effectiveDomainData, mailbox, mxValidation, probeSenderHealth, providerValidation),
             ProbeAttempted = mailbox.ProbeAttempted,
             ProbeDisposition = mailbox.Disposition,
@@ -308,6 +370,8 @@ public sealed class EmailValidator(
             ReasonCodes = classification.ReasonCodes
                 .Concat(evaluation.AdditionalReasonCodes)
                 .Concat(SenderHealthReasons(probeSenderHealth))
+                .Where(reason => reason != ReasonCode.SmtpDisabled || capabilityReasons.Length == 0)
+                .Concat(capabilityReasons)
                 .Distinct().ToArray(),
             UsedImplicitMxFallback = domainData.Dns.UsedAddressFallback,
             // SMTP banner reconciliation is evidence for this mailbox exchange, not
@@ -378,10 +442,10 @@ public sealed class EmailValidator(
                 Detail = domainData.Dns.Error ?? mailbox.Response
             } : null,
             Metadata = new ValidationResultMetadata(
-                _options.Policy.ToVersions(),
+                ProviderCapabilityPolicy.PolicyVersions(_options),
                 validatedAt,
                 MxTopologyFingerprint: effectiveProvider.TopologyFingerprint,
-                ResultSource: validationPlan.UsePersistedCatchAll
+                ResultSource: validationPlan.UsePersistedCatchAll || validationPlan.UsePersistedNonDiscrimination
                     ? ValidationResultSource.PersistentDomainIntelligence
                     : ValidationResultSource.LiveValidation)
         };
@@ -403,6 +467,12 @@ public sealed class EmailValidator(
             SubStatus = subStatus,
             SubStatuses = result.DetailedStatuses.Append(subStatus).Distinct().ToArray()
         };
+        if (result.ProviderCapabilities is { } capabilities)
+            result = result with { ProviderCapabilities = capabilities with
+            {
+                SmtpRetryPermitted = ProviderCapabilityPolicy.AllowsSmtpRetry(
+                    ProviderCapabilityPolicy.Resolve(_options, domainData.Provider.Provider, domain), result)
+            } };
         result = result with { UnknownContext = UnknownValidationContextBuilder.Build(result) };
         persistenceMetrics.RecordSmtpUtf8(
             result.RequiresSmtpUtf8,

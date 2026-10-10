@@ -8,6 +8,39 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
+if (args.Length > 0 && args[0] is "provider-policy-hash" or "provider-shadow-report")
+{
+    try
+    {
+        var jsonOptions = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
+        { WriteIndented = true, Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+        if (args[0] == "provider-policy-hash" && args.Length == 2)
+        {
+            var config = new ConfigurationBuilder().AddJsonFile(Path.GetFullPath(args[1])).Build();
+            var settings = new EmailValidationOptions();
+            config.GetSection("EmailValidation").Bind(settings);
+            await System.Console.Out.WriteLineAsync(ProviderCapabilityPolicy.Fingerprint(settings.ProviderCapabilities));
+            return 0;
+        }
+        if (args[0] == "provider-shadow-report" && args.Length == 3)
+        {
+            var snapshots = System.Text.Json.JsonSerializer.Deserialize<EmailValidationFeatureSnapshot[]>(
+                await File.ReadAllTextAsync(args[1]), jsonOptions) ?? [];
+            await File.WriteAllTextAsync(args[2], System.Text.Json.JsonSerializer.Serialize(
+                ProviderCapabilityReport.Summarize(snapshots), jsonOptions));
+            await System.Console.Out.WriteLineAsync("Provider shadow report written. No release approval is implied.");
+            return 0;
+        }
+        await System.Console.Error.WriteLineAsync("Usage: provider-policy-hash <appsettings.json> | provider-shadow-report <snapshots.json> <report.json>");
+        return 2;
+    }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException or System.Text.Json.JsonException)
+    {
+        await System.Console.Error.WriteLineAsync($"Provider policy command rejected: {exception.GetType().Name}");
+        return 2;
+    }
+}
+
 if (args.Length > 0 && args[0] == "benchmark")
 {
     if (args.Length is < 3 or > 4)

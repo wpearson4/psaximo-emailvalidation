@@ -133,6 +133,7 @@ public sealed record OperationalFeatureGroup(
 
 public sealed record EmailValidationFeatureSnapshot
 {
+    public ProviderCapabilityAssessment? ProviderCapabilities { get; init; }
     public required string SnapshotId { get; init; }
     public required string ValidationId { get; init; }
     public required string EmailCorrelationId { get; init; }

@@ -66,7 +66,12 @@ public sealed record ValidationPlan(
     bool PerformCatchAllProbe,
     bool PerformMailboxProbe,
     bool UsePersistedCatchAll,
-    string Reason);
+    string Reason)
+{
+    public bool UsePersistedNonDiscrimination { get; init; }
+    public bool ProviderRestricted { get; init; }
+    public ProviderCapabilityAssessment? Capabilities { get; init; }
+}
 
 public sealed record ValidationSingleFlightResult(
     EmailValidationResult Result,
