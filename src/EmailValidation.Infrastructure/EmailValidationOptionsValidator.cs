@@ -26,7 +26,22 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var projection = options.Projection;
         var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
+        if (persistence.EvidenceCacheSizeLimit is < 1 or > 1_000_000 ||
+            persistence.EvidenceCacheSeconds is < 0 or > 300 || persistence.DomainWriteRetryLimit is < 1 or > 32)
+            failures.Add("Persistence evidence cache size must be 1..1000000, freshness 0..300 seconds, and domain write retries 1..32.");
         var smtp = options.Smtp;
+        var fleet = smtp.FleetBudget;
+        if (!Enum.IsDefined(fleet.Mode) || fleet.GlobalConcurrency is < 1 or > 128 ||
+            fleet.PerProviderConcurrency is < 1 or > 128 || fleet.PerDomainConcurrency is < 1 or > 128 ||
+            fleet.StoreTimeoutSeconds is < 1 or > 30 || fleet.RetrySeconds is < 1 or > 300)
+            failures.Add("SMTP fleet budget limits or mode are invalid.");
+        if (fleet.Mode != FleetProbeBudgetMode.Disabled &&
+            (!persistence.Enabled || !string.Equals(persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase) ||
+             string.IsNullOrWhiteSpace(fleet.Collection) || new[] { persistence.DomainCollection, persistence.MailboxCollection,
+                 persistence.LifecycleCollection, persistence.SmtpReputationStateCollection, persistence.CommercialResourceCollection,
+                 persistence.OutboundIdentityHealthCollection, persistence.FeatureSnapshotCollection, persistence.OutcomeObservationCollection }
+                 .Contains(fleet.Collection, StringComparer.OrdinalIgnoreCase)))
+            failures.Add("SMTP fleet budgets require enabled MongoDB persistence and a dedicated lease collection.");
         if (smtp.ConnectionTimeoutSeconds <= 0 || smtp.CommandTimeoutSeconds <= 0 ||
             smtp.SessionTimeoutSeconds <= 0 || smtp.CleanupTimeoutSeconds <= 0)
             failures.Add("EmailValidation:Smtp timeouts must be positive.");

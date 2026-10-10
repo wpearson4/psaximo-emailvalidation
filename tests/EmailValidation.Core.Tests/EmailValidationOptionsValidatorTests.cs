@@ -6,6 +6,21 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class EmailValidationOptionsValidatorTests
 {
+    [Fact]
+    public void FleetEnforcement_RequiresMongoAndDedicatedCollection()
+    {
+        var options = new EmailValidationOptions();
+        options.Smtp.FleetBudget.Mode = FleetProbeBudgetMode.Enforced;
+        Assert.True(new EmailValidationOptionsValidator().Validate(null, options).Failed);
+        options.Persistence.Enabled = true;
+        options.Persistence.Provider = "MongoDB";
+        options.Persistence.DatabaseName = "test";
+        options.Persistence.ConnectionString = "mongodb://localhost";
+        Assert.False(new EmailValidationOptionsValidator().Validate(null, options).Failed);
+        options.Smtp.FleetBudget.Collection = options.Persistence.DomainCollection;
+        Assert.True(new EmailValidationOptionsValidator().Validate(null, options).Failed);
+    }
+
     [Theory]
     [InlineData("SessionTimeoutSeconds", 0)]
     [InlineData("CommandTimeoutSeconds", -1)]

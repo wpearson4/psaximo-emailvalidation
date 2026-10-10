@@ -51,7 +51,7 @@ public sealed class MongoValidationIntelligenceStoreTests
             await first.InitializeAsync();
             await first.InitializeAsync();
             await first.SaveDomainAsync(Domain());
-            await first.RecordAsync(Observation());
+            await first.RecordAsync(Observation() with { ControlScopeFingerprint = "scope-v3" });
             Assert.Null(await first.GetMailboxAsync("person@example.test"));
             Assert.Null(await first.GetMailboxAsync("Person@example.test"));
             await first.SaveMailboxAsync(Mailbox());
@@ -71,6 +71,7 @@ public sealed class MongoValidationIntelligenceStoreTests
             Assert.Equal("Person@example.test", (await second.GetMailboxAsync("Person@EXAMPLE.test"))!.NormalizedEmail);
             Assert.Equal(3, await collection.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
             Assert.Single(observations);
+            Assert.Equal("scope-v3", observations[0].ControlScopeFingerprint);
             Assert.Contains(domainIndexes, index => index["name"] == "ux_domain_normalized");
             Assert.DoesNotContain(mailboxIndexes, index => index["name"] == "ux_mailbox_normalized");
             Assert.Contains(mailboxIndexes, index => index["name"] == "ux_mailbox_key_v2");
@@ -116,7 +117,7 @@ public sealed class MongoValidationIntelligenceStoreTests
         10,
         TopologyFingerprint: "topology-1");
 
-    private static MailboxIntelligence Mailbox(string email = "person@example.test")
+    internal static MailboxIntelligence Mailbox(string email = "person@example.test")
     {
         var result = new EmailValidationResult
         {

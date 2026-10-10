@@ -9,6 +9,25 @@ using EmailValidation.RevalidationProbe;
 // A test-only child process: contend for one persisted lease, without SMTP or broker access.
 var connection = Environment.GetEnvironmentVariable("EMAIL_VALIDATION_TEST_MONGO")
     ?? throw new InvalidOperationException("A designated test Mongo connection is required.");
+if (args[0] == "fleet")
+{
+    var fleetSettings = new EmailValidationOptions();
+    fleetSettings.Persistence.DatabaseName = args[1];
+    fleetSettings.Smtp.FleetBudget = new()
+    {
+        Mode = FleetProbeBudgetMode.Enforced, Collection = args[2],
+        GlobalConcurrency = 2, PerProviderConcurrency = 1, PerDomainConcurrency = 1
+    };
+    var fleetOptions = Options.Create(fleetSettings);
+    using var fleet = new MongoFleetSmtpProbeBudget(new MongoClient(connection), fleetOptions, new ProviderPolicyResolver(fleetOptions));
+    using var fleetTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    while (!File.Exists(args[3])) await Task.Delay(10, fleetTimeout.Token);
+    await using var lease = await fleet.AcquireAsync(new(args[5], "mx.test", MailProvider.GoogleWorkspace), fleetTimeout.Token);
+    Console.WriteLine(lease.Acquired ? "ACQUIRED" : "CONTENDED");
+    await Console.Out.FlushAsync(fleetTimeout.Token);
+    while (!File.Exists(args[4])) await Task.Delay(10, fleetTimeout.Token);
+    return;
+}
 var settings = new EmailValidationOptions();
 settings.Persistence.DatabaseName = args[0];
 settings.Persistence.LifecycleCollection = args[1];

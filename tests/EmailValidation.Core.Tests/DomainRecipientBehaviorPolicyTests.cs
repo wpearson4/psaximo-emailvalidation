@@ -38,6 +38,19 @@ public sealed class DomainRecipientBehaviorPolicyTests
     }
 
     [Fact]
+    public void PriorSessionOnDifferentEndpointOrPolicy_CannotConfirmCurrentEndpoint()
+    {
+        var at = Now.AddMinutes(-16);
+        foreach (var scope in new[] { TestScope with { MxHost = "other.example.test" }, TestScope with { StrategyVersion = "old-policy" } })
+        {
+            var prior = Control(at) with { ControlScopeFingerprint = EndpointControlEvidencePolicy.ScopeFingerprint(scope) };
+            var result = Evaluate(Candidate(Now), AcceptedTarget(), [prior, Target(at.AddSeconds(10), SmtpResponseCategory.Accepted)]);
+            Assert.Equal(1, result.IndependentObservationCount);
+            Assert.Equal(DomainRecipientBehavior.Unknown, result.EffectiveRecipientBehavior);
+        }
+    }
+
+    [Fact]
     public void SessionsInsideMinimumSeparation_DoNotConfirm()
     {
         var priorControlAt = Now.AddMinutes(-10);
@@ -242,6 +255,7 @@ public sealed class DomainRecipientBehaviorPolicyTests
             "Independent routing evidence.", .96)
         {
             RecipientBehavior = DomainRecipientBehavior.CatchAll,
+            RoutingAttestationVerified = true,
             ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence
         };
 
@@ -548,6 +562,7 @@ public sealed class DomainRecipientBehaviorPolicyTests
         IndependentObservationCount = 0,
         EvidenceContractVersion = CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
         ObservedAt = observedAt,
+        ControlScope = TestScope,
         RefreshInconclusive = true,
         ProbeResults =
         [
@@ -618,7 +633,8 @@ public sealed class DomainRecipientBehaviorPolicyTests
         RandomRecipientAcceptedCount: 2,
         RandomRecipientProbeCount: 2,
         RandomRecipientRejectedCount: 0,
-        ObservationSessionId: sessionId);
+        ObservationSessionId: sessionId,
+        ControlScopeFingerprint: EndpointControlEvidencePolicy.ScopeFingerprint(TestScope));
 
     private static ValidationObservation Target(
         DateTimeOffset observedAt,
@@ -635,6 +651,8 @@ public sealed class DomainRecipientBehaviorPolicyTests
         10,
         ObservationSessionId: sessionId,
         RecipientEvidenceQualified: true);
+
+    private static ControlEvidenceScope TestScope => new("mx.example.test", 10, MailProvider.GenericSmtp, GatewayProvider.Unknown, "fixture-topology", "fixture-policy", "fixture-session");
 
     private static CatchAllOptions Options() => new()
     {

@@ -275,7 +275,11 @@ public sealed record CatchAllDetectionResult(
     string? Detail = null,
     double Confidence = 0)
 {
-    public const string CurrentRecipientBehaviorEvidenceContractVersion = "recipient-behavior-evidence-v2";
+    public const string CurrentRecipientBehaviorEvidenceContractVersion = "recipient-behavior-evidence-v3";
+    public ControlEvidenceScope? ControlScope { get; init; }
+    public SignedRoutingAttestation? RoutingAttestation { get; init; }
+    [JsonIgnore]
+    public bool RoutingAttestationVerified { get; init; }
     public DateTimeOffset? EvidenceExpiresAt { get; init; }
     public bool RandomRecipientAccepted => Accepted > 0;
     public DomainRecipientBehavior RecipientBehavior { get; init; } = DomainRecipientBehavior.Unknown;
@@ -283,6 +287,7 @@ public sealed record CatchAllDetectionResult(
     public string? EvidenceContractVersion { get; init; }
     [JsonIgnore]
     public bool HasIndependentRoutingEvidence =>
+        RoutingAttestationVerified &&
         Status == CatchAllStatus.LikelyCatchAll &&
         RecipientBehavior == DomainRecipientBehavior.CatchAll &&
         ReasonCode == CatchAllReasonCode.IndependentRoutingEvidence;
@@ -318,8 +323,27 @@ public sealed record CatchAllDetectionResult(
     public DateTimeOffset? ObservedAt { get; init; }
     public string StrategyVersion { get; init; } = string.Empty;
     public DateTimeOffset? RefreshAttemptedAt { get; init; }
+    public DateTimeOffset? BehaviorEvaluatedAt { get; init; }
     public bool RefreshInconclusive { get; init; }
 }
+
+public sealed record ControlEvidenceScope(
+    string MxHost,
+    int Preference,
+    MailProvider Provider,
+    GatewayProvider GatewayProvider,
+    string TopologyFingerprint,
+    string StrategyVersion,
+    string AcquisitionId);
+
+public sealed record SignedRoutingAttestation(
+    string AuthorityId,
+    string AttestationId,
+    string Domain,
+    string TopologyFingerprint,
+    DateTimeOffset IssuedAt,
+    DateTimeOffset ExpiresAt,
+    string Signature);
 
 public enum CatchAllReasonCode
 {
@@ -336,7 +360,8 @@ public enum CatchAllReasonCode
     IndependentRoutingEvidence,
     AcceptAllCandidate,
     AcceptAllConfirmed,
-    TargetRecipientContradictedAcceptAll
+    TargetRecipientContradictedAcceptAll,
+    EndpointEvidenceMismatch = 100
 }
 
 public sealed record DomainValidationData(

@@ -31,6 +31,7 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
     private readonly SmtpReputationProtectionOptions _reputationOptions;
     private readonly string _strategyVersion;
     private readonly string _classificationVersion;
+    private readonly IFleetSmtpProbeBudget _fleetBudget;
     private readonly SmtpResponseIntelligenceMode _intelligenceMode;
     // Test-only trust store. Production uses the platform certificate chain and MX hostname.
     internal X509ChainPolicy? TlsCertificateChainPolicy { get; init; }
@@ -46,9 +47,11 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
         IOutboundIdentityHealthStore outboundIdentityHealthStore,
         ISmtpConnectionFactory? connectionFactory = null,
         ISmtpReputationProtection? reputationProtection = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IFleetSmtpProbeBudget? fleetBudget = null)
     {
         _options = options.Value.Smtp;
+        _fleetBudget = fleetBudget ?? new DisabledFleetSmtpProbeBudget();
         _clock = timeProvider ?? TimeProvider.System;
         _logger = logger;
         _throttle = throttle;
@@ -115,17 +118,28 @@ public sealed class SmtpMailboxProbe : ISmtpMailboxProbe
                 if (reputation.SuppressSmtp)
                     return ReputationDeferred(mxHost, provider, reputation);
             }
+            await using var fleetLease = await _fleetBudget.AcquireAsync(throttleContext, cancellationToken).ConfigureAwait(false);
+            if (!fleetLease.Acquired)
+                return lastResult ?? CooldownActive(mxHost, provider,
+                    new(false, fleetLease.RetryAfter, fleetLease.Reason), sessions);
             if (!_sessionBudget.TryConsume())
             {
                 _logger.LogWarning("SMTP session budget exhausted before probing {Domain}", domain);
                 return lastResult ?? BudgetExhausted(mxHost, provider);
             }
-
             transientAttempt++;
             sessions++;
-            lastResult = await ProbeOnceAsync(
-                mxHost, recipient, provider, sessions, outboundIdentity.ProbeSenderAddress,
-                outboundIdentity, cancellationToken);
+            try
+            {
+                lastResult = await ProbeOnceAsync(
+                    mxHost, recipient, provider, sessions, outboundIdentity.ProbeSenderAddress,
+                    outboundIdentity, fleetLease.ExecutionToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && fleetLease.ExecutionToken.IsCancellationRequested)
+            {
+                return CooldownActive(mxHost, provider,
+                    new(false, _clock.GetUtcNow().AddSeconds(_options.FleetBudget.RetrySeconds), "FleetProbeLeaseExpired"), sessions);
+            }
             if (reputation is not null)
                 lastResult = WithReputation(lastResult, reputation);
             if (_reputationProtection is not null)

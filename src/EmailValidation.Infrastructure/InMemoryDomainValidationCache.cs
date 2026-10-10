@@ -1,33 +1,28 @@
-using System.Collections.Concurrent;
 using EmailValidation.Core;
+using Microsoft.Extensions.Options;
 
 namespace EmailValidation.Infrastructure;
 
-public sealed class InMemoryDomainValidationCache(TimeProvider? timeProvider = null) : IDomainValidationCache
+public sealed class InMemoryDomainValidationCache(TimeProvider? timeProvider = null, IOptions<EmailValidationOptions>? options = null) : IDomainValidationCache
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
-    private sealed record CacheItem(DomainIntelligence Data, DateTimeOffset ExpiresUtc);
-    private readonly ConcurrentDictionary<string, CacheItem> _entries = new(StringComparer.OrdinalIgnoreCase);
-
+    private readonly BoundedEvidenceCache<DomainIntelligence> _entries = new(
+        options?.Value.Persistence.EvidenceCacheSizeLimit ?? 10_000, timeProvider ?? TimeProvider.System);
+    private readonly object _sync = new();
     public int Count => _entries.Count;
-
-    public bool TryGet(string domain, out DomainIntelligence? data)
+    public bool TryGet(string domain, out DomainIntelligence? data) => _entries.TryGet(domain.ToLowerInvariant(), out data);
+    public void Store(DomainIntelligence data, TimeSpan lifetime) => StoreMergedAsync(data, lifetime).GetAwaiter().GetResult();
+    public Task<DomainIntelligence> StoreMergedAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
     {
-        data = null;
-        if (!_entries.TryGetValue(domain, out var item)) return false;
-        if (item.ExpiresUtc <= _clock.GetUtcNow())
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
         {
-            _entries.TryRemove(domain, out _);
-            return false;
+            TryGet(data.Domain, out var current);
+            var merged = current is null ? data : DomainIntelligenceMerge.Merge(current, data);
+            var expires = _clock.GetUtcNow().Add(lifetime);
+            if (merged.EvidenceExpiresAt is { } observed && observed < expires) expires = observed;
+            _entries.Set(data.Domain.ToLowerInvariant(), merged, expires);
+            return Task.FromResult(merged);
         }
-        data = item.Data;
-        return true;
-    }
-
-    public void Store(DomainIntelligence data, TimeSpan lifetime)
-    {
-        var expiresAt = _clock.GetUtcNow().Add(lifetime);
-        if (data.EvidenceExpiresAt is { } observedExpiry && observedExpiry < expiresAt) expiresAt = observedExpiry;
-        _entries[data.Domain] = new CacheItem(data, expiresAt);
     }
 }

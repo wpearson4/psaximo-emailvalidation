@@ -150,6 +150,7 @@ public sealed class CatchAllReusePlanningTests
             "Independent routing evidence confirms otherwise nonexistent recipients are routed.",
             0.96)
         {
+            RoutingAttestationVerified = true,
             ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
             RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = Now.AddMinutes(-10),

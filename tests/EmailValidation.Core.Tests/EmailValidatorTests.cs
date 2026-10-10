@@ -257,13 +257,17 @@ public sealed class EmailValidatorTests
     }
 
     [Fact]
-    public async Task InconclusiveCatchAllRefresh_PreservesHistoryAndBacksOffFurtherRandomProbes()
+    public async Task ExpiredRoutingAttestation_InconclusiveRefreshRemainsUnknownAndBacksOff()
     {
         var catchAll = new InconclusiveCatchAll();
         var smtp = new CountingSmtp();
         var stale = CachedCatchAllDomain() with
         {
-            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            CatchAll = CachedCatchAllDomain().CatchAll with
+            {
+                ObservedAt = DateTimeOffset.UtcNow.AddDays(-2),
+                RoutingAttestation = TestRoutingAttestations.Sign(CachedCatchAllDomain(), DateTimeOffset.UtcNow.AddHours(-3))
+            },
             EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
         };
         var cache = new HistoricalDomainCache(stale);
@@ -276,9 +280,9 @@ public sealed class EmailValidatorTests
 
         Assert.Equal(1, catchAll.Calls);
         Assert.Equal(2, smtp.Calls);
-        Assert.Equal(CatchAllStatus.LikelyCatchAll, first.CatchAllEvidence!.Status);
+        Assert.Equal(CatchAllStatus.Unknown, first.CatchAllEvidence!.Status);
         Assert.True(first.CatchAllEvidence.RefreshInconclusive);
-        Assert.Contains("refresh was inconclusive", first.CatchAllEvidence.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(first.CatchAllEvidence.HasIndependentRoutingEvidence);
     }
 
     [Fact]
@@ -303,7 +307,11 @@ public sealed class EmailValidatorTests
     {
         var stale = CachedCatchAllDomain() with
         {
-            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            CatchAll = CachedCatchAllDomain().CatchAll with
+            {
+                ObservedAt = DateTimeOffset.UtcNow.AddDays(-2),
+                RoutingAttestation = TestRoutingAttestations.Sign(CachedCatchAllDomain(), DateTimeOffset.UtcNow.AddHours(-3))
+            },
             EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
         };
         var validator = CreateValidator(
@@ -324,7 +332,11 @@ public sealed class EmailValidatorTests
         var smtp = new CountingSmtp();
         var stale = CachedCatchAllDomain() with
         {
-            CatchAll = CachedCatchAllDomain().CatchAll with { ObservedAt = DateTimeOffset.UtcNow.AddDays(-2) },
+            CatchAll = CachedCatchAllDomain().CatchAll with
+            {
+                ObservedAt = DateTimeOffset.UtcNow.AddDays(-2),
+                RoutingAttestation = TestRoutingAttestations.Sign(CachedCatchAllDomain(), DateTimeOffset.UtcNow.AddHours(-3))
+            },
             EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
         };
         var validator = CreateValidator(
@@ -445,10 +457,11 @@ public sealed class EmailValidatorTests
         Assert.Equal("mx.example.com", firstControl.CorrelatedTargetMxHost);
 
         var secondAt = firstAt.AddMinutes(16);
+        var secondCache = new InMemoryDomainValidationCache();
         var second = CreateValidator(
             new FakeDns(), settings, observations,
             new TimedCandidateCatchAll(secondAt),
-            new TimedAcceptedSmtp(secondAt.AddSeconds(10)));
+            new TimedAcceptedSmtp(secondAt.AddSeconds(10)), cache: secondCache);
         var secondResult = await second.ValidateAsync(
             "second@example.com", new EmailValidationRequest(EnableSmtp: true));
 
@@ -456,6 +469,8 @@ public sealed class EmailValidatorTests
         Assert.Equal(DomainRecipientBehavior.AcceptAll,
             secondResult.CatchAllEvidence?.EffectiveRecipientBehavior);
         Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, secondResult.CatchAllEvidence?.ReasonCode);
+        Assert.True(secondCache.TryGet("example.com", out var persistedConfirmation));
+        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, persistedConfirmation!.CatchAll.ReasonCode);
         Assert.Equal(2, secondResult.CatchAllEvidence?.IndependentObservationCount);
         Assert.NotEqual(DomainRecipientBehavior.CatchAll,
             secondResult.CatchAllEvidence?.EffectiveRecipientBehavior);
@@ -757,6 +772,7 @@ public sealed class EmailValidatorTests
         TimeProvider? clock = null)
     {
         settings ??= new EmailValidationOptions();
+        settings.CatchAll.RoutingAttestations.Authorities = [TestRoutingAttestations.Authority];
         var options = Microsoft.Extensions.Options.Options.Create(settings);
         var persistenceMetrics = metrics ?? new ValidationPersistenceMetrics();
         var domainCache = cache ?? new InMemoryDomainValidationCache();
@@ -951,9 +967,11 @@ public sealed class EmailValidatorTests
             CancellationToken cancellationToken = default)
         {
             Calls++;
+            var rejection = RecipientRejected(mxHost);
             return Task.FromResult(new CatchAllDetectionResult(
                 CatchAllStatus.LikelyNotCatchAll, 1, 0, 1, 0,
-                "Random recipient rejected.", 0.92));
+                "Random recipient rejected.", 0.92)
+            { ObservedAt = rejection.Evidence!.Timestamp, ProbeResults = [rejection] });
         }
     }
 
@@ -1081,6 +1099,7 @@ public sealed class EmailValidatorTests
                 CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
                 "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
             {
+                RoutingAttestation = RoutingAttestation(domain, mxHost),
                 ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
                 RecipientBehavior = DomainRecipientBehavior.CatchAll
             });
@@ -1142,6 +1161,7 @@ public sealed class EmailValidatorTests
                 CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
                 "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
             {
+                RoutingAttestation = RoutingAttestation(domain, mxHost),
                 ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
                 RecipientBehavior = DomainRecipientBehavior.CatchAll
             };
@@ -1188,6 +1208,7 @@ public sealed class EmailValidatorTests
             CatchAllStatus.LikelyCatchAll, 2, 2, 0, 0,
             "Independent routing evidence confirms otherwise nonexistent recipients are routed.", 0.96)
         {
+            RoutingAttestation = RoutingAttestation("example.com", "mx.example.com"),
             ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
             RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
@@ -1199,6 +1220,12 @@ public sealed class EmailValidatorTests
         StrategyVersion = new ValidationPolicyOptions().ProviderStrategyVersion,
         IntelligencePolicyVersion = "2.0.0"
     };
+
+    private static SignedRoutingAttestation RoutingAttestation(string domain, string host) => TestRoutingAttestations.Sign(new DomainIntelligence
+    {
+        Domain = domain, Provider = new(MailProvider.GenericSmtp, .9),
+        Dns = new(DnsStatus.Success, true, [new(10, host)], false, TimeSpan.Zero)
+    });
 
     private static EmailValidationOptions LiveSettings() => new()
     {

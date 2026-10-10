@@ -271,13 +271,17 @@ public sealed class EmailClassificationEngine : IEmailClassificationEngine
                 contributions);
         }
 
+        if (catchAll.ReasonCode == CatchAllReasonCode.EndpointEvidenceMismatch)
+        {
+            reasons.RemoveAll(reason => reason == ReasonCode.MailboxAccepted);
+            reasons.Add(ReasonCode.MailboxAcceptanceAmbiguous);
+            return FinalizeResult(EmailValidationStatus.Unknown, Math.Max(score, 0.80), reasons, contributions);
+        }
+
         var allControlResponsesAmbiguous =
             recipientBehavior == DomainRecipientBehavior.Unknown &&
             catchAll.Status == CatchAllStatus.Unknown &&
-            catchAll.Probes > 0 &&
-            catchAll.Accepted == 0 &&
-            catchAll.Rejected == 0 &&
-            catchAll.Ambiguous == catchAll.Probes;
+            catchAll.Probes > 0;
         if (allControlResponsesAmbiguous)
         {
             // A target RCPT acceptance is not recipient-specific evidence when every

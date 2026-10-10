@@ -77,6 +77,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IProbeSenderHealthChecker, OutboundIdentityProbeSenderHealthChecker>();
         services.AddSingleton<ISmtpSessionBudget, SmtpSessionBudget>();
         services.AddSingleton<ISmtpMailboxProbe, SmtpMailboxProbe>();
+        services.AddSingleton<IFleetSmtpProbeBudget>(provider =>
+            provider.GetRequiredService<IOptions<EmailValidationOptions>>().Value.Smtp.FleetBudget.Mode == FleetProbeBudgetMode.Disabled
+                ? new DisabledFleetSmtpProbeBudget()
+                : new MongoFleetSmtpProbeBudget(provider.GetRequiredService<IMongoClient>(),
+                    provider.GetRequiredService<IOptions<EmailValidationOptions>>(), provider.GetRequiredService<IProviderPolicyResolver>()));
         services.AddSingleton<ICatchAllDetector, CatchAllDetector>();
         services.AddSingleton<IValidationPersistenceMetrics, ValidationPersistenceMetrics>();
         services.AddSingleton<JsonValidationIntelligenceStore>();

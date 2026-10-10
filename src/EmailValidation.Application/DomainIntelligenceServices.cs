@@ -185,7 +185,8 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             }
         }
 
-        var data = baseResult.Intelligence;
+        var data = RoutingAttestationPolicy.Apply(baseResult.Intelligence,
+            _options.CatchAll.RoutingAttestations, _timeProvider.GetUtcNow());
         var catchAllProbes = 0;
         var plan = _planBuilder.Build(
             data,
@@ -208,6 +209,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             CatchAllReused.Add(1);
         }
 
+        data = RoutingAttestationPolicy.Apply(data, _options.CatchAll.RoutingAttestations, _timeProvider.GetUtcNow());
         plan = _planBuilder.Build(
             data,
             allowCatchAllProbe,
@@ -352,7 +354,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
                 ChangeCount = (existing?.ChangeCount ?? 0) + (changed ? 1 : 0),
                 IntelligencePolicyVersion = _options.DomainIntelligence.PolicyVersion
             };
-            await _cache.StoreAsync(intelligence, lifetime, cancellationToken).ConfigureAwait(false);
+            intelligence = await _cache.StoreMergedAsync(intelligence, lifetime, cancellationToken).ConfigureAwait(false);
             watch.Stop();
             return new(intelligence, DomainIntelligenceSource.LiveAnalysis, watch.ElapsedMilliseconds, changed);
         }
@@ -369,6 +371,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         var now = _timeProvider.GetUtcNow();
         var current = await _cache.GetAsync(domain, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Domain intelligence was not available for catch-all analysis.");
+        current = RoutingAttestationPolicy.Apply(current, _options.CatchAll.RoutingAttestations, now);
         var plan = _planBuilder.Build(
             current,
             true,
@@ -392,6 +395,12 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
         var probeCount = detection.Probes;
         detection = detection with
         {
+            ControlScope = new(
+                SmtpRecipientEvidencePolicy.NormalizeHost(selectedMx),
+                current.MxRecords.First(mx => mx.Host == selectedMx).Preference,
+                current.Provider.Provider, current.Provider.GatewayProvider,
+                EndpointControlEvidencePolicy.TopologyFingerprint(current),
+                current.StrategyVersion, Guid.NewGuid().ToString("N")),
             ObservedAt = detection.ObservedAt ?? now,
             StrategyVersion = string.IsNullOrWhiteSpace(detection.StrategyVersion)
                 ? _options.Policy.ProviderStrategyVersion
@@ -420,7 +429,7 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
             CatchAllFingerprint = Fingerprints.CreateCatchAll(detection),
             LastObservedUtc = now
         };
-        await _cache.StoreAsync(updated, RemainingRoutingLifetime(current), cancellationToken).ConfigureAwait(false);
+        updated = await _cache.StoreMergedAsync(updated, RemainingRoutingLifetime(current), cancellationToken).ConfigureAwait(false);
         if (detection.HasIndependentRoutingEvidence &&
             !current.CatchAll.HasIndependentRoutingEvidence)
             _persistenceMetrics.RecordCatchAllDiscovered();
@@ -475,7 +484,9 @@ public sealed class DomainIntelligenceService : IDomainIntelligenceService, IDis
 
     private CatchAllDetectionResult WithBehaviorExpiry(CatchAllDetectionResult detection) => detection with
     {
-        EvidenceExpiresAt = detection.EvidenceExpiresAt ?? detection.ObservedAt?.AddMinutes(Math.Max(0, _options.CatchAll.CacheMinutes))
+        EvidenceExpiresAt = detection.EvidenceExpiresAt ?? detection.ObservedAt?.AddMinutes(Math.Max(0,
+            detection.EffectiveRecipientBehavior == DomainRecipientBehavior.RecipientSpecific
+                ? Math.Min(5, _options.CatchAll.CacheMinutes) : _options.CatchAll.CacheMinutes))
     };
 
     private bool CanReuse(DomainIntelligence intelligence, DateTimeOffset now, DateTimeOffset? after) =>

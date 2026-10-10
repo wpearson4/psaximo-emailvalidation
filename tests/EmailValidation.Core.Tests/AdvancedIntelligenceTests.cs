@@ -242,6 +242,7 @@ public sealed class AdvancedIntelligenceTests
         CatchAll = new CatchAllDetectionResult(catchAll, 1, catchAll == CatchAllStatus.LikelyCatchAll ? 1 : 0,
             catchAll == CatchAllStatus.NotCatchAll ? 1 : 0, 0, Confidence: 0.90)
         {
+            RoutingAttestationVerified = true,
             RecipientBehavior = catchAll == CatchAllStatus.LikelyCatchAll
                 ? DomainRecipientBehavior.CatchAll
                 : DomainRecipientBehavior.Unknown,

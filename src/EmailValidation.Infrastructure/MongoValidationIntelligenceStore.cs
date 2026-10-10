@@ -36,16 +36,20 @@ public sealed class MongoValidationIntelligenceStore :
     private readonly CatchAllOptions _catchAllOptions;
     private readonly IValidationPersistenceMetrics _metrics;
     private readonly ILogger<MongoValidationIntelligenceStore> _logger;
-    private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxCache =
-        new(StringComparer.Ordinal);
+    private readonly BoundedEvidenceCache<MailboxIntelligence> _mailboxCache;
+    private readonly TimeProvider _clock;
+    internal Func<int, CancellationToken, Task>? BeforeDomainWrite { get; init; }
 
     public MongoValidationIntelligenceStore(
         IMongoClient client,
         IOptions<EmailValidationOptions> options,
         IValidationPersistenceMetrics metrics,
-        ILogger<MongoValidationIntelligenceStore> logger)
+        ILogger<MongoValidationIntelligenceStore> logger,
+        TimeProvider? timeProvider = null)
     {
         _options = options.Value.Persistence;
+        _clock = timeProvider ?? TimeProvider.System;
+        _mailboxCache = new(_options.EvidenceCacheSizeLimit, _clock);
         _catchAllOptions = options.Value.CatchAll;
         _metrics = metrics;
         _logger = logger;
@@ -139,7 +143,7 @@ public sealed class MongoValidationIntelligenceStore :
         CancellationToken cancellationToken = default)
     {
         var key = MailboxIdentity.Create(normalizedEmail).Key;
-        if (_mailboxCache.TryGetValue(key, out var cached)) return cached;
+        if (_mailboxCache.TryGet(key, out var cached)) return cached;
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -147,7 +151,7 @@ public sealed class MongoValidationIntelligenceStore :
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             var model = document?.ToModel();
             if (model?.MailboxKey != key) model = null;
-            if (model is not null) _mailboxCache[key] = model;
+            if (model is not null) _mailboxCache.Set(key, model, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
             _metrics.RecordRead("mailbox", model is not null, stopwatch.Elapsed);
             return model;
         }
@@ -165,15 +169,47 @@ public sealed class MongoValidationIntelligenceStore :
         }
     }
 
-    public async Task SaveDomainAsync(
-        DomainIntelligence intelligence,
-        CancellationToken cancellationToken = default)
+    public async Task SaveDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default) =>
+        _ = await MergeDomainAsync(intelligence, cancellationToken).ConfigureAwait(false);
+
+    public async Task<DomainIntelligence> MergeDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default)
     {
-        var document = DomainIntelligenceDocument.FromModel(
-            intelligence,
-            _catchAllOptions.AcceptAllMinimumIndependentObservations,
-            _catchAllOptions.MinimumAcceptedProbes);
-        var update = Builders<DomainIntelligenceDocument>.Update
+        var id = NormalizeDomain(intelligence.Domain);
+        for (var attempt = 0; attempt < _options.DomainWriteRetryLimit; attempt++)
+        {
+            var existing = await _domains.Find(x => x.Id == id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            var current = existing?.ToModel(_catchAllOptions.AcceptAllMinimumIndependentObservations, _catchAllOptions.MinimumAcceptedProbes);
+            var merged = DomainIntelligenceMerge.Merge(current, intelligence) with { ProfileVersion = (existing?.ProfileVersion ?? 0) + 1 };
+            var document = DomainIntelligenceDocument.FromModel(merged,
+                _catchAllOptions.AcceptAllMinimumIndependentObservations, _catchAllOptions.MinimumAcceptedProbes);
+            if (BeforeDomainWrite is not null) await BeforeDomainWrite(attempt, cancellationToken).ConfigureAwait(false);
+            var filter = Builders<DomainIntelligenceDocument>.Filter.Eq(x => x.Id, id);
+            filter &= existing is null || existing.ProfileVersion == 0
+                ? Builders<DomainIntelligenceDocument>.Filter.Or(
+                    Builders<DomainIntelligenceDocument>.Filter.Eq(x => x.ProfileVersion, 0),
+                    Builders<DomainIntelligenceDocument>.Filter.Exists(x => x.ProfileVersion, false))
+                : Builders<DomainIntelligenceDocument>.Filter.Eq(x => x.ProfileVersion, existing.ProfileVersion);
+            try
+            {
+                var result = await _domains.UpdateOneAsync(filter, DomainUpdate(document),
+                    new UpdateOptions { IsUpsert = existing is null }, cancellationToken).ConfigureAwait(false);
+                if (result.MatchedCount == 1 || result.UpsertedId is not null)
+                {
+                    _metrics.RecordWrite("domain", true);
+                    return merged;
+                }
+            }
+            catch (MongoWriteException exception) when (exception.WriteError?.Category == ServerErrorCategory.DuplicateKey) { }
+            _metrics.RecordWrite("domain-cas-conflict", false);
+        }
+        _metrics.RecordWrite("domain-cas-exhausted", false);
+        // Never let an uncommitted stale snapshot masquerade as authoritative cached evidence.
+        throw new InvalidOperationException("Domain intelligence write contention exceeded its retry budget.");
+    }
+
+    private static UpdateDefinition<DomainIntelligenceDocument> DomainUpdate(DomainIntelligenceDocument document)
+    {
+        return Builders<DomainIntelligenceDocument>.Update
             .Set(x => x.Domain, document.Domain)
             .Set(x => x.NormalizedDomain, document.NormalizedDomain)
             .Set(x => x.MxRecords, document.MxRecords)
@@ -215,26 +251,8 @@ public sealed class MongoValidationIntelligenceStore :
             .Set(x => x.ChangeCount, document.ChangeCount)
             .Set(x => x.PayloadJson, document.PayloadJson)
             .Set(x => x.UpdatedAt, document.UpdatedAt)
+            .Set(x => x.ProfileVersion, document.ProfileVersion)
             .SetOnInsert(x => x.CreatedAt, document.CreatedAt);
-        try
-        {
-            await _domains.UpdateOneAsync(
-                x => x.Id == document.Id,
-                update,
-                new UpdateOptions { IsUpsert = true },
-                cancellationToken).ConfigureAwait(false);
-            _metrics.RecordWrite("domain", true);
-        }
-        catch (MongoException exception)
-        {
-            _metrics.RecordWrite("domain", false);
-            LogUnavailable("write domain intelligence", exception);
-        }
-        catch (TimeoutException exception)
-        {
-            _metrics.RecordWrite("domain", false);
-            LogUnavailable("write domain intelligence", exception);
-        }
     }
 
     public async Task SaveMailboxAsync(
@@ -287,7 +305,7 @@ public sealed class MongoValidationIntelligenceStore :
                     ReturnDocument = ReturnDocument.After
                 },
                 cancellationToken).ConfigureAwait(false);
-            _mailboxCache[document.MailboxKey!] = stored.ToModel()!;
+            _mailboxCache.Set(document.MailboxKey!, stored.ToModel()!, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
             _metrics.RecordWrite("mailbox", true);
         }
         catch (MongoException exception)
@@ -449,6 +467,7 @@ public sealed class MongoValidationIntelligenceStore :
         public int ChangeCount { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+        public long ProfileVersion { get; set; }
         public string? PayloadJson { get; set; }
         public List<ValidationObservationDocument> Observations { get; set; } = [];
         public List<ValidationObservationDocument> RecipientBehaviorObservations { get; set; } = [];
@@ -478,6 +497,7 @@ public sealed class MongoValidationIntelligenceStore :
             return new DomainIntelligenceDocument
             {
                 Id = normalized,
+                ProfileVersion = model.ProfileVersion,
                 Domain = model.Domain,
                 NormalizedDomain = normalized,
                 MxRecords = model.MxRecords.Select(MxRecordDocument.FromModel).ToList(),
@@ -530,8 +550,7 @@ public sealed class MongoValidationIntelligenceStore :
             int acceptAllMinimumIndependentObservations = 2,
             int minimumAcceptedProbes = 2)
         {
-            var lastObserved = LastObservedAt == default ? UpdatedAt : LastObservedAt;
-            if (lastObserved == default) lastObserved = DateTime.UtcNow;
+            var lastObserved = LastObservedAt;
             var observed = new DateTimeOffset(DateTime.SpecifyKind(lastObserved, DateTimeKind.Utc));
             if (!string.IsNullOrWhiteSpace(PayloadJson))
             {
@@ -539,6 +558,7 @@ public sealed class MongoValidationIntelligenceStore :
                 if (model is null) return null;
                 return model with
                 {
+                    ProfileVersion = ProfileVersion,
                     CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
                         model.CatchAll,
                         acceptAllMinimumIndependentObservations,
@@ -572,6 +592,7 @@ public sealed class MongoValidationIntelligenceStore :
                 DatasetVersion: DisposableDatasetVersion);
             return new DomainIntelligence
             {
+                ProfileVersion = ProfileVersion,
                 Domain = string.IsNullOrWhiteSpace(Domain) ? NormalizedDomain : Domain,
                 DomainExists = mx.Length > 0,
                 Dns = new DnsLookupResult(DnsStatus.Success, mx.Length > 0, mx, false, TimeSpan.Zero),
@@ -784,6 +805,7 @@ public sealed class MongoValidationIntelligenceStore :
         public string? CorrelatedTargetMxHost { get; set; }
         public bool CorrelatedTargetRecipientEvidenceQualified { get; set; }
         public bool RecipientEvidenceContested { get; set; }
+        public string? ControlScopeFingerprint { get; set; }
         [BsonRepresentation(BsonType.String)]
         public SmtpProbeBudgetDecision? ReputationBudgetDecision { get; set; }
         [BsonRepresentation(BsonType.String)]
@@ -822,6 +844,7 @@ public sealed class MongoValidationIntelligenceStore :
             CorrelatedTargetRecipientEvidenceQualified =
                 model.CorrelatedTargetRecipientEvidenceQualified,
             RecipientEvidenceContested = model.RecipientEvidenceContested,
+            ControlScopeFingerprint = model.ControlScopeFingerprint,
             ReputationBudgetDecision = model.Reputation?.Decision,
             ReputationWouldDecision = model.Reputation?.WouldDecision,
             ReputationMode = model.Reputation?.Mode,
@@ -872,6 +895,7 @@ public sealed class MongoValidationIntelligenceStore :
                     DateTime.SpecifyKind(CorrelatedTargetObservedAt.Value, DateTimeKind.Utc)),
             CorrelatedTargetMxHost,
             CorrelatedTargetRecipientEvidenceQualified,
-            RecipientEvidenceContested);
+            RecipientEvidenceContested,
+            ControlScopeFingerprint);
     }
 }

@@ -452,6 +452,19 @@ public interface ISmtpThrottleLease : IAsyncDisposable
     string? Reason { get; }
 }
 
+public interface IFleetSmtpProbeBudget
+{
+    Task<IFleetSmtpProbeLease> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default);
+}
+
+public interface IFleetSmtpProbeLease : IAsyncDisposable
+{
+    bool Acquired { get; }
+    string? Reason { get; }
+    DateTimeOffset? RetryAfter { get; }
+    CancellationToken ExecutionToken { get; }
+}
+
 public interface ICatchAllDetector
 {
     Task<CatchAllDetectionResult> DetectAsync(
@@ -463,6 +476,11 @@ public interface ICatchAllDetector
 
 public interface IDomainValidationCache
 {
+    async Task<DomainIntelligence> StoreMergedAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
+    {
+        await StoreAsync(data, lifetime, cancellationToken).ConfigureAwait(false);
+        return data;
+    }
     bool TryGet(string domain, out DomainIntelligence? data);
     void Store(DomainIntelligence data, TimeSpan lifetime);
     int Count { get; }
@@ -531,6 +549,11 @@ public interface IDeliveryOutcomeStore : IDeliveryOutcomeRecorder
 
 public interface IValidationIntelligenceStore
 {
+    async Task<DomainIntelligence> MergeDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default)
+    {
+        await SaveDomainAsync(intelligence, cancellationToken).ConfigureAwait(false);
+        return await GetDomainAsync(intelligence.Domain, cancellationToken).ConfigureAwait(false) ?? intelligence;
+    }
     Task<DomainIntelligence?> GetDomainAsync(string domain, CancellationToken cancellationToken = default);
     Task<MailboxIntelligence?> GetMailboxAsync(string normalizedEmail, CancellationToken cancellationToken = default);
     Task SaveDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default);

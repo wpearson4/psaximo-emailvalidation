@@ -190,7 +190,7 @@ public sealed class Microsoft365Strategy() : MailProviderStrategyBase(MailProvid
         string explanation;
 
         if (category == SmtpResponseCategory.Accepted &&
-            recipientBehavior == DomainRecipientBehavior.RecipientSpecific)
+            EndpointControlEvidencePolicy.HasRecipientSpecificControls(context.Domain, context.MailboxProbe))
         {
             effectiveCategory = SmtpResponseCategory.Accepted;
             strength = AcceptanceStrength.High;
@@ -302,7 +302,7 @@ public sealed class GoogleWorkspaceStrategy() : MailProviderStrategyBase(MailPro
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context) => Interpret(
         context,
         SmtpResponseCategory.GatewayAccepted,
-        context.Domain.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.RecipientSpecific
+        EndpointControlEvidencePolicy.HasRecipientSpecificControls(context.Domain, context.MailboxProbe)
             ? AcceptanceStrength.Medium : AcceptanceStrength.Low,
         "Google Workspace accepted RCPT TO; final mailbox routing remains provider-controlled.");
 }
@@ -335,7 +335,7 @@ public sealed class GenericSmtpStrategy() : MailProviderStrategyBase(MailProvide
     protected override ProviderValidationResult Evaluate(ProviderValidationContext context)
     {
         var recipientBehavior = context.Domain.CatchAll.EffectiveRecipientBehavior;
-        var recipientSpecific = recipientBehavior == DomainRecipientBehavior.RecipientSpecific;
+        var recipientSpecific = EndpointControlEvidencePolicy.HasRecipientSpecificControls(context.Domain, context.MailboxProbe);
         if (context.Domain.Provider.Provider is MailProvider.AppleICloud or MailProvider.Proton)
             return Interpret(
                 context,

@@ -136,7 +136,7 @@ public sealed class EvidenceClassificationTests
             history: history));
 
         Assert.NotEqual(EmailValidationStatus.CatchAll, result.Status);
-        Assert.Equal(EmailValidationStatus.LikelyValid, result.Status);
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
         Assert.DoesNotContain(ReasonCode.AcceptAllObserved, result.ReasonCodes);
     }
 
@@ -287,6 +287,7 @@ public sealed class EvidenceClassificationTests
                 0,
                 Confidence: catchAllConfidence)
             {
+                RoutingAttestationVerified = true,
                 RecipientBehavior = recipientBehavior != DomainRecipientBehavior.Unknown
                     ? recipientBehavior
                     : catchAll == CatchAllStatus.LikelyCatchAll

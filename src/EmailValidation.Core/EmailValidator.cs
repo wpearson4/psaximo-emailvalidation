@@ -148,17 +148,37 @@ public sealed class EmailValidator(
             activeObservations,
             observationProvider,
             _options.CatchAll,
-            catchAllProbes > 0,
+            catchAllProbes > 0 && EndpointControlEvidencePolicy.IsCompatible(domainData, mailbox,
+                TimeSpan.FromMinutes(Math.Max(1, _options.CatchAll.AcceptAllSessionCorrelationMinutes))),
             mxValidation.Consensus,
             targetAcceptanceUncontested);
         if (evaluatedCatchAll != domainData.CatchAll)
         {
+            evaluatedCatchAll = evaluatedCatchAll with
+            {
+                BehaviorEvaluatedAt = SmtpRecipientEvidencePolicy.RecipientObservedAt(mailbox)
+            };
             activeDomainData = activeDomainData with { CatchAll = evaluatedCatchAll };
             await domainIntelligenceService.UpdateRecipientBehaviorAsync(activeDomainData, cancellationToken)
                 .ConfigureAwait(false);
         }
 
+        var persistenceDomainData = activeDomainData;
         var strategyDomainData = activeDomainData with { Provider = reconciledProvider };
+        if (IsPositive(mailbox) &&
+            activeDomainData.CatchAll.EffectiveRecipientBehavior == DomainRecipientBehavior.RecipientSpecific &&
+            (!targetAcceptanceUncontested ||
+             !EndpointControlEvidencePolicy.HasRecipientSpecificControls(strategyDomainData, mailbox) ||
+             mxValidation.Attempts.Any(attempt => IsPositive(attempt) &&
+                 !EndpointControlEvidencePolicy.HasRecipientSpecificControls(strategyDomainData, attempt))))
+        {
+            // Target-specific uncertainty must not erase stored controls for another endpoint.
+            activeDomainData = activeDomainData with
+            {
+                CatchAll = EndpointControlEvidencePolicy.Inconclusive(activeDomainData.CatchAll)
+            };
+            strategyDomainData = activeDomainData with { Provider = reconciledProvider };
+        }
         var strategy = providerStrategyResolver.Resolve(reconciledProvider);
         var providerValidation = await strategy.EvaluateAsync(
             new ProviderValidationContext(strategyDomainData, mailbox, history),
@@ -293,7 +313,7 @@ public sealed class EmailValidator(
             // SMTP banner reconciliation is evidence for this mailbox exchange, not
             // a replacement for the DNS-derived domain provider persisted by the
             // intelligence layer. Keep the effective provider on the result itself.
-            DomainIntelligence = activeDomainData,
+            DomainIntelligence = persistenceDomainData,
             CatchAllEvidence = activeDomainData.CatchAll,
             SmtpEvidence = mailbox.Evidence,
             MailboxEvidenceObservedAt = mailboxObservedAt,
@@ -449,12 +469,12 @@ public sealed class EmailValidator(
                 endpoints[index + 1].Preference != endpoint.Preference;
             if (!endOfPreferenceGroup) continue;
             if (attempts.Skip(preferenceGroupStart)
-                .Any(attempt => IsConclusiveMxResult(attempt, domain.CatchAll.Status)))
+                .Any(attempt => IsConclusiveMxResult(attempt, domain)))
                 break;
             preferenceGroupStart = attempts.Count;
         }
 
-        var consensus = CalculateMxConsensus(attempts, domain.CatchAll.Status);
+        var consensus = CalculateMxConsensus(attempts, domain);
         var selected = attempts.FirstOrDefault(IsStrongNegative)
             ?? attempts.FirstOrDefault(IsMailboxFull)
             ?? attempts.FirstOrDefault(IsPositive)
@@ -466,10 +486,10 @@ public sealed class EmailValidator(
         return (selected, new MxValidationEvidence(attempts, attemptedHosts, consensus));
     }
 
-    private static bool IsConclusiveMxResult(SmtpProbeResult result, CatchAllStatus catchAll) =>
+    private static bool IsConclusiveMxResult(SmtpProbeResult result, DomainIntelligence domain) =>
         IsStrongNegative(result) ||
         IsMailboxFull(result) ||
-        (IsPositive(result) && catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll);
+        (IsPositive(result) && EndpointControlEvidencePolicy.HasRecipientSpecificControls(domain, result));
 
     private static bool IsStrongNegative(SmtpProbeResult result) =>
         SmtpRecipientEvidencePolicy.HasStrongRecipientRejection(result);
@@ -536,13 +556,13 @@ public sealed class EmailValidator(
 
     private static MxConsensus CalculateMxConsensus(
         List<SmtpProbeResult> attempts,
-        CatchAllStatus catchAll)
+        DomainIntelligence domain)
     {
         if (attempts.Count == 0) return MxConsensus.Unknown;
         var accepted = attempts.Any(IsPositive);
         var mailboxFull = attempts.Any(IsMailboxFull);
-        var strongPositive = accepted &&
-            catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll;
+        var strongPositive = accepted && attempts.All(IsPositive) && attempts
+            .All(attempt => EndpointControlEvidencePolicy.HasRecipientSpecificControls(domain, attempt));
         var negative = attempts.Any(IsStrongNegative);
         if ((accepted || mailboxFull) && negative) return MxConsensus.Conflicting;
         if (negative) return MxConsensus.ConclusiveNegative;
@@ -656,7 +676,9 @@ public sealed class EmailValidator(
                 CorrelatedTargetResponseCategory: observedRecipientCategory,
                 CorrelatedTargetObservedAt: targetObservedAt,
                 CorrelatedTargetMxHost: targetMx,
-                CorrelatedTargetRecipientEvidenceQualified: targetRecipientQualified), cancellationToken);
+                CorrelatedTargetRecipientEvidenceQualified: targetRecipientQualified,
+                ControlScopeFingerprint: domain.CatchAll.ControlScope is { } scope
+                    ? EndpointControlEvidencePolicy.ScopeFingerprint(scope) : null), cancellationToken);
         }
 
         if (mailbox.Status != SmtpMailboxStatus.NotAttempted || mailbox.Evidence?.Reputation is not null)

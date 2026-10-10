@@ -17,6 +17,26 @@ public sealed class SmtpProtocolRegressionTests
 {
     private const string Prefix = "220 mx.example.test\r\n250-mx.example.test\r\n250 SIZE 1000\r\n250 sender ok\r\n";
 
+    [Fact]
+    public async Task FleetDeferral_ReachesValidatorWithoutOpeningAnSmtpConnection()
+    {
+        var settings = Settings();
+        using var stream = new TranscriptStream(Prefix);
+        var result = await EmailValidatorTests.CreateValidator(new Routing(), settings,
+            smtp: Probe(settings, new StreamFactory(stream), budget: new DeferredBudget()))
+            .ValidateAsync("person@example.test", new(true));
+        Assert.Equal(EmailValidationStatus.Unknown, result.Status);
+        Assert.Equal(UnknownCause.LocalCooldown, result.UnknownContext!.Cause);
+        Assert.Empty(stream.Commands);
+        Assert.Equal(SmtpResponseCategory.LocalCooldown, result.SmtpEvidence!.Category);
+    }
+
+    private sealed class DeferredBudget : IFleetSmtpProbeBudget
+    {
+        public Task<IFleetSmtpProbeLease> AcquireAsync(SmtpThrottleContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IFleetSmtpProbeLease>(new FleetLease(false, "FleetProbeCapacity", DateTimeOffset.UtcNow.AddSeconds(5), cancellationToken));
+    }
+
     [Theory]
     [InlineData("250-first\r\n550 5.1.1 absent\r\n")]
     [InlineData("250!ok\r\n")]
@@ -340,13 +360,14 @@ public sealed class SmtpProtocolRegressionTests
         CatchAll = new() { Enabled = false }
     };
 
-    private static SmtpMailboxProbe Probe(EmailValidationOptions settings, ISmtpConnectionFactory factory, X509ChainPolicy? trust = null)
+    private static SmtpMailboxProbe Probe(EmailValidationOptions settings, ISmtpConnectionFactory factory,
+        X509ChainPolicy? trust = null, IFleetSmtpProbeBudget? budget = null)
     {
         var options = Options.Create(settings);
         var classifier = new SmtpResponseClassificationOrchestrator(new CanonicalSmtpResponseClassifierAdapter(),
             new SmtpResponseClassifier(options), new SmtpResponseDecisionPolicy(options), new SmtpResponseIntelligenceMetrics(), options);
         return new(options, NullLogger<SmtpMailboxProbe>.Instance, new AllowThrottle(), classifier,
-            new SmtpSessionBudget(), new ProviderPolicyResolver(options), new Selector(), new Health(), factory)
+            new SmtpSessionBudget(), new ProviderPolicyResolver(options), new Selector(), new Health(), factory, fleetBudget: budget)
         { TlsCertificateChainPolicy = trust };
     }
 

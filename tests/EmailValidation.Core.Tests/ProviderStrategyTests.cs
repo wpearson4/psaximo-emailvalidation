@@ -238,6 +238,7 @@ public sealed class ProviderStrategyTests
             0,
             Confidence: 0.85)
         {
+            RoutingAttestationVerified = true,
             RecipientBehavior = catchAll == CatchAllStatus.LikelyCatchAll
                 ? DomainRecipientBehavior.CatchAll
                 : DomainRecipientBehavior.Unknown,
@@ -278,6 +279,11 @@ public sealed class ProviderStrategyTests
         var probe = new SmtpProbeResult(
             category == SmtpResponseCategory.RecipientRejected ? SmtpMailboxStatus.Rejected : SmtpMailboxStatus.Accepted,
             evidence.ResponseCode, "OK", TimeSpan.Zero, Evidence: evidence, SessionEvidence: session);
+        if (catchAll is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll)
+        {
+            domain = EndpointEvidenceTests.WithControls(domain, evidence.Timestamp.AddSeconds(-1), catchAllEvidence.Probes);
+            domain = domain with { CatchAll = domain.CatchAll with { Status = catchAll } };
+        }
         return new(domain, probe, HistoricalSignalSummary.Empty);
     }
 

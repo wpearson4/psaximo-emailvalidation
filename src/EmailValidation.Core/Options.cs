@@ -267,6 +267,9 @@ public sealed class ServiceBusRevalidationOptions
 
 public sealed class PersistenceOptions
 {
+    public int EvidenceCacheSizeLimit { get; set; } = 10_000;
+    public int EvidenceCacheSeconds { get; set; } = 30;
+    public int DomainWriteRetryLimit { get; set; } = 8;
     public bool Enabled { get; set; } = true;
     public string Provider { get; set; } = "Json";
     public string StoragePath { get; set; } = "data/email-validation-intelligence";
@@ -297,10 +300,10 @@ public sealed class ResultReuseOptions
 
 public sealed class ValidationPolicyOptions
 {
-    public string ValidationEngineVersion { get; set; } = "1.2.0";
+    public string ValidationEngineVersion { get; set; } = "1.3.0";
     public string ClassificationPolicyVersion { get; set; } = "2.4.0";
     public string ConfidenceModelVersion { get; set; } = "3.1.0";
-    public string ProviderStrategyVersion { get; set; } = "1.3.0";
+    public string ProviderStrategyVersion { get; set; } = "1.4.0";
 
     public ValidationPolicyVersions ToVersions() => new(
         ValidationEngineVersion,
@@ -352,6 +355,7 @@ public sealed class SmtpOptions
     public int MaximumReplyBytes { get; set; } = 16_384;
     public int MaximumReplyLines { get; set; } = 64;
     public bool EnableStartTls { get; set; } = true;
+    public FleetProbeBudgetOptions FleetBudget { get; set; } = new();
     public int RetryCount { get; set; } = 1;
     public int GlobalConcurrency { get; set; } = 2;
     public int PerDomainConcurrency { get; set; } = 1;
@@ -360,6 +364,19 @@ public sealed class SmtpOptions
     public int GreylistingRetryDelayMilliseconds { get; set; } = 2000;
     public int MaxMxAttempts { get; set; } = 3;
     public int MaxSmtpSessionsPerAddress { get; set; } = 8;
+}
+
+public enum FleetProbeBudgetMode { Disabled, Observe, Enforced }
+
+public sealed class FleetProbeBudgetOptions
+{
+    public FleetProbeBudgetMode Mode { get; set; } = FleetProbeBudgetMode.Disabled;
+    public string Collection { get; set; } = "EmailValidationSmtpProbeLeases";
+    public int GlobalConcurrency { get; set; } = 16;
+    public int PerProviderConcurrency { get; set; } = 4;
+    public int PerDomainConcurrency { get; set; } = 1;
+    public int StoreTimeoutSeconds { get; set; } = 5;
+    public int RetrySeconds { get; set; } = 5;
 }
 
 public sealed class OutboundIdentityOptions
@@ -418,6 +435,7 @@ public sealed class OutboundIdentityDnsReadinessOptions
 
 public sealed class CatchAllOptions
 {
+    public RoutingAttestationOptions RoutingAttestations { get; set; } = new();
     public bool Enabled { get; set; } = true;
     public int ProbeCount { get; set; } = 1;
     public int MinimumAcceptedProbes { get; set; } = 2;
@@ -427,6 +445,20 @@ public sealed class CatchAllOptions
     public int AcceptAllMinimumIndependentObservations { get; set; } = 2;
     public int AcceptAllMinimumObservationSeparationMinutes { get; set; } = 15;
     public int AcceptAllSessionCorrelationMinutes { get; set; } = 5;
+}
+
+public sealed class RoutingAttestationOptions
+{
+    public RoutingAttestationAuthority[] Authorities { get; set; } = [];
+    public SignedRoutingAttestation[] Attestations { get; set; } = [];
+    public string[] RevokedAttestationIds { get; set; } = [];
+}
+
+public sealed class RoutingAttestationAuthority
+{
+    public string Id { get; set; } = string.Empty;
+    public string PublicKeyPem { get; set; } = string.Empty;
+    public string[] AuthorizedDomains { get; set; } = [];
 }
 
 public sealed class DnsOptions

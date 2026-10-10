@@ -36,6 +36,23 @@ public sealed class ValidationReuseAndSingleFlightTests
     }
 
     [Fact]
+    public async Task CachedPositive_SeesNewerPersistedMailboxContradiction()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new TrackingStore();
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, store, clock);
+        await validator.ValidateAsync("person@example.test", new(true));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var negative = Result("person@example.test", clock.GetUtcNow(), store.Domain,
+            EmailValidationStatus.Invalid, SmtpMailboxStatus.Rejected, [ReasonCode.MailboxRejected]);
+        store.Mailbox = Mailbox(negative, clock.GetUtcNow());
+        var result = await validator.ValidateAsync("person@example.test", new(true));
+        Assert.Equal(EmailValidationStatus.Invalid, result.Status);
+        Assert.NotEqual(ValidationResultSource.MemoryCache, result.Metadata!.ResultSource);
+    }
+
+    [Fact]
     public async Task LocalPartCaseVariants_RequireIndependentValidation()
     {
         var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
@@ -164,7 +181,7 @@ public sealed class ValidationReuseAndSingleFlightTests
         var second = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
 
         Assert.Equal(1, executor.Calls);
-        Assert.Equal(readsAfterLive + 1, store.Reads);
+        Assert.Equal(readsAfterLive + 2, store.Reads);
         Assert.Equal(ValidationResultSource.LiveValidation, first.Metadata!.ResultSource);
         Assert.Equal(ValidationResultSource.MemoryCache, second.Metadata!.ResultSource);
         Assert.Equal(first.Metadata.ValidatedAt, second.Metadata.ValidatedAt);
@@ -192,7 +209,7 @@ public sealed class ValidationReuseAndSingleFlightTests
         var memory = await validator.ValidateAsync("person@example.test", new EmailValidationRequest(true));
 
         Assert.Equal(0, executor.Calls);
-        Assert.Equal(readsAfterPersistentHit + 1, store.Reads);
+        Assert.Equal(readsAfterPersistentHit + 2, store.Reads);
         Assert.Equal(ValidationResultSource.PersistentReuse, persistent.Metadata!.ResultSource);
         Assert.Equal(ValidationResultSource.MemoryCache, memory.Metadata!.ResultSource);
         Assert.Equal(original, persistent.Metadata.OriginalValidatedAt);
@@ -391,6 +408,21 @@ public sealed class ValidationReuseAndSingleFlightTests
 
         Assert.Equal(ValidationReuseRejectionReason.RecipientBehavior, decision.RejectionReason);
         Assert.Equal(ValidationReuseAction.RevalidateMailboxOnly, decision.Action);
+    }
+
+    [Fact]
+    public void ReusePolicy_CapsPositiveLifetimeAtEndpointControlExpiry()
+    {
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 10, 9, 0, 0, 0, TimeSpan.Zero));
+        var domain = EndpointEvidenceTests.WithControls(Domain(clock, "example.test"), clock.GetUtcNow()) with
+            { RoutingEvidence = new(clock.GetUtcNow(), clock.GetUtcNow().AddHours(1)) };
+        var mailbox = Mailbox(Result("person@example.test", clock.GetUtcNow(), domain, EmailValidationStatus.Valid), clock.GetUtcNow());
+        var policy = new ValidationResultReusePolicy(Options.Create(new EmailValidationOptions()));
+        var fresh = policy.Evaluate(mailbox, domain, new(true), Policy, clock.GetUtcNow());
+        Assert.True(fresh.CanReuse);
+        Assert.Equal(TimeSpan.FromMinutes(5), fresh.RemainingLifetime);
+        var stale = policy.Evaluate(mailbox, domain, new(true), Policy, clock.GetUtcNow().AddMinutes(5));
+        Assert.False(stale.CanReuse);
     }
 
     [Fact]

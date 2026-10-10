@@ -31,7 +31,7 @@ public static class DomainRecipientBehaviorPolicy
     {
         var requiredObservations = Math.Max(2, acceptAllMinimumIndependentObservations);
         var requiredAccepted = Math.Clamp(minimumAcceptedProbes, 2, 3);
-        if (evidence.HasIndependentRoutingEvidence)
+        if (evidence.HasIndependentRoutingEvidence || evidence.RoutingAttestation is not null)
             return evidence;
         if (evidence.RecipientBehavior == DomainRecipientBehavior.RecipientSpecific ||
             evidence.Status is CatchAllStatus.NotCatchAll or CatchAllStatus.LikelyNotCatchAll)
@@ -185,6 +185,9 @@ public static class DomainRecipientBehaviorPolicy
             .Max();
         var qualifyingPriorSessions = priorObservations
             .Where(observation => observation.Type == ValidationObservationType.CatchAllProbe &&
+                current.ControlScope is { } scope &&
+                observation.ControlScopeFingerprint == EndpointControlEvidencePolicy.ScopeFingerprint(scope) &&
+                string.Equals(observation.MxHost, currentControlMx, StringComparison.OrdinalIgnoreCase) &&
                 observation.Provider == provider &&
                 !string.IsNullOrWhiteSpace(observation.ObservationSessionId) &&
                 observation.ObservedAt >= oldestQualifyingAt &&

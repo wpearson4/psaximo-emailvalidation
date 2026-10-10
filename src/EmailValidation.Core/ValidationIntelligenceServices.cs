@@ -82,6 +82,7 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
 {
     private readonly ResultReuseOptions _options = options.Value.ResultReuse;
     private readonly DomainIntelligenceOptions _domainOptions = options.Value.DomainIntelligence;
+    private readonly RoutingAttestationOptions _attestations = options.Value.CatchAll.RoutingAttestations;
 
     public ValidationReuseDecision Evaluate(
         MailboxIntelligence intelligence,
@@ -112,6 +113,17 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
         var previousCatchAll = intelligence.LastResult.CatchAllEvidence ??
             intelligence.LastResult.DomainIntelligence?.CatchAll ??
             CatchAllFromChecks(intelligence.LastResult.Checks.CatchAll);
+        if (previousCatchAll?.ReasonCode == CatchAllReasonCode.IndependentRoutingEvidence &&
+            (previousCatchAll.RoutingAttestation is not { } attestation ||
+             !RoutingAttestationPolicy.Verify(attestation, currentDomain, _attestations, now)))
+            return Reject(ValidationReuseAction.RevalidateDomainAndMailbox, ValidationReuseRejectionReason.DomainStale);
+        if (previousCatchAll?.RoutingAttestation is not null)
+            previousCatchAll = previousCatchAll with { RoutingAttestationVerified = true };
+        if (previousCatchAll?.ControlScope is { } previousScope &&
+            (previousCatchAll.EvidenceExpiresAt <= now || currentDomain.CatchAll.ControlScope is not { } currentScope ||
+             EndpointControlEvidencePolicy.ScopeFingerprint(previousScope) != EndpointControlEvidencePolicy.ScopeFingerprint(currentScope)))
+            return Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.RecipientBehavior);
+        currentDomain = RoutingAttestationPolicy.Apply(currentDomain, _attestations, now);
         if (previousCatchAll is null
                 ? currentDomain.CatchAll.EffectiveRecipientBehavior != DomainRecipientBehavior.Unknown ||
                   currentDomain.CatchAll.ReasonCode == CatchAllReasonCode.AcceptAllCandidate
@@ -147,6 +159,8 @@ public sealed class ValidationResultReusePolicy(IOptions<EmailValidationOptions>
 
         var remaining = lifetime - (now - evidenceAt);
         remaining = remaining < domainExpiresAt - now ? remaining : domainExpiresAt - now;
+        if (previousCatchAll?.EvidenceExpiresAt is { } controlExpiresAt && remaining > controlExpiresAt - now)
+            remaining = controlExpiresAt - now;
         return remaining > TimeSpan.Zero
             ? new ValidationReuseDecision(ValidationReuseAction.Reuse, ValidationReuseRejectionReason.None, remaining)
             : Reject(ValidationReuseAction.RevalidateMailboxOnly, ValidationReuseRejectionReason.Stale);
@@ -1101,6 +1115,24 @@ public sealed class IntelligenceEmailValidator(
     {
         var cached = await GetCachedAsync(key, cancellationToken).ConfigureAwait(false);
         if (cached is null) return null;
+        try
+        {
+            if (cached.NormalizedEmail is not null && cached.Metadata is not null)
+            {
+                var latest = await store.GetMailboxAsync(cached.NormalizedEmail, cancellationToken).ConfigureAwait(false);
+                if (latest is not null && (latest.LastValidatedAt > cached.Metadata.ValidatedAt ||
+                    latest.LastValidatedAt == cached.Metadata.ValidatedAt && latest.PreviousStatus != cached.Status))
+                {
+                    await TryRemoveCachedAsync(key, cancellationToken).ConfigureAwait(false);
+                    return null;
+                }
+            }
+        }
+        catch (Exception exception) when (IsRecoverableCacheFailure(exception))
+        {
+            logger.LogWarning("Mailbox evidence could not be checked for a cached result ({ErrorType})", exception.GetType().Name);
+            return null;
+        }
 
         DomainIntelligence? currentDomain;
         try

@@ -279,6 +279,8 @@ public sealed record EvidenceLifetime(DateTimeOffset ObservedAt, DateTimeOffset 
 
 public sealed record DomainIntelligence
 {
+    public long ProfileVersion { get; init; }
+    public DateTimeOffset? TopologyChangedAt { get; init; }
     public required string Domain { get; init; }
     public bool DomainExists { get; init; }
     public required DnsLookupResult Dns { get; init; }
@@ -451,7 +453,8 @@ public sealed record ValidationObservation(
     DateTimeOffset? CorrelatedTargetObservedAt = null,
     string? CorrelatedTargetMxHost = null,
     bool CorrelatedTargetRecipientEvidenceQualified = false,
-    bool RecipientEvidenceContested = false);
+    bool RecipientEvidenceContested = false,
+    string? ControlScopeFingerprint = null);
 
 public sealed record HistoricalSignalSummary(
     int ObservationCount,

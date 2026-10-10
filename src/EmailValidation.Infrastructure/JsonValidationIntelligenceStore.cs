@@ -26,20 +26,25 @@ public sealed class JsonValidationIntelligenceStore :
     private readonly PersistenceOptions _options;
     private readonly CatchAllOptions _catchAllOptions;
     private readonly string _root;
-    private readonly ConcurrentDictionary<string, DomainIntelligence> _domains = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, MailboxIntelligence> _mailboxes = new(StringComparer.Ordinal);
+    private readonly BoundedEvidenceCache<DomainIntelligence> _domains;
+    private readonly TimeProvider _clock;
+    private readonly BoundedEvidenceCache<MailboxIntelligence> _mailboxes;
     private readonly ConcurrentDictionary<string, SuppressionEntry> _suppressions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _observations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ValidationObservation>> _recipientBehaviorObservations =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _fileGates = new(StringComparer.Ordinal);
+    private static readonly SemaphoreSlim[] FileGates = Enumerable.Range(0, 256).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+    private static SemaphoreSlim FileGate(string path) => FileGates[(int)((uint)StringComparer.Ordinal.GetHashCode(path) % (uint)FileGates.Length)];
     private readonly ConcurrentQueue<DeliveryOutcomeRecord> _outcomes = new();
     private int _outcomesLoaded;
 
-    public JsonValidationIntelligenceStore(IOptions<EmailValidationOptions> options)
+    public JsonValidationIntelligenceStore(IOptions<EmailValidationOptions> options, TimeProvider? timeProvider = null)
     {
         _options = options.Value.Persistence;
+        _clock = timeProvider ?? TimeProvider.System;
+        _domains = new(_options.EvidenceCacheSizeLimit, _clock);
+        _mailboxes = new(_options.EvidenceCacheSizeLimit, _clock);
         _catchAllOptions = options.Value.CatchAll;
         _root = Path.GetFullPath(Path.IsPathRooted(_options.StoragePath)
             ? _options.StoragePath
@@ -50,7 +55,7 @@ public sealed class JsonValidationIntelligenceStore :
     public async Task<DomainIntelligence?> GetDomainAsync(string domain, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_domains.TryGetValue(domain, out var cached)) return cached;
+        if (_domains.TryGet(domain.ToLowerInvariant(), out var cached)) return cached;
         var loaded = await ReadAsync<DomainIntelligence>(PathFor("domains", domain), cancellationToken).ConfigureAwait(false);
         if (loaded is null) return null;
         loaded = loaded with
@@ -60,7 +65,7 @@ public sealed class JsonValidationIntelligenceStore :
                 _catchAllOptions.AcceptAllMinimumIndependentObservations,
                 _catchAllOptions.MinimumAcceptedProbes)
         };
-        _domains[domain] = loaded;
+        _domains.Set(domain.ToLowerInvariant(), loaded, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
         return loaded;
     }
 
@@ -68,26 +73,35 @@ public sealed class JsonValidationIntelligenceStore :
     {
         cancellationToken.ThrowIfCancellationRequested();
         var key = MailboxIdentity.Create(normalizedEmail).Key;
-        if (_mailboxes.TryGetValue(key, out var cached)) return cached;
+        if (_mailboxes.TryGet(key, out var cached)) return cached;
         var loaded = await ReadAsync<MailboxIntelligence>(PathFor("mailboxes", normalizedEmail), cancellationToken).ConfigureAwait(false);
         if (loaded?.MailboxKey != key || !MailboxIdentity.Matches(key, loaded.NormalizedEmail) ||
             !MailboxIdentity.Matches(loaded.LastResult.MailboxKey, loaded.LastResult.NormalizedEmail) ||
             loaded.LastResult.MailboxKey != key) return null;
-        _mailboxes[key] = loaded;
+        _mailboxes.Set(key, loaded, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
         return loaded;
     }
 
-    public async Task SaveDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default)
+    public async Task SaveDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default) =>
+        _ = await MergeDomainAsync(intelligence, cancellationToken).ConfigureAwait(false);
+
+    public async Task<DomainIntelligence> MergeDomainAsync(DomainIntelligence intelligence, CancellationToken cancellationToken = default)
     {
-        var normalized = intelligence with
+        var path = PathFor("domains", intelligence.Domain);
+        var gate = FileGate(path);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
-                intelligence.CatchAll,
-                _catchAllOptions.AcceptAllMinimumIndependentObservations,
-                _catchAllOptions.MinimumAcceptedProbes)
-        };
-        _domains[normalized.Domain] = normalized;
-        await WriteAsync(PathFor("domains", normalized.Domain), normalized, cancellationToken).ConfigureAwait(false);
+            _domains.TryGet(intelligence.Domain.ToLowerInvariant(), out var current);
+            if (_options.Enabled) current = await ReadWithoutGateAsync<DomainIntelligence>(path, cancellationToken).ConfigureAwait(false);
+            var merged = DomainIntelligenceMerge.Merge(current, intelligence);
+            merged = merged with { CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(merged.CatchAll,
+                _catchAllOptions.AcceptAllMinimumIndependentObservations, _catchAllOptions.MinimumAcceptedProbes) };
+            if (_options.Enabled) await WriteWithoutGateAsync(path, merged, cancellationToken).ConfigureAwait(false);
+            _domains.Set(merged.Domain.ToLowerInvariant(), merged, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
+            return merged;
+        }
+        finally { gate.Release(); }
     }
 
     public async Task SaveMailboxAsync(MailboxIntelligence intelligence, CancellationToken cancellationToken = default)
@@ -95,7 +109,7 @@ public sealed class JsonValidationIntelligenceStore :
         if (!MailboxIdentity.Matches(intelligence.MailboxKey, intelligence.NormalizedEmail) ||
             intelligence.LastResult.MailboxKey != intelligence.MailboxKey ||
             !MailboxIdentity.Matches(intelligence.LastResult.MailboxKey, intelligence.LastResult.NormalizedEmail)) return;
-        _mailboxes[intelligence.MailboxKey!] = intelligence;
+        _mailboxes.Set(intelligence.MailboxKey!, intelligence, _clock.GetUtcNow().AddSeconds(_options.EvidenceCacheSeconds));
         await WriteAsync(PathFor("mailboxes", intelligence.NormalizedEmail), intelligence, cancellationToken).ConfigureAwait(false);
     }
 
@@ -127,7 +141,7 @@ public sealed class JsonValidationIntelligenceStore :
         var path = PathFor(
             behaviorObservation ? "recipient-behavior-observations" : "observations",
             observation.Domain);
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -160,7 +174,7 @@ public sealed class JsonValidationIntelligenceStore :
     {
         if (cache.TryGetValue(domain, out var cached)) return cached;
         var path = PathFor(category, domain);
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -182,7 +196,7 @@ public sealed class JsonValidationIntelligenceStore :
         // prediction snapshot. Such records are deliberately not calibration samples.
         if (!_options.Enabled) return;
         var path = Path.Combine(_root, "outcomes", "legacy-domain-outcomes.json");
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -267,7 +281,7 @@ public sealed class JsonValidationIntelligenceStore :
             return;
         }
         var path = Path.Combine(_root, "outcomes", "outcomes.json");
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -283,7 +297,7 @@ public sealed class JsonValidationIntelligenceStore :
     {
         var path = Path.Combine(_root, "outcomes", "outcomes.json");
         if (!_options.Enabled) return;
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -303,7 +317,7 @@ public sealed class JsonValidationIntelligenceStore :
     private async Task<T?> ReadAsync<T>(string path, CancellationToken cancellationToken)
     {
         if (!_options.Enabled || !File.Exists(path)) return default;
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try { return await ReadWithoutGateAsync<T>(path, cancellationToken).ConfigureAwait(false); }
         finally { gate.Release(); }
@@ -312,7 +326,7 @@ public sealed class JsonValidationIntelligenceStore :
     private async Task WriteAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
         if (!_options.Enabled) return;
-        var gate = _fileGates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var gate = FileGate(path);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try { await WriteWithoutGateAsync(path, value, cancellationToken).ConfigureAwait(false); }
         finally { gate.Release(); }
@@ -347,93 +361,49 @@ public sealed class JsonValidationIntelligenceStore :
 
 public sealed class PersistentDomainValidationCache : IDomainValidationCache
 {
-    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly BoundedEvidenceCache<DomainIntelligence> _cache;
     private readonly IValidationIntelligenceStore _store;
-    private readonly TimeSpan? _configuredMemoryLifetime;
-    private readonly CatchAllOptions _catchAllOptions;
     private readonly TimeProvider _clock;
-
-    public PersistentDomainValidationCache(
-        IValidationIntelligenceStore store,
-        IOptions<EmailValidationOptions>? options = null,
-        TimeProvider? timeProvider = null)
+    private readonly TimeSpan _memoryLifetime;
+    private readonly object _sync = new();
+    public PersistentDomainValidationCache(IValidationIntelligenceStore store,
+        IOptions<EmailValidationOptions>? options = null, TimeProvider? timeProvider = null)
     {
         _store = store;
         _clock = timeProvider ?? TimeProvider.System;
-        _catchAllOptions = options?.Value.CatchAll ?? new CatchAllOptions();
-        _configuredMemoryLifetime = options is null
-            ? null
-            : TimeSpan.FromMinutes(Math.Max(0, options.Value.DomainIntelligence.MemoryCacheMinutes));
+        var settings = options?.Value ?? new EmailValidationOptions();
+        _cache = new(settings.Persistence.EvidenceCacheSizeLimit, _clock);
+        _memoryLifetime = TimeSpan.FromSeconds(Math.Min(settings.Persistence.EvidenceCacheSeconds,
+            settings.DomainIntelligence.MemoryCacheMinutes * 60));
     }
-
     public int Count => _cache.Count;
-
-    public bool TryGet(string domain, out DomainIntelligence? data)
-    {
-        if (_cache.TryGetValue(domain, out var entry) && entry.ExpiresAt > _clock.GetUtcNow())
-        {
-            data = entry.Value;
-            return true;
-        }
-        _cache.TryRemove(domain, out _);
-        data = null;
-        return false;
-    }
-
+    public bool TryGet(string domain, out DomainIntelligence? data) => _cache.TryGet(domain.ToLowerInvariant(), out data);
     public void Store(DomainIntelligence data, TimeSpan lifetime)
     {
-        var normalized = Normalize(data);
-        var expiration = _clock.GetUtcNow().Add(lifetime);
-        if (normalized.EvidenceExpiresAt is { } evidenceExpiration && evidenceExpiration < expiration)
-            expiration = evidenceExpiration;
-        _cache[normalized.Domain] = new(normalized, MemoryExpiration(expiration));
+        lock (_sync)
+        {
+            var key = data.Domain.ToLowerInvariant();
+            if (_cache.TryGet(key, out var current) && current!.ProfileVersion > data.ProfileVersion) return;
+            var expires = _clock.GetUtcNow().Add(lifetime < _memoryLifetime ? lifetime : _memoryLifetime);
+            if (data.EvidenceExpiresAt is { } observed && observed < expires) expires = observed;
+            _cache.Set(key, data, expires);
+        }
     }
-
     public async Task<DomainIntelligence?> GetAsync(string domain, CancellationToken cancellationToken = default)
     {
         if (TryGet(domain, out var cached)) return cached;
         var stored = await _store.GetDomainAsync(domain, cancellationToken).ConfigureAwait(false);
-        if (stored is null) return null;
-        if (stored.EvidenceExpiresAt is { } expiresAt && expiresAt > _clock.GetUtcNow())
-            _cache[domain] = new(stored, MemoryExpiration(expiresAt));
-        // Return stale durable evidence to the planner as historical context. The
-        // planner must refresh it before allowing it to suppress live SMTP work.
+        if (stored is not null) Store(stored, _memoryLifetime);
+        if (stored is not null && TryGet(domain, out var latest) && latest!.ProfileVersion > stored.ProfileVersion) return latest;
         return stored;
     }
-
-    public async Task StoreAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
+    public async Task StoreAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default) =>
+        _ = await StoreMergedAsync(data, lifetime, cancellationToken).ConfigureAwait(false);
+    public async Task<DomainIntelligence> StoreMergedAsync(DomainIntelligence data, TimeSpan lifetime, CancellationToken cancellationToken = default)
     {
-        var durable = Normalize(data) with
-        {
-            // Storage does not constitute a new observation. Legacy records with
-            // no observation timestamp remain stale until they are reanalyzed.
-            EvidenceExpiresAt = data.EvidenceExpiresAt ?? data.ObservedAt.Add(lifetime)
-        };
-        Store(durable, MemoryLifetime(lifetime));
-        await _store.SaveDomainAsync(durable, cancellationToken).ConfigureAwait(false);
+        var durable = data with { EvidenceExpiresAt = data.EvidenceExpiresAt ?? data.ObservedAt.Add(lifetime) };
+        var stored = await _store.MergeDomainAsync(durable, cancellationToken).ConfigureAwait(false);
+        Store(stored, lifetime);
+        return TryGet(stored.Domain, out var latest) && latest!.ProfileVersion > stored.ProfileVersion ? latest : stored;
     }
-
-    private DomainIntelligence Normalize(DomainIntelligence data) => data with
-    {
-        CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
-            data.CatchAll,
-            _catchAllOptions.AcceptAllMinimumIndependentObservations,
-            _catchAllOptions.MinimumAcceptedProbes)
-    };
-
-    private TimeSpan MemoryLifetime(TimeSpan durableLifetime) => _configuredMemoryLifetime is null
-        ? durableLifetime
-        : _configuredMemoryLifetime.Value <= durableLifetime
-            ? _configuredMemoryLifetime.Value
-            : durableLifetime;
-
-    private DateTimeOffset MemoryExpiration(DateTimeOffset durableExpiration)
-    {
-        var configured = _configuredMemoryLifetime;
-        if (configured is null) return durableExpiration;
-        var memoryExpiration = _clock.GetUtcNow().Add(configured.Value);
-        return memoryExpiration <= durableExpiration ? memoryExpiration : durableExpiration;
-    }
-
-    private sealed record CacheEntry(DomainIntelligence Value, DateTimeOffset ExpiresAt);
 }

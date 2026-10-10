@@ -27,7 +27,7 @@ public sealed class CatchAllDetector(
         for (var index = 0; index < maximum; index++)
         {
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-            var result = await smtpProbe.ProbeAsync(mxHost, $"dwcheck-{token}@{domain}", provider, cancellationToken);
+            var result = await smtpProbe.ProbeAsync(mxHost, $"{token}@{domain}", provider, cancellationToken);
             results.Add(result);
             attempted++;
             if (SmtpRecipientEvidencePolicy.HasRecipientAcceptance(result)) accepted++;

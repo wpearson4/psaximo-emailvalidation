@@ -454,6 +454,7 @@ public sealed class EvidenceBackedClassificationTests
                 "Independent routing evidence confirms catch-all delivery.", .96)
             {
                 RecipientBehavior = DomainRecipientBehavior.CatchAll,
+                RoutingAttestationVerified = true,
                 ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence
             },
             ProviderValidation = new ProviderValidationResult(
