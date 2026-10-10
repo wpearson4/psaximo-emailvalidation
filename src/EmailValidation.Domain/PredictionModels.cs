@@ -16,8 +16,12 @@ public enum EmailDeliveryOutcome
     Complaint,
     Suppressed,
     RejectedBySenderPolicy,
-    UnknownOutcome
+    UnknownOutcome,
+    MailboxConfirmed,
+    MailboxAbsent
 }
+
+public enum EvidenceCohort { Unspecified, Synthetic, AuthorizedReal }
 
 public enum OutcomeConfidence { Untrusted, Low, Medium, High, Authoritative }
 public enum OutcomeLabelState { Matured, Unresolved, RightCensored, Excluded }
@@ -52,6 +56,10 @@ public sealed record EmailDeliveryOutcomeObservation
     public required DateTimeOffset SendAttemptAtUtc { get; init; }
     public required DateTimeOffset ObservedAtUtc { get; init; }
     public required string NormalizationVersion { get; init; }
+    public EvidenceCohort Cohort { get; init; }
+    public string? AuthorizationReference { get; init; }
+    public string? SubmittedBy { get; init; }
+    public string? SnapshotId { get; init; }
 }
 
 public sealed record SyntaxFeatureGroup(
@@ -139,6 +147,9 @@ public sealed record EmailValidationFeatureSnapshot
     public required OperationalFeatureGroup Operational { get; init; }
     public required double HeuristicEvidenceStrength { get; init; }
     public required EmailValidationStatus HeuristicStatus { get; init; }
+    public ValidationPolicyVersions? PolicyVersions { get; init; }
+    public DateTimeOffset? MailboxEvidenceObservedAtUtc { get; init; }
+    public DateTimeOffset? RoutingEvidenceObservedAtUtc { get; init; }
 }
 
 public sealed record TrainingDatasetRequest(
@@ -150,7 +161,10 @@ public sealed record TrainingDatasetRequest(
     DateTimeOffset MaturationCutoffUtc,
     OutcomeConfidence MinimumOutcomeConfidence = OutcomeConfidence.High,
     string? TenantId = null,
-    IReadOnlySet<MailProvider>? Providers = null);
+    IReadOnlySet<MailProvider>? Providers = null)
+{
+    public EvidenceCohort Cohort { get; init; }
+}
 
 public sealed record TrainingDatasetRow(
     string SnapshotId,
@@ -161,7 +175,10 @@ public sealed record TrainingDatasetRow(
     BinaryOutcomeLabel Label,
     string OutcomeEventId,
     DateTimeOffset OutcomeObservedAtUtc,
-    OutcomeConfidence OutcomeConfidence);
+    OutcomeConfidence OutcomeConfidence)
+{
+    public DateTimeOffset? LabelMaturedAtUtc { get; init; }
+}
 
 public sealed record TrainingDatasetManifest(
     string DatasetId,
@@ -180,7 +197,11 @@ public sealed record TrainingDatasetManifest(
     IReadOnlyDictionary<MailProvider, int> ProviderDistribution,
     string DatasetHash,
     string SourceCheckpoint,
-    string BuilderVersion);
+    string BuilderVersion)
+{
+    public EvidenceCohort Cohort { get; init; }
+    public string? TenantId { get; init; }
+}
 
 public sealed record TrainingDataset(
     TrainingDatasetManifest Manifest,
@@ -205,7 +226,10 @@ public sealed record PredictionModelMetadata(
     string TrainingDatasetId,
     string ArtifactChecksum,
     DateTimeOffset ScoredAtUtc,
-    ModelRolloutMode RolloutMode);
+    ModelRolloutMode RolloutMode)
+{
+    public IReadOnlyList<MailProvider>? SupportedProviders { get; init; }
+}
 
 public sealed record RawModelPrediction(
     PredictionTargetKind Target,

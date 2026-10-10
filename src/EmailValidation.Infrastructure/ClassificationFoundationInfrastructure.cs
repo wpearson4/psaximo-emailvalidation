@@ -83,11 +83,11 @@ public sealed class LocalClassificationEvidenceStore :
         if (_outcomes.TryGetValue(observation.OutcomeEventId, out var existing))
             return existing == observation ? AppendObservationResult.Duplicate : AppendObservationResult.Conflict;
         var natural = _outcomes.Values.FirstOrDefault(item => SameNaturalEvent(item, observation));
-        if (natural is not null && natural.Outcome == observation.Outcome)
+        if (observation.SourceEventId is null && natural is not null && natural with { OutcomeEventId = observation.OutcomeEventId } == observation)
             return AppendObservationResult.Duplicate;
-        var conflict = natural is not null;
+        var conflict = natural is not null && natural.Outcome != observation.Outcome;
         if (!_outcomes.TryAdd(observation.OutcomeEventId, observation))
-            return AppendObservationResult.Duplicate;
+            return _outcomes[observation.OutcomeEventId] == observation ? AppendObservationResult.Duplicate : AppendObservationResult.Conflict;
         await PersistAsync(cancellationToken).ConfigureAwait(false);
         return conflict ? AppendObservationResult.Conflict : AppendObservationResult.Inserted;
     }
@@ -177,6 +177,7 @@ public sealed class LocalClassificationEvidenceStore :
         "classification", "evidence.json");
 
     private static bool SameNaturalEvent(EmailDeliveryOutcomeObservation left, EmailDeliveryOutcomeObservation right) =>
+        left.TenantId == right.TenantId && left.ValidationId == right.ValidationId &&
         left.EmailCorrelationId == right.EmailCorrelationId && left.OutcomeSource == right.OutcomeSource &&
         left.SendAttemptAtUtc == right.SendAttemptAtUtc && left.ObservedAtUtc == right.ObservedAtUtc;
 
@@ -238,15 +239,17 @@ public sealed class MongoClassificationEvidenceStore :
         if (existing is not null)
             return existing.PayloadJson == JsonSerializer.Serialize(observation, JsonOptions)
                 ? AppendObservationResult.Duplicate : AppendObservationResult.Conflict;
-        var natural = Builders<OutcomeDocument>.Filter.Eq(item => item.EmailCorrelationId, observation.EmailCorrelationId) &
+        var natural = Builders<OutcomeDocument>.Filter.Eq(item => item.TenantId, observation.TenantId) &
+            Builders<OutcomeDocument>.Filter.Eq(item => item.ValidationId, observation.ValidationId) &
+            Builders<OutcomeDocument>.Filter.Eq(item => item.EmailCorrelationId, observation.EmailCorrelationId) &
             Builders<OutcomeDocument>.Filter.Eq(item => item.OutcomeSource, observation.OutcomeSource) &
             Builders<OutcomeDocument>.Filter.Eq(item => item.SendAttemptAtUtc, observation.SendAttemptAtUtc.UtcDateTime) &
             Builders<OutcomeDocument>.Filter.Eq(item => item.ObservedAtUtc, observation.ObservedAtUtc.UtcDateTime);
         var naturalDocument = await _outcomes.Find(natural).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (naturalDocument is not null && string.Equals(
-            naturalDocument.Outcome, observation.Outcome.ToString(), StringComparison.Ordinal))
+        if (observation.SourceEventId is null && naturalDocument is not null &&
+            naturalDocument.ToModel() with { OutcomeEventId = observation.OutcomeEventId } == observation)
             return AppendObservationResult.Duplicate;
-        var conflict = naturalDocument is not null;
+        var conflict = naturalDocument is not null && naturalDocument.Outcome != observation.Outcome.ToString();
         try
         {
             await _outcomes.InsertOneAsync(OutcomeDocument.FromModel(observation), cancellationToken: cancellationToken)
@@ -255,7 +258,9 @@ public sealed class MongoClassificationEvidenceStore :
         }
         catch (MongoWriteException exception) when (exception.WriteError?.Category == ServerErrorCategory.DuplicateKey)
         {
-            return AppendObservationResult.Duplicate;
+            var raced = await _outcomes.Find(item => item.Id == observation.OutcomeEventId).FirstAsync(cancellationToken);
+            return raced.PayloadJson == JsonSerializer.Serialize(observation, JsonOptions)
+                ? AppendObservationResult.Duplicate : AppendObservationResult.Conflict;
         }
     }
 
@@ -310,6 +315,7 @@ public sealed class MongoClassificationEvidenceStore :
         public string EmailCorrelationId { get; set; } = string.Empty;
         public string? TenantId { get; set; }
         public string OutcomeSource { get; set; } = string.Empty;
+        public string? ValidationId { get; set; }
         public DateTime SendAttemptAtUtc { get; set; }
         public DateTime ObservedAtUtc { get; set; }
         public string Outcome { get; set; } = string.Empty;
@@ -321,6 +327,7 @@ public sealed class MongoClassificationEvidenceStore :
             EmailCorrelationId = model.EmailCorrelationId,
             TenantId = model.TenantId,
             OutcomeSource = model.OutcomeSource,
+            ValidationId = model.ValidationId,
             SendAttemptAtUtc = model.SendAttemptAtUtc.UtcDateTime,
             ObservedAtUtc = model.ObservedAtUtc.UtcDateTime,
             Outcome = model.Outcome.ToString(),

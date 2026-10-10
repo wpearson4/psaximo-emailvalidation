@@ -17,6 +17,27 @@ public static class ApiEndpoints
         var group = endpoints.MapGroup("/v1")
             .WithTags("Email Validation v1");
 
+        group.MapPost("/validation-outcomes", async (AuthorizedOutcomeImport input,
+            AuthorizedOutcomeImporter importer, ICurrentConsumerContext context, CancellationToken token) =>
+        {
+            try
+            {
+                var result = await importer.ImportAsync(input, context.GetRequiredConsumer(), token);
+                return result.Status == AppendObservationResult.Conflict ? Results.Conflict(result) : Results.Ok(result);
+            }
+            catch (UnauthorizedAccessException) { return Results.Forbid(); }
+            catch (KeyNotFoundException) { return Results.NotFound(); }
+            catch (ArgumentException exception) { return Results.BadRequest(new { error = exception.Message }); }
+        }).WithName("ImportValidationOutcomeV1")
+            .WithSummary("Import an authorized outcome for a tenant feature snapshot")
+            .Produces<OutcomeIngestionResult>(StatusCodes.Status200OK)
+            .Produces<OutcomeIngestionResult>(StatusCodes.Status409Conflict)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .RequireAuthorization(EmailValidationPolicies.Admin)
+            .RequireRateLimiting(ApiRateLimitPolicies.Requests);
+
         group.MapPost("/email-validations", ValidateEmailAsync)
             .WithName("CreateEmailValidationV1")
             .WithSummary("Validate one email address")

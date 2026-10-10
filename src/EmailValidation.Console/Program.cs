@@ -8,6 +8,26 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
+if (args.Length > 0 && args[0] == "benchmark")
+{
+    if (args.Length is < 3 or > 4)
+    {
+        await System.Console.Error.WriteLineAsync("Usage: benchmark <frozen-evidence.json> <report.json> [candidate-model.json]");
+        return 2;
+    }
+    try
+    {
+        var report = await OfflineAccuracyBenchmark.RunAsync(args[1], args[2], args.Length == 4 ? args[3] : null);
+        await System.Console.Out.WriteLineAsync($"Benchmark {report.DatasetId}: {report.Cohort}; report written to {args[2]}. No release approval is implied.");
+        return 0;
+    }
+    catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException or System.Text.Json.JsonException)
+    {
+        await System.Console.Error.WriteLineAsync($"Benchmark rejected: {exception.Message}");
+        return 2;
+    }
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
 try

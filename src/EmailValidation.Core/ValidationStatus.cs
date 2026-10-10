@@ -42,6 +42,7 @@ public record ValidationStatusSnapshot
     public DetailedStatus? SubStatus { get; init; }
     public required ValidationResultState ResultState { get; init; }
     public double? Confidence { get; init; }
+    public PublicValidationAssessment? Assessment { get; init; }
     public ConfidenceLevel ConfidenceLevel { get; init; }
     public string? ConfidenceReason { get; init; }
     public UnknownValidationContext? UnknownContext { get; init; }
@@ -86,6 +87,7 @@ public static class ValidationStatusMapper
             SubStatus = hasResult ? result.SubStatus : null,
             ResultState = lifecycle.ResultState,
             Confidence = hasResult ? result.Confidence : null,
+            Assessment = hasResult ? PublicValidationAssessment.From(result) : null,
             ConfidenceLevel = hasResult ? result.ConfidenceLevel : ConfidenceLevel.Low,
             ConfidenceReason = hasResult ? result.ConfidenceReason : null,
             UnknownContext = hasResult ? result.UnknownContext : null,
@@ -126,6 +128,7 @@ public static class ValidationStatusMapper
             SubStatus = snapshot.SubStatus,
             ResultState = snapshot.ResultState,
             Confidence = snapshot.Confidence,
+            Assessment = snapshot.Assessment?.At(occurredAt),
             ConfidenceLevel = snapshot.ConfidenceLevel,
             ConfidenceReason = snapshot.ConfidenceReason,
             UnknownContext = snapshot.UnknownContext,

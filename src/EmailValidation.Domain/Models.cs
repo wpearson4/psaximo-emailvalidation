@@ -432,7 +432,9 @@ public sealed record EmailValidationResult
     public double ClassificationConfidence => Confidence;
     /// <summary>The existing deterministic/heuristic score. It is not a probability.</summary>
     [JsonIgnore]
-    public double HeuristicEvidenceStrength => Confidence;
+    public double HeuristicEvidenceStrength => OriginalHeuristicEvidenceStrength ?? Confidence;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? OriginalHeuristicEvidenceStrength { get; init; }
     public ConfidenceType ConfidenceType { get; init; } = ConfidenceType.Heuristic;
     /// <summary>Populated only by a calibrated outcome model; heuristic classifications leave this null.</summary>
     public double? DeliverabilityProbability { get; init; }
@@ -440,6 +442,7 @@ public sealed record EmailValidationResult
     /// <summary>Internal prediction detail; omitted unless versioned model provenance is available.</summary>
     [JsonIgnore]
     public EmailValidationPrediction? Prediction { get; init; }
+    public PublicProbabilityAssessment? ProbabilityAssessment { get; init; }
     public EvidenceQuality EvidenceQuality { get; init; } = EvidenceQuality.Unknown;
     public DateTimeOffset? MailboxEvidenceObservedAt { get; init; }
     public string? MailboxKey { get; init; }

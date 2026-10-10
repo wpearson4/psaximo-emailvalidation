@@ -1,0 +1,29 @@
+syntax = "proto3";
+package emailvalidation.assessment.v1;
+option csharp_namespace = "EmailValidation.Assessment.V1";
+import "google/protobuf/timestamp.proto";
+message PublicAssessment {
+  string summary_status = 1;
+  string confidence_type = 2;
+  double heuristic_evidence_strength = 3;
+  string evidence_level = 4;
+  string recipient_behavior = 5;
+  google.protobuf.Timestamp mailbox_evidence_observed_at_utc = 6;
+  google.protobuf.Timestamp routing_evidence_observed_at_utc = 7;
+  optional double mailbox_evidence_age_seconds = 8;
+  optional double routing_evidence_age_seconds = 9;
+  ProbabilityAssessment probability = 10;
+}
+message ProbabilityAssessment {
+  double value = 1;
+  string target = 2;
+  int64 outcome_window_seconds = 3;
+  string model_version = 4;
+  string calibration_version = 5;
+  string outcome_definition_version = 6;
+  string decision_policy_version = 7;
+  string training_dataset_id = 8;
+  string artifact_checksum = 9;
+  string rollout_mode = 10;
+  google.protobuf.Timestamp scored_at_utc = 11;
+}

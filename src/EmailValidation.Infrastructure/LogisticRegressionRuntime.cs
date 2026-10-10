@@ -22,12 +22,14 @@ public sealed record LogisticRegressionArtifact
     public required double CalibrationIntercept { get; init; }
     public required double L2Regularization { get; init; }
     public required int RandomSeed { get; init; }
+    public IReadOnlyList<MailProvider> SupportedProviders { get; init; } = [];
 }
 
 public sealed class LogisticRegressionArtifactProvider
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
     private readonly ClassificationModelOptions _options;
+    private DateTimeOffset? _approvalExpiry;
     private readonly Lazy<(LogisticRegressionArtifact Artifact, string Checksum)> _artifact;
 
     public LogisticRegressionArtifactProvider(IOptions<EmailValidationOptions> options)
@@ -37,7 +39,13 @@ public sealed class LogisticRegressionArtifactProvider
             LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
-    public (LogisticRegressionArtifact Artifact, string Checksum) Get() => _artifact.Value;
+    public (LogisticRegressionArtifact Artifact, string Checksum) Get()
+    {
+        var artifact = _artifact.Value;
+        if (_approvalExpiry is { } expiry && expiry <= DateTimeOffset.UtcNow)
+            throw new InvalidDataException("Model release approval has expired.");
+        return artifact;
+    }
 
     private (LogisticRegressionArtifact Artifact, string Checksum) Load()
     {
@@ -53,6 +61,12 @@ public sealed class LogisticRegressionArtifactProvider
         var artifact = JsonSerializer.Deserialize<LogisticRegressionArtifact>(bytes, JsonOptions) ??
             throw new InvalidDataException("Classification model artifact is not valid JSON metadata.");
         Validate(artifact);
+        if (_options.Mode is ModelRolloutMode.Advisory or ModelRolloutMode.Enforced)
+        {
+            var approval = ModelReleaseGate.Validate(_options, artifact, checksum);
+            _approvalExpiry = approval.ExpiresAtUtc;
+            artifact = artifact with { SupportedProviders = approval.SupportedProviders };
+        }
         return (artifact, checksum);
     }
 
@@ -75,7 +89,8 @@ public sealed class LogisticRegressionArtifactProvider
             PredictionTargetKind.VerificationReliability => "verification-reliability-v1",
             _ => throw new InvalidDataException("Classification model artifact uses an unsupported prediction target.")
         };
-        if (!string.Equals(artifact.OutcomeDefinitionVersion, expectedOutcomeDefinition, StringComparison.Ordinal))
+        if (!string.Equals(artifact.OutcomeDefinitionVersion, expectedOutcomeDefinition, StringComparison.Ordinal) &&
+            !(artifact.Target == PredictionTargetKind.MailboxExistence && artifact.OutcomeDefinitionVersion == EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3))
             throw new InvalidDataException("Classification model target and outcome definition do not match.");
         if (!double.IsFinite(artifact.Intercept) || !double.IsFinite(artifact.CalibrationSlope) ||
             !double.IsFinite(artifact.CalibrationIntercept) || artifact.CalibrationSlope <= 0 ||
@@ -103,7 +118,7 @@ public sealed class LogisticRegressionProbabilityScorer(
             artifact.CalibrationVersion, artifact.OutcomeDefinitionVersion,
             EvidenceBackedClassificationVersions.DefaultDecisionPolicyV2,
             artifact.TrainingDataCutoffUtc, artifact.TrainingDatasetId, checksum,
-            DateTimeOffset.MinValue, ModelRolloutMode.Disabled);
+            DateTimeOffset.MinValue, ModelRolloutMode.Disabled) { SupportedProviders = artifact.SupportedProviders };
         return new(artifact.Target, score, metadata);
     }
 }

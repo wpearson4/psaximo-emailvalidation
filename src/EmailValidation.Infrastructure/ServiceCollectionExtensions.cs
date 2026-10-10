@@ -115,6 +115,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IClassificationFoundationMetrics, ClassificationFoundationMetrics>();
         services.AddSingleton<IOutcomeDefinitionCatalog, OutcomeDefinitionCatalog>();
         services.AddSingleton<IEmailDeliveryOutcomeIngestionService, EmailDeliveryOutcomeIngestionService>();
+        services.AddSingleton<AuthorizedOutcomeImporter>();
         services.AddSingleton<IEmailValidationFeatureSnapshotFactory, EmailValidationFeatureSnapshotFactory>();
         services.AddSingleton<ITrainingDatasetBuilder, TrainingDatasetBuilder>();
         services.AddSingleton<LogisticRegressionArtifactProvider>();

@@ -16,5 +16,6 @@
   <ItemGroup>
     <Protobuf Include="Protos\email_validation_status_v1.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\email_validation_v1.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\public_assessment.proto" GrpcServices="None" />
   </ItemGroup>
 </Project>

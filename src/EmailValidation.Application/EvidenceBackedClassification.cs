@@ -12,10 +12,12 @@ public static class EvidenceBackedClassificationVersions
     public const string FeatureSchemaV1 = "email-validation-features-v1";
     public const string FeatureSchemaV2 = "email-validation-features-v2";
     public const string BuilderV1 = "training-dataset-builder-v1";
+    public const string BuilderV2 = "training-dataset-builder-v2";
     public const string DefaultDecisionPolicyV1 = "classification-decision-policy-v1";
     public const string DefaultDecisionPolicyV2 = "classification-decision-policy-v2";
     public const string MailboxExistenceOutcomeV1 = "mailbox-existence-v1";
     public const string MailboxExistenceOutcomeV2 = "mailbox-existence-v2";
+    public const string MailboxExistenceOutcomeV3 = "mailbox-existence-v3-authorized";
 }
 
 public interface IOutcomeDefinitionCatalog
@@ -28,6 +30,14 @@ public sealed class OutcomeDefinitionCatalog : IOutcomeDefinitionCatalog
 {
     private static readonly OutcomeDefinition[] Definitions =
     [
+        new(PredictionTargetKind.MailboxExistence, EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3,
+            TimeSpan.FromDays(7), Set(EmailDeliveryOutcome.MailboxConfirmed),
+            Set(EmailDeliveryOutcome.MailboxAbsent, EmailDeliveryOutcome.HardBounce),
+            Set(EmailDeliveryOutcome.SoftBounce, EmailDeliveryOutcome.UnknownOutcome, EmailDeliveryOutcome.Delivered),
+            Set(EmailDeliveryOutcome.Complaint, EmailDeliveryOutcome.Suppressed, EmailDeliveryOutcome.RejectedBySenderPolicy),
+            "tenant/source event ID is immutable", "conflicting qualified truth is excluded",
+            "authorized recipient confirmation or managed directory; recipient-specific delivery rejection",
+            "authorized-outcome-v1"),
         new(PredictionTargetKind.MailboxExistence, EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV1,
             TimeSpan.FromDays(7),
             Set(EmailDeliveryOutcome.Delivered), Set(EmailDeliveryOutcome.HardBounce),
@@ -233,9 +243,9 @@ public sealed class EmailValidationFeatureSnapshotFactory(
                 result.CatchAll?.Confidence ?? 0,
                 result.Metadata.MxTopologyFingerprint)
             {
-                RecipientBehavior = domainEvidence?.CatchAll.EffectiveRecipientBehavior ??
+                RecipientBehavior = result.CatchAllEvidence?.EffectiveRecipientBehavior ?? domainEvidence?.CatchAll.EffectiveRecipientBehavior ??
                     DomainRecipientBehavior.Unknown,
-                AcceptAllCandidate = domainEvidence?.CatchAll.ReasonCode ==
+                AcceptAllCandidate = (result.CatchAllEvidence ?? domainEvidence?.CatchAll)?.ReasonCode ==
                     CatchAllReasonCode.AcceptAllCandidate,
                 MxEvidenceConflicting = result.MxValidation?.Consensus == MxConsensus.Conflicting ||
                     result.ReasonCodes.Contains(ReasonCode.MxResultsConflicting),
@@ -275,7 +285,10 @@ public sealed class EmailValidationFeatureSnapshotFactory(
                 reputation?.Mode,
                 reputation?.Decision),
             HeuristicEvidenceStrength = result.HeuristicEvidenceStrength,
-            HeuristicStatus = result.Status
+            HeuristicStatus = result.Status,
+            PolicyVersions = result.Metadata.Policy,
+            MailboxEvidenceObservedAtUtc = result.MailboxEvidenceObservedAt,
+            RoutingEvidenceObservedAtUtc = domainEvidence?.RoutingEvidence?.ObservedAt
         };
     }
 
@@ -306,11 +319,15 @@ public sealed class TrainingDatasetBuilder(
             throw new ArgumentException("Dataset time range or maturation cutoff is invalid.", nameof(request));
         if (request.Target == PredictionTargetKind.MailboxExistence &&
             (request.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV2 ||
-             request.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2))
+             request.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2 &&
+             request.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3))
             throw new ArgumentException(
-                "Mailbox-existence datasets require feature schema v2 and mailbox-existence outcome definition v2.",
+                "Mailbox-existence datasets require feature schema v2 and mailbox-existence outcome definition v2 or v3.",
                 nameof(request));
         var definition = definitions.Resolve(request.Target, request.OutcomeDefinitionVersion);
+        var authorized = request.OutcomeDefinitionVersion == EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3;
+        if (authorized && (request.Cohort == EvidenceCohort.Unspecified || string.IsNullOrWhiteSpace(request.TenantId)))
+            throw new ArgumentException("An explicit benchmark cohort and tenant are required.");
         // Include later snapshots through the maturation cutoff when assigning outcomes.
         // Otherwise a send tied to a later retry could also label every earlier attempt.
         var associationSnapshots = await snapshots.QueryAsync(
@@ -325,7 +342,9 @@ public sealed class TrainingDatasetBuilder(
             .ConfigureAwait(false);
         var outcomeLookup = AssignOutcomesToLatestSnapshots(
             associationSnapshots,
-            outcomeRows.Where(item => item.Confidence >= request.MinimumOutcomeConfidence));
+            outcomeRows.Where(item => item.Confidence >= request.MinimumOutcomeConfidence &&
+                (!authorized || item.Cohort == request.Cohort && !string.IsNullOrWhiteSpace(item.AuthorizationReference) &&
+                 !string.IsNullOrWhiteSpace(item.SubmittedBy) && !string.IsNullOrWhiteSpace(item.SnapshotId))));
         var rows = new List<TrainingDatasetRow>();
         var excluded = 0;
         var unresolved = 0;
@@ -337,9 +356,12 @@ public sealed class TrainingDatasetBuilder(
             outcomeLookup.TryGetValue(snapshot.SnapshotId, out var candidateOutcomes);
             var candidates = (candidateOutcomes ?? [])
                 .Where(item => item.ObservedAtUtc >= item.SendAttemptAtUtc &&
-                    item.ObservedAtUtc <= request.MaturationCutoffUtc)
+                    item.ObservedAtUtc <= request.MaturationCutoffUtc &&
+                    (!authorized || item.ObservedAtUtc <= item.SendAttemptAtUtc + definition.MaturationPeriod))
                 .ToArray();
-            var resolved = Resolve(snapshot, candidates, definition, request.MaturationCutoffUtc);
+            var resolved = authorized && candidates.Any(item => item.SendAttemptAtUtc + definition.MaturationPeriod > request.MaturationCutoffUtc)
+                ? new ResolvedLabel(OutcomeLabelState.RightCensored)
+                : Resolve(snapshot, candidates, definition, request.MaturationCutoffUtc);
             if (request.Target == PredictionTargetKind.MailboxExistence &&
                 ShouldExcludeMailboxExistenceLabel(snapshot, resolved))
             {
@@ -353,7 +375,7 @@ public sealed class TrainingDatasetBuilder(
                         snapshot.SnapshotId, snapshot.EmailCorrelationId, snapshot.DomainCorrelationId,
                         snapshot.SnapshotAtUtc, snapshot, resolved.Label!.Value,
                         resolved.Observation!.OutcomeEventId, resolved.Observation.ObservedAtUtc,
-                        resolved.Observation.Confidence));
+                        resolved.Observation.Confidence) { LabelMaturedAtUtc = authorized ? resolved.Observation.SendAttemptAtUtc + definition.MaturationPeriod : resolved.Observation.ObservedAtUtc });
                     break;
                 case OutcomeLabelState.Excluded: excluded++; break;
                 case OutcomeLabelState.RightCensored: censored++; break;
@@ -362,7 +384,7 @@ public sealed class TrainingDatasetBuilder(
         }
 
         var createdAt = timeProvider.GetUtcNow();
-        var hash = HashRows(rows);
+        var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { request, rows, excluded, unresolved, censored }))).ToLowerInvariant();
         var manifest = new TrainingDatasetManifest(
             $"dataset-{hash[..16]}", createdAt, request.FeatureSchemaVersion,
             request.OutcomeDefinitionVersion, request.StartUtc, request.EndUtc,
@@ -374,7 +396,7 @@ public sealed class TrainingDatasetBuilder(
                 .ToDictionary(group => group.Key, group => group.Count()),
             hash,
             $"snapshots:{featureRows.Length};outcomes:{outcomeRows.Count};cutoff:{request.MaturationCutoffUtc:O}",
-            EvidenceBackedClassificationVersions.BuilderV1);
+            EvidenceBackedClassificationVersions.BuilderV2) { Cohort = request.Cohort, TenantId = request.TenantId };
         metrics.RecordDataset(manifest);
         return new(manifest, rows);
     }
@@ -406,20 +428,6 @@ public sealed class TrainingDatasetBuilder(
             : new(OutcomeLabelState.Unresolved);
     }
 
-    private static string HashRows(IReadOnlyList<TrainingDatasetRow> rows)
-    {
-        var canonical = rows.OrderBy(item => item.SnapshotId, StringComparer.Ordinal).Select(item => new
-        {
-            item.SnapshotId,
-            item.Snapshot.FeatureSchemaVersion,
-            item.Snapshot.SnapshotAtUtc,
-            item.Label,
-            item.OutcomeEventId,
-            item.OutcomeObservedAtUtc
-        });
-        return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(canonical))).ToLowerInvariant();
-    }
-
     private sealed record ResolvedLabel(
         OutcomeLabelState State,
         BinaryOutcomeLabel? Label = null,
@@ -430,7 +438,7 @@ public sealed class TrainingDatasetBuilder(
         IEnumerable<EmailDeliveryOutcomeObservation> outcomes)
     {
         var snapshotLookup = snapshots
-            .GroupBy(item => new OutcomeAssociationKey(item.EmailCorrelationId, item.ValidationId))
+            .GroupBy(item => new OutcomeAssociationKey(item.TenantId, item.EmailCorrelationId, item.ValidationId))
             .ToDictionary(
                 group => group.Key,
                 group => group
@@ -441,9 +449,10 @@ public sealed class TrainingDatasetBuilder(
         var assigned = new Dictionary<string, List<EmailDeliveryOutcomeObservation>>(StringComparer.Ordinal);
         foreach (var outcome in outcomes.Where(item => !string.IsNullOrWhiteSpace(item.ValidationId)))
         {
-            var key = new OutcomeAssociationKey(outcome.EmailCorrelationId, outcome.ValidationId!);
+            var key = new OutcomeAssociationKey(outcome.TenantId, outcome.EmailCorrelationId, outcome.ValidationId!);
             if (!snapshotLookup.TryGetValue(key, out var candidates)) continue;
-            var latest = candidates.LastOrDefault(item => item.SnapshotAtUtc <= outcome.SendAttemptAtUtc);
+            var latest = candidates.LastOrDefault(item => item.SnapshotAtUtc <= outcome.SendAttemptAtUtc &&
+                (outcome.SnapshotId is null || outcome.SnapshotId == item.SnapshotId));
             if (latest is null) continue;
             if (!assigned.TryGetValue(latest.SnapshotId, out var values))
             {
@@ -468,7 +477,7 @@ public sealed class TrainingDatasetBuilder(
             observation.Outcome == EmailDeliveryOutcome.Delivered)
             return HasNonDiscriminatingRecipientRouting(snapshot);
         return resolved.Label == BinaryOutcomeLabel.Negative &&
-            !IsRecipientSpecificMailboxRejection(observation);
+            observation.Outcome != EmailDeliveryOutcome.MailboxAbsent && !IsRecipientSpecificMailboxRejection(observation);
     }
 
     private static bool HasNonDiscriminatingRecipientRouting(EmailValidationFeatureSnapshot snapshot) =>
@@ -496,7 +505,7 @@ public sealed class TrainingDatasetBuilder(
             observation.Provider is MailProvider.Microsoft365 or MailProvider.MicrosoftConsumer;
     }
 
-    private readonly record struct OutcomeAssociationKey(string EmailCorrelationId, string ValidationId);
+    private readonly record struct OutcomeAssociationKey(string? TenantId, string EmailCorrelationId, string ValidationId);
 }
 
 public sealed record DataSufficiencyPolicy(
@@ -553,7 +562,7 @@ public sealed class LeakageSafeDatasetSplitter
     {
         if (calibrationStartsUtc >= testStartsUtc || unseenDomainFraction is <= 0 or >= 1)
             throw new ArgumentException("Split boundaries are invalid.");
-        var grouped = rows.GroupBy(item => item.EmailCorrelationId, StringComparer.Ordinal)
+        var grouped = rows.GroupBy(item => (item.Snapshot.TenantId, item.EmailCorrelationId))
             .Select(group => group.OrderBy(item => item.SnapshotAtUtc).First())
             .OrderBy(item => item.SnapshotAtUtc).ToArray();
         var domainKeys = grouped.Select(item => item.DomainCorrelationId).Distinct(StringComparer.Ordinal)
@@ -687,6 +696,8 @@ public sealed class TransparentPredictionUncertaintyPolicy(
         CalibratedPrediction prediction,
         EmailValidationFeatureSnapshot snapshot)
     {
+        if (prediction.Model.SupportedProviders is { } supported && !supported.Contains(snapshot.Domain.Provider))
+            return new(PredictionDisposition.InsufficientSupport, "Provider lacks approved held-out support.");
         if (snapshot.Domain.Provider == MailProvider.Unknown)
             return new(PredictionDisposition.OutOfDistribution, "Provider support is unknown.");
         var missing = MissingFraction(snapshot);
@@ -744,7 +755,7 @@ public sealed class VersionedValidationDecisionPolicy(
             !string.Equals(
                 prediction.Model.OutcomeDefinitionVersion,
                 EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal) && prediction.Model.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3)
             return new(
                 heuristicResult.Status,
                 "Only an approved mailbox-existence prediction can alter canonical mailbox status.",
@@ -866,8 +877,8 @@ internal static class EnforcedValidationResultProjection
                 EmailValidationStatus.LikelyInvalid) ||
             prediction.Model is not { } model ||
             model.FeatureSchemaVersion != EvidenceBackedClassificationVersions.FeatureSchemaV2 ||
-            model.OutcomeDefinitionVersion !=
-                EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2)
+            model.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV2 &&
+            model.OutcomeDefinitionVersion != EvidenceBackedClassificationVersions.MailboxExistenceOutcomeV3)
             return result;
 
         var confidence = prediction.Decision.Status == EmailValidationStatus.LikelyValid
@@ -877,6 +888,7 @@ internal static class EnforcedValidationResultProjection
         var projected = result with
         {
             Status = prediction.Decision.Status,
+            OriginalHeuristicEvidenceStrength = result.HeuristicEvidenceStrength,
             Confidence = Math.Round(Math.Clamp(confidence, 0, 1), 4),
             ConfidenceType = ConfidenceType.CalibratedProbability,
             ConfidenceReason = prediction.Decision.Reason,
@@ -946,7 +958,7 @@ public sealed class EvidenceBackedEmailValidationService(
             metrics.RecordSnapshot(created);
             var prediction = await scoring.ScoreAsync(snapshot, result, cancellationToken).ConfigureAwait(false);
             if (prediction is null) return result;
-            var staged = result with { Prediction = prediction };
+            var staged = result with { Prediction = prediction, ProbabilityAssessment = PublicProbabilityAssessment.From(prediction) };
             // Shadow and Advisory cannot alter canonical behavior. Enforced still passes
             // through the decision policy, which protects deterministic Valid/Invalid evidence.
             var projected = prediction.Model?.RolloutMode == ModelRolloutMode.Enforced

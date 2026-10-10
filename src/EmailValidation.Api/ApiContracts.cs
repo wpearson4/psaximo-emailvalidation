@@ -89,7 +89,8 @@ public sealed record EmailValidationV1Response(
     DateTimeOffset? FinalizedAtUtc,
     ValidationChecksV1 Checks,
     MxValidationV1Response? MxValidation = null,
-    RecipientEvidenceV1Response? RecipientEvidence = null);
+    RecipientEvidenceV1Response? RecipientEvidence = null,
+    PublicValidationAssessment? Assessment = null);
 
 public sealed record ValidationStatusV1Response(
     string ValidationId,
@@ -111,7 +112,8 @@ public sealed record ValidationStatusV1Response(
     string? StatusMessage,
     DateTimeOffset? RequestedAtUtc,
     DateTimeOffset? ValidatedAtUtc,
-    DateTimeOffset? FinalizedAtUtc);
+    DateTimeOffset? FinalizedAtUtc,
+    PublicValidationAssessment? Assessment = null);
 
 public sealed record ValidationJobV1Response(
     string JobId,
@@ -176,7 +178,8 @@ public static class ApiContractMapper
             result.Checks.DisposableDomain,
             result.Checks.RoleAccount,
             result.Checks.CatchAll.ToString(),
-            result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior.ToString() ??
+            result.CatchAllEvidence?.EffectiveRecipientBehavior.ToString() ??
+                result.DomainIntelligence?.CatchAll.EffectiveRecipientBehavior.ToString() ??
                 DomainRecipientBehavior.Unknown.ToString()),
         result.MxValidation is null
             ? null
@@ -190,7 +193,8 @@ public static class ApiContractMapper
                 result.RecipientEvidence.Stage?.ToString(),
                 result.RecipientEvidence.ResponseCode,
                 result.RecipientEvidence.EnhancedStatusCode,
-                result.RecipientEvidence.MxHost));
+                result.RecipientEvidence.MxHost),
+        PublicValidationAssessment.From(result));
 
     public static ValidationStatusV1Response Map(ValidationStatusSnapshot snapshot) => new(
         snapshot.ValidationId,
@@ -212,7 +216,8 @@ public static class ApiContractMapper
         snapshot.StatusMessage,
         snapshot.RequestedAt,
         snapshot.LastUpdatedAt ?? snapshot.FirstValidatedAt,
-        snapshot.FinalizedAt);
+        snapshot.FinalizedAt,
+        snapshot.Assessment?.At(DateTimeOffset.UtcNow));
 
     public static ValidationJobV1Response Map(ValidationJobSnapshot job) => new(
         job.JobId,

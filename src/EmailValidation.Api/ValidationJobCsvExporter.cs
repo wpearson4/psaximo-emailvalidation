@@ -4,6 +4,7 @@ using System.Text.Json;
 using CsvHelper;
 using CsvHelper.Configuration;
 using EmailValidation.Application;
+using EmailValidation.Core;
 
 namespace EmailValidation.Api;
 
@@ -15,7 +16,8 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         "Email Validation Detail",
         "Email Validation Confidence Reason",
         "Email Validation Domain Behavior",
-        "Email Validation Date"
+        "Email Validation Date",
+        .. PublicAssessmentCsv.Headers
     ];
 
     public async Task WriteAsync(
@@ -159,6 +161,7 @@ public sealed class ValidationJobCsvExporter(IValidationJobService jobs)
         writer.WriteField(validation?.ConfidenceReason ?? string.Empty);
         writer.WriteField(validation?.Checks.RecipientBehavior ?? string.Empty);
         writer.WriteField(validation?.ValidatedAtUtc?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+        foreach (var value in PublicAssessmentCsv.Values(validation?.Assessment)) writer.WriteField(value);
     }
 
     private sealed class ValidationResultCursor(IValidationJobService jobs, string jobId)

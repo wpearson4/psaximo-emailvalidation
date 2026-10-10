@@ -6,6 +6,63 @@
     "version": "v1"
   },
   "paths": {
+    "/v1/validation-outcomes": {
+      "post": {
+        "tags": [
+          "Email Validation v1"
+        ],
+        "summary": "Import an authorized outcome for a tenant feature snapshot",
+        "operationId": "ImportValidationOutcomeV1",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailValidation.Application.AuthorizedOutcomeImport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Application.OutcomeIngestionResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailValidation.Application.OutcomeIngestionResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "emailvalidation.admin"
+            ]
+          }
+        ]
+      }
+    },
     "/v1/email-validations": {
       "post": {
         "tags": [
@@ -1370,6 +1427,9 @@
           },
           "recipientEvidence": {
             "$ref": "#/components/schemas/EmailValidation.Api.RecipientEvidenceV1Response"
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/EmailValidation.Core.PublicValidationAssessment"
           }
         },
         "additionalProperties": false
@@ -1722,6 +1782,198 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/EmailValidation.Core.PublicValidationAssessment"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Application.AppendObservationResult": {
+        "enum": [
+          0,
+          1,
+          2
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EmailValidation.Application.AuthorizedOutcomeImport": {
+        "type": "object",
+        "properties": {
+          "snapshotId": {
+            "type": "string"
+          },
+          "snapshotAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceEventId": {
+            "type": "string"
+          },
+          "authorizationReference": {
+            "type": "string"
+          },
+          "cohort": {
+            "$ref": "#/components/schemas/EmailValidation.Core.EvidenceCohort"
+          },
+          "truthSource": {
+            "$ref": "#/components/schemas/EmailValidation.Application.OutcomeTruthSource"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/EmailValidation.Core.EmailDeliveryOutcome"
+          },
+          "sendAttemptAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "observedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enhancedStatusCode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Application.OutcomeIngestionResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/EmailValidation.Application.AppendObservationResult"
+          },
+          "outcomeEventId": {
+            "type": "string"
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Application.OutcomeTruthSource": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EmailValidation.Core.EmailDeliveryOutcome": {
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EmailValidation.Core.EvidenceCohort": {
+        "enum": [
+          0,
+          1,
+          2
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EmailValidation.Core.PublicProbabilityAssessment": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "format": "double"
+          },
+          "target": {
+            "type": "string"
+          },
+          "outcomeWindowSeconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modelVersion": {
+            "type": "string"
+          },
+          "calibrationVersion": {
+            "type": "string"
+          },
+          "outcomeDefinitionVersion": {
+            "type": "string"
+          },
+          "decisionPolicyVersion": {
+            "type": "string"
+          },
+          "trainingDatasetId": {
+            "type": "string"
+          },
+          "artifactChecksum": {
+            "type": "string"
+          },
+          "rolloutMode": {
+            "type": "string"
+          },
+          "scoredAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EmailValidation.Core.PublicValidationAssessment": {
+        "type": "object",
+        "properties": {
+          "summaryStatus": {
+            "type": "string"
+          },
+          "confidenceType": {
+            "type": "string"
+          },
+          "heuristicEvidenceStrength": {
+            "type": "number",
+            "format": "double"
+          },
+          "evidenceLevel": {
+            "type": "string"
+          },
+          "recipientBehavior": {
+            "type": "string"
+          },
+          "mailboxEvidenceObservedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "routingEvidenceObservedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "mailboxEvidenceAgeSeconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "routingEvidenceAgeSeconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "probability": {
+            "$ref": "#/components/schemas/EmailValidation.Core.PublicProbabilityAssessment"
           }
         },
         "additionalProperties": false

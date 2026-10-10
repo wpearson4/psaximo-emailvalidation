@@ -5,6 +5,7 @@ option csharp_namespace = "EmailValidation.Status.V1";
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "Protos/public_assessment.proto";
 
 service EmailValidationStatus {
   rpc GetValidationStatus(GetValidationStatusRequest) returns (ValidationStatusResponse);
@@ -96,4 +97,5 @@ message ValidationStatusResponse {
   ValidationProgressStage current_stage = 26;
   UnknownValidationContext unknown_context = 27;
   optional string confidence_level = 28;
+  emailvalidation.assessment.v1.PublicAssessment assessment = 29;
 }

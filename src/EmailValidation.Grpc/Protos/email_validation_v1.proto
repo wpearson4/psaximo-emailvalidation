@@ -4,6 +4,7 @@ package emailvalidation.v1;
 option csharp_namespace = "EmailValidation.V1";
 
 import "google/protobuf/timestamp.proto";
+import "Protos/public_assessment.proto";
 
 service EmailValidationService {
   rpc ValidateEmail(ValidateEmailRequest) returns (EmailValidationResponse);
@@ -53,4 +54,5 @@ message EmailValidationResponse {
   int64 sequence = 16;
   UnknownValidationContext unknown_context = 17;
   optional string confidence_level = 18;
+  emailvalidation.assessment.v1.PublicAssessment assessment = 19;
 }

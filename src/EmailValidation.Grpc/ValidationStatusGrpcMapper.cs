@@ -16,6 +16,7 @@ public static class ValidationStatusGrpcMapper
         {
             ValidationId = status.ValidationId,
             Sequence = status.Sequence,
+            Assessment = PublicAssessmentGrpcMapper.Map(status.Assessment?.At(status.OccurredAt)),
             LifecycleState = Map(status.LifecycleState),
             CurrentStage = Map(status.CurrentStage),
             ResultState = status.ResultState == ApplicationResultState.Final

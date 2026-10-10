@@ -30,6 +30,8 @@ public sealed class ClassificationModelOptions
     public ModelRolloutMode Mode { get; set; } = ModelRolloutMode.Disabled;
     public string ArtifactPath { get; set; } = string.Empty;
     public string ArtifactChecksum { get; set; } = string.Empty;
+    public string ReleaseApprovalPath { get; set; } = string.Empty;
+    public string ReleaseApprovalChecksum { get; set; } = string.Empty;
     public double LikelyValidThreshold { get; set; } = 0.8;
     public double LikelyInvalidThreshold { get; set; } = 0.2;
     public double AbstentionLowerBound { get; set; } = 0.4;

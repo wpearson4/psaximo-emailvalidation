@@ -102,6 +102,7 @@ public sealed class EmailValidationGrpcService(
             Status = result.Status.ToString(),
             SubStatus = result.SubStatus.ToString(),
             Confidence = result.Confidence,
+            Assessment = PublicAssessmentGrpcMapper.Map(PublicValidationAssessment.From(result)),
             ConfidenceLevel = result.ConfidenceLevel.ToString().ToUpperInvariant(),
             Provider = result.MailProvider.ToString(),
             RetryScheduled = result.RetryScheduled,
@@ -131,7 +132,8 @@ public sealed class EmailValidationGrpcService(
             RetryScheduled = snapshot.RetryScheduled,
             AttemptNumber = snapshot.AttemptNumber,
             MaximumAttempts = snapshot.MaximumAttempts,
-            Sequence = snapshot.Sequence
+            Sequence = snapshot.Sequence,
+            Assessment = PublicAssessmentGrpcMapper.Map(snapshot.Assessment?.At(DateTimeOffset.UtcNow))
         };
         if (snapshot.Status is { } status) response.Status = status.ToString();
         if (snapshot.SubStatus is { } subStatus) response.SubStatus = subStatus.ToString();

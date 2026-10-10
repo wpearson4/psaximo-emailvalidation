@@ -27,7 +27,8 @@ internal sealed class CsvFileProcessor
         "Confidence Type", "Deliverability Probability", "Catch-All Classification",
         "Probe Attempted", "Probe Disposition", "SMTP Response Category", "Retry After",
         "Validation Date/Time", "Validation ID", "Result State", "Attempt Number",
-        "Maximum Attempts", "Retry Scheduled", "First Validated At", "Last Validated At", "Finalized At"
+        "Maximum Attempts", "Retry Scheduled", "First Validated At", "Last Validated At", "Finalized At",
+        .. PublicAssessmentCsv.Headers
     ];
 
     private readonly IDomainValidationScheduler _scheduler;
@@ -259,6 +260,9 @@ internal sealed class CsvFileProcessor
         var values = new string[outputFieldCount];
         Array.Copy(row.Input.Fields, values, row.Input.Fields.Length);
         values[resultIndexes["Status"]] = row.Result.Status.ToString();
+        var assessment = PublicValidationAssessment.From(row.Result);
+        var assessmentValues = PublicAssessmentCsv.Values(assessment);
+        for (var i = 0; i < assessmentValues.Length; i++) values[resultIndexes[PublicAssessmentCsv.Headers[i]]] = assessmentValues[i];
         if (resultIndexes.TryGetValue("Confidence", out var legacyConfidenceIndex))
             values[legacyConfidenceIndex] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Confidence Reason"]] =
@@ -273,8 +277,8 @@ internal sealed class CsvFileProcessor
             "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
         values[resultIndexes["Classification Confidence"]] = FormatConfidence(row.Result.ClassificationConfidence);
         values[resultIndexes["Evidence Quality"]] = row.Result.EvidenceQuality.ToString();
-        values[resultIndexes["Confidence Type"]] = row.Result.ConfidenceType.ToString();
-        values[resultIndexes["Deliverability Probability"]] = row.Result.DeliverabilityProbability is { } probability
+        values[resultIndexes["Confidence Type"]] = assessment.ConfidenceType;
+        values[resultIndexes["Deliverability Probability"]] = assessment.Probability is { Target: "TechnicalDeliveryWithinWindow", Value: var probability }
             ? FormatConfidence(probability)
             : string.Empty;
         values[resultIndexes["Catch-All Classification"]] = row.Result.CatchAllClassification.ToString();

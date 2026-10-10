@@ -60,6 +60,15 @@ stages:
           - script: dotnet test EmailValidation.sln --configuration $(buildConfiguration) --no-restore
             displayName: Build and test
 
+          - script: dotnet run --project src/EmailValidation.Console --configuration $(buildConfiguration) --no-build --no-restore -- benchmark examples/benchmark-synthetic.json "$(Build.ArtifactStagingDirectory)/synthetic-accuracy.json"
+            displayName: Replay synthetic accuracy benchmark
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish synthetic benchmark evidence
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifact: synthetic-accuracy-benchmark
+
           - bash: |
               set -euo pipefail
               docker compose --file compose.yaml config --quiet
