@@ -246,6 +246,9 @@ public sealed class RevalidationOptions
     public int OutboxBatchSize { get; set; } = 100;
     public int OutboxLeaseSeconds { get; set; } = 60;
     public int RetryRecoveryGraceMinutes { get; set; } = 15;
+    public int ExecutionLeaseSeconds { get; set; } = 120;
+    public int ExecutionRenewalSeconds { get; set; } = 30;
+    public int MaximumExecutionRecoveries { get; set; } = 3;
     public ServiceBusRevalidationOptions ServiceBus { get; set; } = new();
 }
 

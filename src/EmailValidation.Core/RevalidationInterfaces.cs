@@ -27,6 +27,12 @@ public interface IRevalidationScheduler
 
 public interface IValidationLifecycleStore
 {
+    Task<ValidationLifecycle?> TryAcquireExecutionAsync(string validationId, long expectedVersion,
+        int attemptNumber, string ownerId, TimeSpan lease, CancellationToken cancellationToken = default);
+    Task<bool> RenewExecutionAsync(string validationId, RevalidationExecutionLease lease,
+        TimeSpan duration, CancellationToken cancellationToken = default);
+    Task<LifecycleWriteResult> TrySaveExecutionAsync(ValidationLifecycle lifecycle, long expectedVersion,
+        RevalidationExecutionLease lease, CancellationToken cancellationToken = default);
     Task<ValidationLifecycle?> GetAsync(
         string validationId,
         CancellationToken cancellationToken = default);
@@ -62,7 +68,7 @@ public interface IRevalidationOutbox
 
 public interface IRevalidationRecoveryStore
 {
-    Task<int> RecoverOverdueAsync(
+    Task<IReadOnlyList<string>> RecoverOverdueAsync(
         int maximumCount,
         TimeSpan minimumOverdue,
         CancellationToken cancellationToken = default);
@@ -105,6 +111,7 @@ public interface IValidationLifecycleCoordinator
         long expectedVersion,
         int expectedAttemptNumber,
         EmailValidationResult result,
+        RevalidationExecutionLease executionLease,
         CancellationToken cancellationToken = default);
 }
 

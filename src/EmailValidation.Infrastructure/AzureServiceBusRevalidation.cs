@@ -27,7 +27,8 @@ public sealed class JsonRevalidationMessageSerializer : IRevalidationMessageSeri
                 failureReason = "Payload was empty.";
                 return false;
             }
-            if (string.IsNullOrWhiteSpace(message.ValidationId) || message.AttemptNumber < 2 ||
+            if (!RevalidationMessagePolicy.IsSupported(message) ||
+                string.IsNullOrWhiteSpace(message.ValidationId) || message.ValidationId.Length > 128 || message.AttemptNumber < 2 ||
                 message.MaximumAttempts < message.AttemptNumber || message.OriginalValidatedAt == default ||
                 message.PreviousAttemptAt == default || message.ScheduledRetryAt < message.PreviousAttemptAt ||
                 !Enum.IsDefined(message.PreviousStatus) || !Enum.IsDefined(message.PreviousSubStatus))
@@ -39,10 +40,10 @@ public sealed class JsonRevalidationMessageSerializer : IRevalidationMessageSeri
             failureReason = null;
             return true;
         }
-        catch (JsonException exception)
+        catch (JsonException)
         {
             message = null;
-            failureReason = exception.Message;
+            failureReason = "Payload is not a valid revalidation message.";
             return false;
         }
     }

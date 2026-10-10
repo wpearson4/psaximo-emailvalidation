@@ -305,6 +305,24 @@ public sealed class ProjectionValidationLifecycleStore(
 {
     private readonly bool _enabled = options.Value.Projection.Enabled;
 
+    public Task<ValidationLifecycle?> TryAcquireExecutionAsync(string validationId, long expectedVersion,
+        int attemptNumber, string ownerId, TimeSpan lease, CancellationToken cancellationToken = default) =>
+        inner.TryAcquireExecutionAsync(validationId, expectedVersion, attemptNumber, ownerId, lease, cancellationToken);
+
+    public Task<bool> RenewExecutionAsync(string validationId, RevalidationExecutionLease lease,
+        TimeSpan duration, CancellationToken cancellationToken = default) =>
+        inner.RenewExecutionAsync(validationId, lease, duration, cancellationToken);
+
+    public async Task<LifecycleWriteResult> TrySaveExecutionAsync(ValidationLifecycle lifecycle, long expectedVersion,
+        RevalidationExecutionLease lease, CancellationToken cancellationToken = default)
+    {
+        var previous = _enabled ? await inner.GetAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false) : null;
+        var saved = await inner.TrySaveExecutionAsync(lifecycle, expectedVersion, lease, cancellationToken).ConfigureAwait(false);
+        if (_enabled && saved.Applied && saved.Lifecycle is not null)
+            await EnqueueBestEffortAsync(saved.Lifecycle, previous, cancellationToken).ConfigureAwait(false);
+        return saved;
+    }
+
     public Task<ValidationLifecycle?> GetAsync(string validationId, CancellationToken cancellationToken = default) =>
         inner.GetAsync(validationId, cancellationToken);
 

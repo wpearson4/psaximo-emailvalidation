@@ -84,7 +84,7 @@ public sealed class RevalidationTests
             new EmailRiskIntelligence([new ExistingIntelligenceRiskDataSource()]), new ValidationQualityMetrics(),
             new ValidationPersistenceMetrics(), options, clock, NullLogger<IntelligenceEmailValidator>.Instance,
             new ConfidenceLevelPolicy());
-        var lifecycleStore = new MemoryLifecycleStore();
+        var lifecycleStore = new MemoryLifecycleStore(clock: clock);
         using var metrics = new RevalidationMetrics();
         var dispatcher = new StubDispatcher(true);
         var providerPolicies = new ProviderPolicyResolver(options);
@@ -522,9 +522,11 @@ public sealed class RevalidationTests
         Assert.Single(first.Lifecycle!.Attempts);
         Assert.NotNull(first.Lifecycle.PendingRevalidation);
 
+        var acquired = await store.TryAcquireExecutionAsync(first.Result.ValidationId!, first.Lifecycle.Version,
+            2, "owner", TimeSpan.FromMinutes(2));
         var second = await coordinator.ProcessRetryResultAsync(
-            first.Result.ValidationId!, first.Lifecycle.Version, 2,
-            Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted));
+            first.Result.ValidationId!, acquired!.Version, 2,
+            Result(EmailValidationStatus.Valid, ReasonCode.MailboxAccepted), acquired.ExecutionLease!);
 
         Assert.True(second.Applied);
         Assert.Equal(first.Result.ValidationId, second.Result.ValidationId);
@@ -587,9 +589,10 @@ public sealed class RevalidationTests
         using var metrics = new RevalidationMetrics();
         var coordinator = Coordinator(store, new StubDispatcher(true), metrics);
 
+        var acquired = await store.TryAcquireExecutionAsync(first.ValidationId, first.Version, 2, "owner", TimeSpan.FromMinutes(2));
         var exhausted = await coordinator.ProcessRetryResultAsync(
-            first.ValidationId, first.Version, 2,
-            Result(EmailValidationStatus.Unknown, ReasonCode.Greylisted));
+            first.ValidationId, acquired!.Version, 2,
+            Result(EmailValidationStatus.Unknown, ReasonCode.Greylisted), acquired.ExecutionLease!);
 
         Assert.Equal(ValidationResultState.Final, exhausted.Result.ResultState);
         Assert.Equal(EmailValidationStatus.Unknown, exhausted.Result.Status);
@@ -737,7 +740,7 @@ public sealed class RevalidationTests
     }
 
     [Fact]
-    public async Task Processor_CooldownAfterWorkerRestartRollsBackUnfinishedAttempt()
+    public async Task Processor_RedeliveryCannotExecuteOrRescheduleAnAbandonedAttemptBeforeRecovery()
     {
         var lifecycle = Lifecycle(ValidationResultState.Provisional, 2) with
         {
@@ -763,11 +766,11 @@ public sealed class RevalidationTests
 
         var disposition = await processor.ProcessAsync(Message(lifecycle.ValidationId, 2));
 
-        Assert.Equal(RevalidationProcessingDisposition.Rescheduled, disposition.Disposition);
+        Assert.Equal(RevalidationProcessingDisposition.Stale, disposition.Disposition);
         Assert.Equal(0, service.Calls);
-        Assert.Equal(1, store.Value!.AttemptNumber);
-        Assert.Equal(1, store.Value.CurrentResult.AttemptNumber);
-        Assert.Equal(2, store.Value.PendingRevalidation?.Message.AttemptNumber);
+        Assert.Equal(2, store.Value!.AttemptNumber);
+        Assert.Equal(2, store.Value.CurrentResult.AttemptNumber);
+        Assert.Null(store.Value.PendingRevalidation);
         Assert.Single(store.Value.Attempts);
     }
 
@@ -1001,7 +1004,32 @@ public sealed class RevalidationTests
 
     private sealed class MemoryLifecycleStore : IValidationLifecycleStore
     {
-        public MemoryLifecycleStore(ValidationLifecycle? value = null) => Value = value;
+        private readonly TimeProvider _clock;
+        public MemoryLifecycleStore(ValidationLifecycle? value = null, TimeProvider? clock = null)
+        { Value = value; _clock = clock ?? new FixedTimeProvider(Now); }
+        public Task<ValidationLifecycle?> TryAcquireExecutionAsync(string validationId, long expectedVersion,
+            int attemptNumber, string ownerId, TimeSpan lease, CancellationToken cancellationToken = default)
+        {
+            if (Value?.ValidationId != validationId || Value.Version != expectedVersion) return Task.FromResult<ValidationLifecycle?>(null);
+            var acquired = RevalidationExecution.Acquire(Value, attemptNumber, ownerId, lease, _clock.GetUtcNow());
+            if (acquired is not null) Value = acquired;
+            return Task.FromResult(acquired);
+        }
+        public Task<bool> RenewExecutionAsync(string validationId, RevalidationExecutionLease lease,
+            TimeSpan duration, CancellationToken cancellationToken = default)
+        {
+            if (Value?.ValidationId != validationId || !RevalidationExecution.Owns(Value, lease, _clock.GetUtcNow())) return Task.FromResult(false);
+            Value = Value with { ExecutionLease = lease with { ExpiresAt = _clock.GetUtcNow().Add(duration) } };
+            return Task.FromResult(true);
+        }
+        public Task<LifecycleWriteResult> TrySaveExecutionAsync(ValidationLifecycle lifecycle, long expectedVersion,
+            RevalidationExecutionLease lease, CancellationToken cancellationToken = default)
+        {
+            if (Value is null || Value.Version != expectedVersion || !RevalidationExecution.Owns(Value, lease, _clock.GetUtcNow()))
+                return Task.FromResult(new LifecycleWriteResult(false, null));
+            Value = lifecycle;
+            return Task.FromResult(new LifecycleWriteResult(true, lifecycle));
+        }
         public ValidationLifecycle? Value { get; set; }
         public Task<ValidationLifecycle?> GetAsync(string validationId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Value?.ValidationId == validationId ? Value : null);
@@ -1065,7 +1093,7 @@ public sealed class RevalidationTests
             EmailValidationRequest request, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ValidationLifecycleResult(result, null, false, false));
         public Task<ValidationLifecycleResult> ProcessRetryResultAsync(string validationId, long expectedVersion,
-            int expectedAttemptNumber, EmailValidationResult result, CancellationToken cancellationToken = default)
+            int expectedAttemptNumber, EmailValidationResult result, RevalidationExecutionLease executionLease, CancellationToken cancellationToken = default)
         {
             RetryCalls++;
             return Task.FromResult(new ValidationLifecycleResult(result, null, true, false));

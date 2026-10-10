@@ -106,6 +106,10 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         }
         if (revalidation.Enabled)
         {
+            if (revalidation.ExecutionLeaseSeconds < 3 || revalidation.ExecutionRenewalSeconds < 1 ||
+                revalidation.ExecutionRenewalSeconds > revalidation.ExecutionLeaseSeconds / 3 ||
+                revalidation.MaximumExecutionRecoveries < 1)
+                failures.Add("Revalidation execution renewal must be at most one third of its positive lease, and recovery limit must be positive.");
             if (!persistence.Enabled || !string.Equals(persistence.Provider, "MongoDB", StringComparison.OrdinalIgnoreCase))
                 failures.Add("EmailValidation revalidation requires MongoDB persistence for its durable lifecycle and outbox.");
             if (revalidation.DefaultMaxAttempts < 1)

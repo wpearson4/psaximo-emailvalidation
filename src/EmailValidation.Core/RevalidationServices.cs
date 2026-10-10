@@ -534,10 +534,12 @@ public sealed class ValidationLifecycleCoordinator(
         long expectedVersion,
         int expectedAttemptNumber,
         EmailValidationResult result,
+        RevalidationExecutionLease executionLease,
         CancellationToken cancellationToken = default)
     {
         var existing = await store.GetAsync(validationId, cancellationToken).ConfigureAwait(false);
         if (existing is null || existing.Version != expectedVersion ||
+            !RevalidationExecution.Owns(existing, executionLease, timeProvider.GetUtcNow()) ||
             !MailboxIdentity.Matches(existing.MailboxKey, existing.NormalizedEmail) ||
             result.MailboxKey != existing.MailboxKey ||
             !MailboxIdentity.Matches(result.MailboxKey, result.NormalizedEmail) ||
@@ -550,7 +552,7 @@ public sealed class ValidationLifecycleCoordinator(
         var now = result.Metadata?.ValidatedAt ?? timeProvider.GetUtcNow();
         var decision = retryPolicy.Evaluate(result, new(expectedAttemptNumber, existing.MaximumAttempts));
         var lifecycle = BuildLifecycle(existing, result, existing.Request, expectedAttemptNumber, decision, now);
-        var saved = await store.TrySaveAsync(lifecycle, expectedVersion, cancellationToken).ConfigureAwait(false);
+        var saved = await store.TrySaveExecutionAsync(lifecycle, expectedVersion, executionLease, cancellationToken).ConfigureAwait(false);
         if (!saved.Applied)
             return new(existing.CurrentResult, existing, false, false);
         await PublishBestEffortAsync(saved.Lifecycle!).ConfigureAwait(false);
@@ -584,7 +586,8 @@ public sealed class ValidationLifecycleCoordinator(
                 raw.MailProvider.ToString(),
                 raw.Status,
                 raw.SubStatus,
-                raw.Metadata?.Policy.ClassificationPolicyVersion);
+                raw.Metadata?.Policy.ClassificationPolicyVersion,
+                MessageVersion: 2, DispatchGeneration: checked((existing?.DispatchGeneration ?? 0) + 1));
             pending = new(message, timeProvider.GetUtcNow(), schedule.ScheduledAt);
         }
 
@@ -622,6 +625,9 @@ public sealed class ValidationLifecycleCoordinator(
 
         return new ValidationLifecycle
         {
+            DispatchGeneration = pending?.Message.DispatchGeneration ?? existing?.DispatchGeneration ?? 0,
+            ExecutionFence = existing?.ExecutionFence ?? 0,
+            ExecutionRecoveryCount = existing?.ExecutionRecoveryCount ?? 0,
             ValidationId = validationId,
             NormalizedEmail = raw.NormalizedEmail ?? existing?.NormalizedEmail ?? MailboxIdentity.NormalizeOrOriginal(raw.Email),
             MailboxKey = raw.MailboxKey ?? existing?.MailboxKey,
@@ -815,13 +821,17 @@ public sealed class EmailRevalidationProcessor(
     IRevalidationMetrics metrics,
     TimeProvider timeProvider,
     IValidationStatusPublisher? statusPublisher = null,
-    ISmtpReputationProtection? reputationProtection = null) : IEmailRevalidationProcessor
+    ISmtpReputationProtection? reputationProtection = null,
+    IOptions<EmailValidationOptions>? options = null) : IEmailRevalidationProcessor
 {
+    private readonly RevalidationOptions _executionOptions = options?.Value.Revalidation ?? new();
+
     public async Task<RevalidationProcessingResult> ProcessAsync(
         EmailRevalidationMessageV1 message,
         CancellationToken cancellationToken = default)
     {
-        if (message.MessageVersion != 1 || string.IsNullOrWhiteSpace(message.ValidationId) ||
+        if (!RevalidationMessagePolicy.IsSupported(message) || string.IsNullOrWhiteSpace(message.ValidationId) ||
+            message.ValidationId.Length > 128 ||
             message.AttemptNumber < 2 || message.MaximumAttempts < message.AttemptNumber ||
             message.OriginalValidatedAt == default || message.PreviousAttemptAt == default ||
             message.ScheduledRetryAt < message.PreviousAttemptAt)
@@ -853,124 +863,120 @@ public sealed class EmailRevalidationProcessor(
             : lifecycle.AttemptNumber + 1;
         if (message.AttemptNumber != expectedAttempt ||
             message.MaximumAttempts != lifecycle.MaximumAttempts ||
-            message.ScheduledRetryAt != lifecycle.NextRetryAt)
+            message.ScheduledRetryAt != lifecycle.NextRetryAt ||
+            message.OriginalValidatedAt != lifecycle.FirstValidatedAt || message.PreviousAttemptAt != lifecycle.LastValidatedAt ||
+            message.DispatchGeneration != lifecycle.DispatchGeneration)
         {
             metrics.RecordStale();
             return new(RevalidationProcessingDisposition.Stale);
         }
 
-        var mxHost = lifecycle.CurrentResult.SelectedMx ??
-            (lifecycle.CurrentResult.MxRecords.Count > 0 ? lifecycle.CurrentResult.MxRecords[0].Host : string.Empty);
-        var availability = throttle.GetAvailability(new(
-            Domain(lifecycle.NormalizedEmail), mxHost, lifecycle.CurrentResult.MailProvider));
-        SmtpReputationEvidence? reputation = null;
-        if (reputationProtection is not null)
-            reputation = await reputationProtection.EvaluateAsync(new SmtpReputationBudgetContext(
-                lifecycle.NormalizedEmail, Domain(lifecycle.NormalizedEmail),
-                lifecycle.CurrentResult.MailProvider, MxHost: mxHost, ReserveMailboxProbe: false),
-                cancellationToken).ConfigureAwait(false);
-        var retryAfter = Max(availability.RetryAfter, reputation?.SuppressSmtp == true
-            ? reputation.RetryAtUtc ?? timeProvider.GetUtcNow().AddMinutes(5)
-            : null);
-        if ((!availability.CanProbe || reputation?.SuppressSmtp == true) &&
-            retryAfter is { } deferredUntil && deferredUntil > timeProvider.GetUtcNow())
+        var acquired = await store.TryAcquireExecutionAsync(lifecycle.ValidationId, lifecycle.Version,
+            message.AttemptNumber, Guid.NewGuid().ToString("N"),
+            TimeSpan.FromSeconds(_executionOptions.ExecutionLeaseSeconds), cancellationToken).ConfigureAwait(false);
+        if (acquired?.ExecutionLease is not { } executionLease)
+            return new(RevalidationProcessingDisposition.Stale);
+        lifecycle = acquired;
+        await using var heartbeat = new RevalidationExecutionHeartbeat(store, lifecycle.ValidationId,
+            executionLease, _executionOptions, timeProvider, cancellationToken);
+        cancellationToken = heartbeat.Token;
+        try
         {
-            return await RescheduleWithoutAttemptAsync(
-                lifecycle,
-                message,
-                reputation?.SuppressSmtp == true
-                    ? ReasonCode.ReputationPolicyDeferred
-                    : ReasonCode.LocalCooldown,
-                deferredUntil,
-                lifecycle.LifecycleState == ValidationLifecycleState.Revalidating
-                    ? message.AttemptNumber - 1
-                    : lifecycle.AttemptNumber,
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        if (lifecycle.LifecycleState != ValidationLifecycleState.Revalidating)
-        {
-            var revalidating = lifecycle with
-            {
-                LifecycleState = ValidationLifecycleState.Revalidating,
-                CurrentStage = ValidationProgressStage.Revalidating,
-                AttemptNumber = message.AttemptNumber,
-                RetryScheduled = false,
-                CurrentResult = lifecycle.CurrentResult with
-                {
-                    AttemptNumber = message.AttemptNumber,
-                    RetryScheduled = false
-                },
-                StatusMessage = "Automatic revalidation started.",
-                LastUpdatedAt = timeProvider.GetUtcNow(),
-                Sequence = lifecycle.Sequence + 1,
-                Version = lifecycle.Version + 1
-            };
-            var started = await store.TrySaveAsync(revalidating, lifecycle.Version, cancellationToken)
-                .ConfigureAwait(false);
-            if (!started.Applied) return new(RevalidationProcessingDisposition.Stale);
-            lifecycle = started.Lifecycle!;
             if (statusPublisher is not null)
             {
                 try
                 {
-                    await statusPublisher.PublishAsync(
-                        ValidationStatusMapper.ToEvent(lifecycle, timeProvider.GetUtcNow()), CancellationToken.None)
-                        .ConfigureAwait(false);
+                    await statusPublisher.PublishAsync(ValidationStatusMapper.ToEvent(lifecycle, timeProvider.GetUtcNow()),
+                        cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception)
-                {
-                    // Canonical lifecycle persistence is authoritative; live delivery is best effort.
-                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested) { }
             }
-        }
 
-        var evidenceAfter = RetryEvidencePolicy.LatestObservation(lifecycle.CurrentResult, message.PreviousAttemptAt);
-        var result = await validationService.ValidateAsync(
-            lifecycle.NormalizedEmail, lifecycle.Request with { EvidenceObservedAfter = evidenceAfter },
-            cancellationToken).ConfigureAwait(false);
-        var reused = result.Metadata?.ResultSource is ValidationResultSource.MemoryCache or
-            ValidationResultSource.PersistentReuse or ValidationResultSource.JoinedInFlightValidation;
-        metrics.RecordExecuted(lifecycle.CurrentResult.MailProvider, reused);
-        var canonical = await store.GetAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
-        if (canonical is null || canonical.LifecycleState != ValidationLifecycleState.Revalidating ||
-            canonical.AttemptNumber != message.AttemptNumber)
+            var mxHost = lifecycle.CurrentResult.SelectedMx ??
+                (lifecycle.CurrentResult.MxRecords.Count > 0 ? lifecycle.CurrentResult.MxRecords[0].Host : string.Empty);
+            var availability = throttle.GetAvailability(new(
+                Domain(lifecycle.NormalizedEmail), mxHost, lifecycle.CurrentResult.MailProvider));
+            SmtpReputationEvidence? reputation = null;
+            if (reputationProtection is not null)
+                reputation = await reputationProtection.EvaluateAsync(new SmtpReputationBudgetContext(
+                    lifecycle.NormalizedEmail, Domain(lifecycle.NormalizedEmail),
+                    lifecycle.CurrentResult.MailProvider, MxHost: mxHost, ReserveMailboxProbe: false),
+                    cancellationToken).ConfigureAwait(false);
+            var retryAfter = Max(availability.RetryAfter, reputation?.SuppressSmtp == true
+                ? reputation.RetryAtUtc ?? timeProvider.GetUtcNow().AddMinutes(5)
+                : null);
+            if ((!availability.CanProbe || reputation?.SuppressSmtp == true) &&
+                retryAfter is { } deferredUntil && deferredUntil > timeProvider.GetUtcNow())
+            {
+                await heartbeat.StopAsync().ConfigureAwait(false);
+                return await RescheduleWithoutAttemptAsync(
+                    lifecycle,
+                    message,
+                    reputation?.SuppressSmtp == true
+                        ? ReasonCode.ReputationPolicyDeferred
+                        : ReasonCode.LocalCooldown,
+                    deferredUntil,
+                    lifecycle.LifecycleState == ValidationLifecycleState.Revalidating
+                        ? message.AttemptNumber - 1
+                        : lifecycle.AttemptNumber,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var evidenceAfter = RetryEvidencePolicy.LatestObservation(lifecycle.CurrentResult, message.PreviousAttemptAt);
+            var result = await validationService.ValidateAsync(
+                lifecycle.NormalizedEmail, lifecycle.Request with { EvidenceObservedAfter = evidenceAfter },
+                cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
+            var reused = result.Metadata?.ResultSource is ValidationResultSource.MemoryCache or
+                ValidationResultSource.PersistentReuse or ValidationResultSource.JoinedInFlightValidation;
+            metrics.RecordExecuted(lifecycle.CurrentResult.MailProvider, reused);
+            var canonical = await store.GetAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
+            if (canonical is null || canonical.LifecycleState != ValidationLifecycleState.Revalidating ||
+                canonical.AttemptNumber != message.AttemptNumber ||
+                !RevalidationExecution.Owns(canonical, executionLease, timeProvider.GetUtcNow()))
+                return new(RevalidationProcessingDisposition.Stale);
+
+            var now = timeProvider.GetUtcNow();
+            if (!result.ProbeAttempted &&
+                result.ProbeDisposition == SmtpProbeDisposition.LocalCooldown &&
+                result.RetryAfter is { } lateDeferredUntil && lateDeferredUntil > now)
+            {
+                var reason = result.ReasonCodes.Contains(ReasonCode.ReputationPolicyDeferred)
+                    ? ReasonCode.ReputationPolicyDeferred
+                    : ReasonCode.LocalCooldown;
+                await heartbeat.StopAsync().ConfigureAwait(false);
+                return await RescheduleWithoutAttemptAsync(
+                    canonical,
+                    message,
+                    reason,
+                    lateDeferredUntil,
+                    message.AttemptNumber - 1,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!RetryEvidencePolicy.HasNewObservation(canonical.CurrentResult, result, evidenceAfter))
+            {
+                await heartbeat.StopAsync().ConfigureAwait(false);
+                return await RescheduleWithoutAttemptAsync(
+                    canonical, message,
+                    Enum.TryParse<ReasonCode>(canonical.RetryReason, out var retryReason) ? retryReason : ReasonCode.RetryRecommended,
+                    evidenceAfter > now ? evidenceAfter.AddSeconds(5) : now.AddSeconds(5), message.AttemptNumber - 1,
+                    cancellationToken, noNewEvidence: true).ConfigureAwait(false);
+            }
+
+            await heartbeat.StopAsync().ConfigureAwait(false);
+            var coordinated = await coordinator.ProcessRetryResultAsync(
+                canonical.ValidationId, canonical.Version, message.AttemptNumber, result, executionLease, cancellationToken)
+                .ConfigureAwait(false);
+            return coordinated.Applied
+                ? new(coordinated.Lifecycle?.ResultState == ValidationResultState.Provisional
+                    ? RevalidationProcessingDisposition.Rescheduled
+                    : RevalidationProcessingDisposition.Completed)
+                : new(RevalidationProcessingDisposition.Stale);
+        }
+        catch (OperationCanceledException) when (heartbeat.LeaseLost)
+        {
             return new(RevalidationProcessingDisposition.Stale);
-
-        var now = timeProvider.GetUtcNow();
-        if (!result.ProbeAttempted &&
-            result.ProbeDisposition == SmtpProbeDisposition.LocalCooldown &&
-            result.RetryAfter is { } lateDeferredUntil && lateDeferredUntil > now)
-        {
-            var reason = result.ReasonCodes.Contains(ReasonCode.ReputationPolicyDeferred)
-                ? ReasonCode.ReputationPolicyDeferred
-                : ReasonCode.LocalCooldown;
-            return await RescheduleWithoutAttemptAsync(
-                canonical,
-                message,
-                reason,
-                lateDeferredUntil,
-                message.AttemptNumber - 1,
-                cancellationToken).ConfigureAwait(false);
         }
-
-        if (!RetryEvidencePolicy.HasNewObservation(canonical.CurrentResult, result, evidenceAfter))
-        {
-            return await RescheduleWithoutAttemptAsync(
-                canonical, message,
-                Enum.TryParse<ReasonCode>(canonical.RetryReason, out var retryReason) ? retryReason : ReasonCode.RetryRecommended,
-                evidenceAfter > now ? evidenceAfter.AddSeconds(5) : now.AddSeconds(5), message.AttemptNumber - 1,
-                cancellationToken, noNewEvidence: true).ConfigureAwait(false);
-        }
-
-        var coordinated = await coordinator.ProcessRetryResultAsync(
-            canonical.ValidationId, canonical.Version, message.AttemptNumber, result, cancellationToken)
-            .ConfigureAwait(false);
-        return coordinated.Applied
-            ? new(coordinated.Lifecycle?.ResultState == ValidationResultState.Provisional
-                ? RevalidationProcessingDisposition.Rescheduled
-                : RevalidationProcessingDisposition.Completed)
-            : new(RevalidationProcessingDisposition.Stale);
     }
 
     private async Task<RevalidationProcessingResult> RescheduleWithoutAttemptAsync(
@@ -996,7 +1002,13 @@ public sealed class EmailRevalidationProcessor(
             FinalizedAt = null,
             NextRetryAt = schedule.ScheduledAt,
             RetryScheduled = false,
-            PendingRevalidation = new(message with { ScheduledRetryAt = schedule.ScheduledAt },
+            DispatchGeneration = checked(lifecycle.DispatchGeneration + 1),
+            ExecutionLease = null,
+            PendingRevalidation = new(message with
+            {
+                ScheduledRetryAt = schedule.ScheduledAt, MessageVersion = 2,
+                DispatchGeneration = checked(lifecycle.DispatchGeneration + 1)
+            },
                 now, schedule.ScheduledAt),
             CurrentResult = lifecycle.CurrentResult with
             {
@@ -1021,10 +1033,11 @@ public sealed class EmailRevalidationProcessor(
             Sequence = lifecycle.Sequence + 1,
             Version = lifecycle.Version + 1
         };
-        var saved = await store.TrySaveAsync(rescheduled, lifecycle.Version, cancellationToken).ConfigureAwait(false);
+        var saved = await store.TrySaveExecutionAsync(rescheduled, lifecycle.Version, lifecycle.ExecutionLease!, cancellationToken).ConfigureAwait(false);
         if (!saved.Applied) return new(RevalidationProcessingDisposition.Stale);
-        var dispatch = await dispatcher.DispatchAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
-        if (dispatch?.Succeeded != true) return new(RevalidationProcessingDisposition.RetryInfrastructureFailure);
+        await dispatcher.DispatchAsync(lifecycle.ValidationId, cancellationToken).ConfigureAwait(false);
+        // The next dispatch is durable. Broker unavailability must not turn a normal
+        // deferral into a poison message; the outbox can publish it independently.
         metrics.RecordRescheduled(lifecycle.CurrentResult.MailProvider);
         return new(RevalidationProcessingDisposition.Rescheduled);
     }

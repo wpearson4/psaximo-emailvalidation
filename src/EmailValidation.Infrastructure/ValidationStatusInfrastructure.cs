@@ -117,8 +117,10 @@ public sealed class InMemoryValidationStatusDispatcher :
     }
 }
 
-public sealed class InMemoryValidationLifecycleStore : IValidationLifecycleStore
+public sealed class InMemoryValidationLifecycleStore(TimeProvider? timeProvider = null) : IValidationLifecycleStore
 {
+    private readonly object _executionSync = new();
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, ValidationLifecycle> _lifecycles = new(StringComparer.Ordinal);
 
     public Task<ValidationLifecycle?> GetAsync(string validationId, CancellationToken cancellationToken = default)
@@ -141,18 +143,54 @@ public sealed class InMemoryValidationLifecycleStore : IValidationLifecycleStore
         return Task.FromResult(lifecycle);
     }
 
-    public Task<LifecycleWriteResult> TrySaveAsync(
-        ValidationLifecycle lifecycle,
-        long expectedVersion,
-        CancellationToken cancellationToken = default)
+    public Task<ValidationLifecycle?> TryAcquireExecutionAsync(string validationId, long expectedVersion,
+        int attemptNumber, string ownerId, TimeSpan lease, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var applied = expectedVersion == 0
-            ? _lifecycles.TryAdd(lifecycle.ValidationId, lifecycle)
-            : _lifecycles.TryGetValue(lifecycle.ValidationId, out var current) &&
-              current.Version == expectedVersion &&
-              _lifecycles.TryUpdate(lifecycle.ValidationId, lifecycle, current);
-        return Task.FromResult(new LifecycleWriteResult(applied, applied ? lifecycle : null));
+        lock (_executionSync)
+        {
+            if (!_lifecycles.TryGetValue(validationId, out var current) || current.Version != expectedVersion)
+                return Task.FromResult<ValidationLifecycle?>(null);
+            var acquired = RevalidationExecution.Acquire(current, attemptNumber, ownerId, lease, _clock.GetUtcNow());
+            if (acquired is not null) _lifecycles[validationId] = acquired;
+            return Task.FromResult(acquired);
+        }
+    }
+
+    public Task<bool> RenewExecutionAsync(string validationId, RevalidationExecutionLease lease,
+        TimeSpan duration, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_executionSync)
+        {
+            if (!_lifecycles.TryGetValue(validationId, out var current) || !RevalidationExecution.Owns(current, lease, _clock.GetUtcNow()))
+                return Task.FromResult(false);
+            _lifecycles[validationId] = current with { ExecutionLease = lease with { ExpiresAt = _clock.GetUtcNow().Add(duration) } };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<LifecycleWriteResult> TrySaveExecutionAsync(ValidationLifecycle lifecycle, long expectedVersion,
+        RevalidationExecutionLease lease, CancellationToken cancellationToken = default) =>
+        Save(lifecycle, expectedVersion, lease, cancellationToken);
+
+    public Task<LifecycleWriteResult> TrySaveAsync(ValidationLifecycle lifecycle, long expectedVersion,
+        CancellationToken cancellationToken = default) => Save(lifecycle, expectedVersion, null, cancellationToken);
+
+    private Task<LifecycleWriteResult> Save(ValidationLifecycle lifecycle, long expectedVersion,
+        RevalidationExecutionLease? lease, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_executionSync)
+        {
+            _lifecycles.TryGetValue(lifecycle.ValidationId, out var current);
+            if (lease is not null ? current is null || !RevalidationExecution.Owns(current, lease, _clock.GetUtcNow()) : current?.ExecutionLease is not null)
+                return Task.FromResult(new LifecycleWriteResult(false, null));
+            var applied = expectedVersion == 0
+                ? _lifecycles.TryAdd(lifecycle.ValidationId, lifecycle)
+                : current is not null && current.Version == expectedVersion && _lifecycles.TryUpdate(lifecycle.ValidationId, lifecycle, current);
+            return Task.FromResult(new LifecycleWriteResult(applied, applied ? lifecycle : null));
+        }
     }
 }
 

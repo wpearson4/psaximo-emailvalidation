@@ -31,10 +31,14 @@ public sealed record EmailRevalidationMessageV1(
     EmailValidationStatus PreviousStatus,
     DetailedStatus PreviousSubStatus,
     string? ClassificationPolicyVersion,
-    int MessageVersion = 1)
+    int MessageVersion = 1,
+    long DispatchGeneration = 0)
 {
-    public string MessageId => $"{ValidationId}:{AttemptNumber}";
+    public string MessageId => DispatchGeneration == 0 ? $"{ValidationId}:{AttemptNumber}" :
+        $"evr2:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(ValidationId)))}:{AttemptNumber}:{DispatchGeneration}";
 }
+
+public sealed record RevalidationExecutionLease(string OwnerId, long FencingToken, DateTimeOffset ExpiresAt);
 
 public sealed record RevalidationRequest(
     EmailRevalidationMessageV1 Message,
@@ -114,6 +118,10 @@ public sealed record PendingRevalidation(
 
 public sealed record ValidationLifecycle
 {
+    public long DispatchGeneration { get; init; }
+    public long ExecutionFence { get; init; }
+    public RevalidationExecutionLease? ExecutionLease { get; init; }
+    public int ExecutionRecoveryCount { get; init; }
     public string? MailboxKey { get; init; }
     public required string ValidationId { get; init; }
     public required string NormalizedEmail { get; init; }
