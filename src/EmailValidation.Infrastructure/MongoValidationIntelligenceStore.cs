@@ -489,7 +489,7 @@ public sealed class MongoValidationIntelligenceStore :
             {
                 CatchAll = model.CatchAll with
                 {
-                    ProbeResults = [],
+                    ProbeResults = model.CatchAll.ProbeResults.Select(PersistedControlEvidence.Sanitize).ToArray(),
                     RecipientBehavior = model.CatchAll.EffectiveRecipientBehavior
                 }
             };
@@ -560,7 +560,7 @@ public sealed class MongoValidationIntelligenceStore :
                 {
                     ProfileVersion = ProfileVersion,
                     CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(
-                        model.CatchAll,
+                        PersistedControlEvidence.RequireProvenance(model.CatchAll),
                         acceptAllMinimumIndependentObservations,
                         minimumAcceptedProbes),
                     MxTopologyFingerprint = model.MxTopologyFingerprint ?? MxTopologyFingerprint,
@@ -613,7 +613,7 @@ public sealed class MongoValidationIntelligenceStore :
                     observed),
                 Disposable = DisposableStatus is DisposableDomainStatus.KnownDisposable or DisposableDomainStatus.LikelyDisposable,
                 DisposableIntelligence = disposable,
-                CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(new CatchAllDetectionResult(
+                CatchAll = DomainRecipientBehaviorPolicy.NormalizePersisted(PersistedControlEvidence.RequireProvenance(new CatchAllDetectionResult(
                     CatchAllStatus,
                     CatchAllEvidenceCount,
                     RandomProbeAcceptedCount,
@@ -630,7 +630,7 @@ public sealed class MongoValidationIntelligenceStore :
                         : null,
                     StrategyVersion = CatchAllStrategyVersion,
                     EvidenceContractVersion = CatchAllEvidenceContractVersion
-                }, acceptAllMinimumIndependentObservations, minimumAcceptedProbes),
+                }), acceptAllMinimumIndependentObservations, minimumAcceptedProbes),
                 ObservedAt = observed,
                 EvidenceExpiresAt = EvidenceFreshUntil is { } freshUntil
                     ? new DateTimeOffset(DateTime.SpecifyKind(freshUntil, DateTimeKind.Utc))

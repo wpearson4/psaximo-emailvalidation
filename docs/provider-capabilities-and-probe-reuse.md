@@ -32,6 +32,21 @@ Current storage describes controls for one endpoint. Therefore EV08 only skips p
 
 Reuse returns `Unknown` with `NonDiscriminationEvidenceReused`, the original catch-all observation timestamp, and `ProviderCapabilities.NextUsefulCheckAt`. It creates no new mailbox evidence timestamp and does not imply catch-all routing or mailbox existence. The evidence age is the validation timestamp minus `CatchAllEvidence.ObservedAt`. Provider policy restrictions carry `ProviderCapabilityRestricted` and an explanation that identifies local policy.
 
+### Mongo control evidence persistence
+
+Domain intelligence retains compact control-probe evidence across Mongo saves and reloads: MAIL FROM / RCPT TO stages and structured responses, MX host, and original observation timestamps. Response text, session history, banners, sender identities, and outbound connection identity details are removed. Lifecycle and mailbox result snapshots remain summaries; the domain intelligence record supplies reusable controls.
+
+Older Mongo records lost the entire control-probe array. On read, missing or incomplete command-stage provenance invalidates those controls and requires fresh observations under the existing refresh/backoff policy. Counts and an evidence-contract label cannot reconstruct missing probes. Routing evidence and original observation clocks are preserved; signed routing attestations continue through their existing verification path. No bulk database migration or new infrastructure is required.
+
+The persistence regressions run the validator after BSON serialization for recipient-specific Microsoft 365 decisions, enforced accept-all reuse, and Shadow comparisons. They also exercise incomplete historical records. To additionally run actual Mongo save/reload tests with new store instances and repeated validations, use a local test Mongo instance:
+
+```sh
+EMAIL_VALIDATION_TEST_MONGO=mongodb://127.0.0.1:27017 \
+dotnet test tests/EmailValidation.Core.Tests --filter FullyQualifiedName~MongoControlEvidenceRegressionTests
+```
+
+These tests create and remove isolated temporary databases. Production stays in Shadow; after deployment, rerun the same 200-address sample and compare final results and eligible shadow comparisons before considering enforcement.
+
 ## Review, canary, and rollback
 
 1. Deploy in Shadow and run the same authorized validation sample. Export existing feature snapshots as a JSON array. Each snapshot now carries an optional `ProviderCapabilities` assessment; no new collection or service is needed.
@@ -59,3 +74,5 @@ The example configuration intentionally has no approval and cannot enforce. No l
 `dotnet test EmailValidation.sln --configuration Release --no-restore --verbosity minimal -m:1 /nodeReuse:false` reported 878 passed and one Service Bus test skipped. Environment-dependent integration coverage is not evidence of a live production canary. Focused regressions include repeated-address call counts, shadow rejection disagreements, evidence expiry and changed scopes, configurable confirmation thresholds, policy approval/rollback, DNS-authoritative retry behavior, provider retry floors, local TLS/UTF8 restrictions, and snapshot/report persistence.
 
 The frozen synthetic benchmark (`examples/benchmark-synthetic.json`) completed, and the offline hash/report commands were exercised against synthetic inputs. These checks establish regression behavior; they do not establish a production validation accuracy percentage. Review a matched production shadow run before enforcement.
+
+Persistence follow-up: the default Release suite passed 891 tests with one Service Bus test skipped. The focused BSON/mapping/validator suite passed all 19 cases with local Mongo enabled, including three real Mongo save/reload scenarios; the frozen benchmark also completed. Enabling every optional Mongo integration test additionally exposed the existing `MongoProjectionOutboxTests.Outbox_IsIdempotentAtomicallyClaimedReclaimableAndTtlSafe` failure (`cannot index parallel arrays [LockExpiresAtUtc] [NextPublishAttemptAtUtc]`). The same failure was reproduced on unchanged commit `e10266a` in an isolated checkout. The outbox issue is separate from this control-evidence persistence fix and remains unresolved.

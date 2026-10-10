@@ -47,7 +47,7 @@ public sealed class MongoDocumentMappingTests
     }
 
     [Fact]
-    public void DomainDocument_MapsStructuredIntelligenceAndDropsProbePayloads()
+    public void DomainDocument_MapsStructuredIntelligenceButIncompleteProvenanceRequiresRefresh()
     {
         var probe = new SmtpProbeResult(SmtpMailboxStatus.Accepted, 250, "raw response", TimeSpan.Zero);
         var domain = Domain() with
@@ -88,16 +88,15 @@ public sealed class MongoDocumentMappingTests
         Assert.NotNull(document.CatchAllObservedAt);
         Assert.NotNull(restored);
         Assert.Empty(restored!.CatchAll.ProbeResults);
-        Assert.Equal(CatchAllReasonCode.AcceptAllConfirmed, restored.CatchAll.ReasonCode);
-        Assert.Equal(DomainRecipientBehavior.AcceptAll, restored.CatchAll.RecipientBehavior);
-        Assert.Equal(2, restored.CatchAll.IndependentObservationCount);
-        Assert.Equal(
-            CatchAllDetectionResult.CurrentRecipientBehaviorEvidenceContractVersion,
-            restored.CatchAll.EvidenceContractVersion);
+        Assert.Equal(CatchAllStatus.NotAttempted, restored.CatchAll.Status);
+        Assert.Equal(DomainRecipientBehavior.Unknown, restored.CatchAll.RecipientBehavior);
+        Assert.Equal(0, restored.CatchAll.IndependentObservationCount);
+        Assert.Null(restored.CatchAll.EvidenceContractVersion);
+        Assert.DoesNotContain("raw response", document.PayloadJson);
     }
 
     [Fact]
-    public void LegacyRandomAcceptancePayload_IsReinterpretedAsCandidate()
+    public void LegacyRandomAcceptancePayload_RequiresFreshControls()
     {
         var legacy = Domain() with
         {
@@ -121,9 +120,9 @@ public sealed class MongoDocumentMappingTests
         var restored = document.ToModel();
 
         Assert.NotNull(restored);
-        Assert.Equal(CatchAllStatus.Unknown, restored!.CatchAll.Status);
+        Assert.Equal(CatchAllStatus.NotAttempted, restored!.CatchAll.Status);
         Assert.Equal(DomainRecipientBehavior.Unknown, restored.CatchAll.RecipientBehavior);
-        Assert.Equal(CatchAllReasonCode.AcceptAllCandidate, restored.CatchAll.ReasonCode);
+        Assert.Equal(CatchAllReasonCode.MixedOrInconclusive, restored.CatchAll.ReasonCode);
         Assert.Equal(0, restored.CatchAll.IndependentObservationCount);
         Assert.True(restored.CatchAll.RefreshInconclusive);
     }
