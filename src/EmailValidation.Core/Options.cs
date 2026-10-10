@@ -154,7 +154,7 @@ public sealed class SmtpPolicyBlockPressureOptions
 public sealed class SmtpResponseIntelligenceOptions
 {
     public SmtpResponseIntelligenceMode Mode { get; set; } = SmtpResponseIntelligenceMode.Shadow;
-    public string ClassificationVersion { get; set; } = "smtp-response-rules-1.0.0";
+    public string ClassificationVersion { get; set; } = "smtp-response-rules-1.1.0";
     public string DecisionPolicyVersion { get; set; } = "smtp-response-policy-1.0.0";
     public int MaximumResponseCharacters { get; set; } = 4096;
     public int RegexTimeoutMilliseconds { get; set; } = 100;
@@ -297,10 +297,10 @@ public sealed class ResultReuseOptions
 
 public sealed class ValidationPolicyOptions
 {
-    public string ValidationEngineVersion { get; set; } = "1.1.0";
+    public string ValidationEngineVersion { get; set; } = "1.2.0";
     public string ClassificationPolicyVersion { get; set; } = "2.4.0";
     public string ConfidenceModelVersion { get; set; } = "3.1.0";
-    public string ProviderStrategyVersion { get; set; } = "1.2.0";
+    public string ProviderStrategyVersion { get; set; } = "1.3.0";
 
     public ValidationPolicyVersions ToVersions() => new(
         ValidationEngineVersion,
@@ -346,6 +346,12 @@ public sealed class SmtpOptions
     public bool Enabled { get; set; }
     public int ConnectionTimeoutSeconds { get; set; } = 10;
     public int CommandTimeoutSeconds { get; set; } = 10;
+    public int SessionTimeoutSeconds { get; set; } = 60;
+    public int CleanupTimeoutSeconds { get; set; } = 2;
+    public int MaximumReplyLineBytes { get; set; } = 512;
+    public int MaximumReplyBytes { get; set; } = 16_384;
+    public int MaximumReplyLines { get; set; } = 64;
+    public bool EnableStartTls { get; set; } = true;
     public int RetryCount { get; set; } = 1;
     public int GlobalConcurrency { get; set; } = 2;
     public int PerDomainConcurrency { get; set; } = 1;

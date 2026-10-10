@@ -62,6 +62,11 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseIntelligenceCl
             ? SmtpResponseTextClassification.RecipientDoesNotExist
             : ClassifyText(text, enhanced);
         var category = ClassifyCategory(command, responseCode, enhanced, textClass, provider);
+        if (responseCode is >= 400 && IsTlsRequirement(response))
+        {
+            category = SmtpResponseCategory.VerificationBlocked;
+            textClass = SmtpResponseTextClassification.VerificationUnavailable;
+        }
         return new(
             command,
             responseCode,
@@ -142,6 +147,10 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseIntelligenceCl
         string? enhanced)
     {
         var code = context.ReplyCode;
+        if (context.Stage == SmtpCommand.StartTls && code != 220)
+            return Match("tls_failure", "generic-tls-failure", SmtpNormalizedReason.TlsFailure, SmtpEvidenceStrength.High);
+        if (code is >= 400 && IsTlsRequirement(context.Response))
+            return Match("tls_required", "generic-tls-required", SmtpNormalizedReason.TlsFailure, SmtpEvidenceStrength.High);
         if (context.Stage == SmtpCommand.RcptTo && code == 252)
             return Match("rcpt_cannot_verify", "generic-verification-refused",
                 SmtpNormalizedReason.VerificationRefused, SmtpEvidenceStrength.High);
@@ -184,6 +193,11 @@ public sealed partial class SmtpResponseClassifier : ISmtpResponseIntelligenceCl
             return SmtpNormalizedReason.ConnectionFailure;
         return SmtpNormalizedReason.UnknownProviderResponse;
     }
+
+    private static bool IsTlsRequirement(string? response) => response is not null &&
+        (response.Contains("STARTTLS", StringComparison.OrdinalIgnoreCase) ||
+         response.Contains("TLS required", StringComparison.OrdinalIgnoreCase) ||
+         response.Contains("require TLS", StringComparison.OrdinalIgnoreCase));
 
     private static SmtpResponseRuleRegistry.RuleMatch? ConstrainByReplyClass(
         SmtpResponseClassificationContext context,

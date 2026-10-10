@@ -6,6 +6,24 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class EmailValidationOptionsValidatorTests
 {
+    [Theory]
+    [InlineData("SessionTimeoutSeconds", 0)]
+    [InlineData("CommandTimeoutSeconds", -1)]
+    [InlineData("CleanupTimeoutSeconds", 0)]
+    [InlineData("MaximumReplyLineBytes", 5)]
+    [InlineData("MaximumReplyLineBytes", 16385)]
+    [InlineData("MaximumReplyBytes", 511)]
+    [InlineData("MaximumReplyBytes", 1048577)]
+    [InlineData("MaximumReplyLines", 0)]
+    public void SmtpBounds_RejectInvalidConfiguration(string property, int value)
+    {
+        var options = new EmailValidationOptions();
+        typeof(SmtpOptions).GetProperty(property)!.SetValue(options.Smtp, value);
+        var result = new EmailValidationOptionsValidator().Validate(null, options);
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, failure => failure.StartsWith("EmailValidation:Smtp ", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void InvalidOutboundIdentitySenderConfiguration_ReturnsActionableFailures()
     {

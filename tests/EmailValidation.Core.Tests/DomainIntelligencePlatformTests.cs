@@ -304,6 +304,22 @@ public sealed class DomainIntelligencePlatformTests
     }
 
     [Fact]
+    public async Task PreEv05DomainControls_AreDiscardedOnRefresh()
+    {
+        var options = FreshOptions();
+        var cache = new StickyDomainCache();
+        using var service = CreateService(new CountingRoutingAnalyzer(), new CountingCatchAllDetector(), cache, options);
+        var baseline = await service.AcquireAsync("example.test", true);
+        cache.Store(baseline.Intelligence with { StrategyVersion = "1.2.0" }, TimeSpan.FromHours(1));
+
+        var refreshed = await service.AcquireAsync("example.test", false);
+
+        Assert.Equal(DomainIntelligenceSource.LiveAnalysis, refreshed.Source);
+        Assert.Equal(CatchAllStatus.NotAttempted, refreshed.Intelligence.CatchAll.Status);
+        Assert.Null(refreshed.Intelligence.Behavior);
+    }
+
+    [Fact]
     public async Task InconclusiveSameTopologyRefresh_PreservesConfirmedAcceptAll()
     {
         var options = FreshOptions();

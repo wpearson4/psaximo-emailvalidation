@@ -1191,12 +1191,12 @@ public sealed class EmailValidatorTests
             ReasonCode = CatchAllReasonCode.IndependentRoutingEvidence,
             RecipientBehavior = DomainRecipientBehavior.CatchAll,
             ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-            StrategyVersion = "1.2.0"
+            StrategyVersion = new ValidationPolicyOptions().ProviderStrategyVersion
         },
         ObservedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
         EvidenceExpiresAt = DateTimeOffset.UtcNow.AddMinutes(50),
         RoutingEvidence = new(DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow.AddMinutes(50)),
-        StrategyVersion = "1.2.0",
+        StrategyVersion = new ValidationPolicyOptions().ProviderStrategyVersion,
         IntelligencePolicyVersion = "2.0.0"
     };
 

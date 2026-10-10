@@ -26,6 +26,14 @@ public sealed class EmailValidationOptionsValidator : IValidateOptions<EmailVali
         var projection = options.Projection;
         var classificationModel = options.ClassificationModel;
         var failures = new List<string>();
+        var smtp = options.Smtp;
+        if (smtp.ConnectionTimeoutSeconds <= 0 || smtp.CommandTimeoutSeconds <= 0 ||
+            smtp.SessionTimeoutSeconds <= 0 || smtp.CleanupTimeoutSeconds <= 0)
+            failures.Add("EmailValidation:Smtp timeouts must be positive.");
+        if (smtp.MaximumReplyLineBytes is < 6 or > 16_384 ||
+            smtp.MaximumReplyBytes < smtp.MaximumReplyLineBytes || smtp.MaximumReplyBytes > 1_048_576 ||
+            smtp.MaximumReplyLines is < 1 or > 1024)
+            failures.Add("EmailValidation:Smtp reply limits are invalid (line: 6..16384 bytes; total: line limit..1048576 bytes; lines: 1..1024).");
         if (options.Smtp.Enabled && !outboundIdentities.Enabled)
             failures.Add("Live SMTP validation requires EmailValidation:OutboundIdentities:Enabled=true.");
         ValidateOutboundIdentities(outboundIdentities, failures);

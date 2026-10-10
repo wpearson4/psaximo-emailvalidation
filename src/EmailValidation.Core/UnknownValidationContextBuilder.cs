@@ -54,6 +54,13 @@ public static class UnknownValidationContextBuilder
                 "Configure or restore a healthy authorized probe sender, then start a new validation.",
                 category);
 
+        if (result.SmtpSessionEvidence?.FailedStage == SmtpCommand.StartTls ||
+            smtpReason == SmtpNormalizedReason.TlsFailure)
+            return Create(result, UnknownCause.AmbiguousSmtpResponse,
+                result.SmtpEvidence?.SanitizedResponse ?? "TLS negotiation did not provide recipient evidence.",
+                category == SmtpResponseCategory.Timeout || result.SmtpEvidence?.ResponseCode is >= 400 and < 500,
+                "Review the TLS requirement, destination certificate and sanitized SMTP stage before retrying.", category);
+
         if (category == SmtpResponseCategory.LocalCooldown || reasons.Contains(ReasonCode.LocalCooldown))
             return Create(result, UnknownCause.LocalCooldown,
                 result.RetryAfter is { } retryAfter

@@ -9,9 +9,10 @@ public sealed class SmtpUtf8Tests
     [InlineData("250-mx.example | 250-SIZE 10485760 | 250 SMTPUTF8", true)]
     [InlineData("250-mx.example | 250-STARTTLS | 250 SIZE 10485760", false)]
     [InlineData("250-mx.example | 250-smtputf8 | 250 OK", true)]
+    [InlineData("250 SMTPUTF8", false)]
     public void EhloCapabilityParsing_DetectsSmtpUtf8Token(string response, bool expected)
     {
-        Assert.Equal(expected, SmtpMailboxProbe.HasEhloCapability(response, "SMTPUTF8"));
+        Assert.Equal(expected, new SmtpResponse(250, response.Split(" | ")).HasCapability("SMTPUTF8"));
     }
 
     [Fact]

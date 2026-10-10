@@ -1,6 +1,6 @@
 namespace EmailValidation.Core;
 
-public enum SmtpCommand { Connect, Greeting, Ehlo, Helo, MailFrom, RcptTo, Rset, Quit }
+public enum SmtpCommand { Connect, Greeting, Ehlo, Helo, MailFrom, RcptTo, Rset, Quit, StartTls }
 
 public enum SmtpResponseCategory
 {

@@ -10,9 +10,30 @@ namespace EmailValidation.Core.Tests;
 
 public sealed class ValidationReuseAndSingleFlightTests
 {
-    private static readonly ValidationPolicyVersions Policy = new("1.1.0", "2.4.0", "3.1.0", "1.2.0");
+    private static readonly ValidationPolicyVersions Policy = new ValidationPolicyOptions().ToVersions();
     private static readonly string[] DistinctEmails =
         ["one@example.test", "two@example.test", "three@example.test"];
+
+    [Fact]
+    public async Task PreEv05MailboxEvidence_RequiresLiveRefresh()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var domain = Domain(clock, "example.test");
+        var oldPolicy = new ValidationPolicyVersions("1.1.0", "2.4.0", "3.1.0", "1.2.0");
+        var result = Result("person@example.test", clock.GetUtcNow(), domain);
+        result = result with { Metadata = result.Metadata! with { Policy = oldPolicy } };
+        var store = new TrackingStore
+        {
+            Domain = domain,
+            Mailbox = Mailbox(result, clock.GetUtcNow()) with { Policy = oldPolicy }
+        };
+        var executor = new ImmediateExecutor(clock);
+        var (validator, _) = CreateValidator(executor, store, clock);
+        var refreshed = await validator.ValidateAsync("person@example.test", new(true));
+        Assert.Equal(1, executor.Calls);
+        Assert.Equal(ValidationResultSource.LiveValidation, refreshed.Metadata!.ResultSource);
+        Assert.Equal(Policy, refreshed.Metadata.Policy);
+    }
 
     [Fact]
     public async Task LocalPartCaseVariants_RequireIndependentValidation()
